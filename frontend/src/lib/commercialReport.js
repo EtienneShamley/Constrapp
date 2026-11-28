@@ -43,6 +43,9 @@ import {
 
 export const REPORT_SOURCES = [
   ...SNAPSHOT_SOURCES, 'clientInvoices', 'clientReceipts', 'clientCreditNotes', 'clientRetentionReleases',
+  // Phase 2 step 5: refunds are cash OUT of what was received; applications
+  // move a receipt's unallocated money onto an invoice.
+  'clientRefunds', 'clientReceiptApplications',
 ]
 
 export const REPORT_SOURCE_LABELS = {
@@ -51,6 +54,8 @@ export const REPORT_SOURCE_LABELS = {
   clientReceipts: 'Client Receipts',
   clientCreditNotes: 'Client Credit Notes',
   clientRetentionReleases: 'Client Retention Releases',
+  clientRefunds: 'Client Refunds',
+  clientReceiptApplications: 'Client Receipt Applications',
 }
 
 // Dependencies of the figures the report adds beside the snapshot's own.
@@ -73,10 +78,10 @@ export const REPORT_DEPENDENCIES = {
   originalContract:    ['baseline'],
   clientVariations:    FIGURE_DEPENDENCIES.clientVariations,
   supplierVariations:  FIGURE_DEPENDENCIES.supplierVariationExposure,
-  cashIn:              ['clientReceipts'],
+  cashIn:              ['clientReceipts', 'clientRefunds'],
   cashOut:             ['supplierPayments'],
-  netCash:             ['clientReceipts', 'supplierPayments'],
-  receivables:         ['clientInvoices', 'clientReceipts', 'clientCreditNotes', 'clientRetentionReleases'],
+  netCash:             ['clientReceipts', 'clientRefunds', 'supplierPayments'],
+  receivables:         ['clientInvoices', 'clientReceipts', 'clientCreditNotes', 'clientRetentionReleases', 'clientRefunds', 'clientReceiptApplications'],
   clientRetentionHeld: ['clientInvoices', 'clientCreditNotes', 'clientRetentionReleases'],
 }
 
@@ -135,7 +140,9 @@ export function buildCommercialReport({ project = null, currencyCode, sources = 
     supplierInvoices = [], supplierCreditNotes = [], variations = [], forecastLines = [],
     baseline = null, supplierPayments = [], retentionReleases = [],
     clientInvoices = [], clientReceipts = [], clientCreditNotes = [], clientRetentionReleases = [], costCodes = [],
+    clientRefunds = [], clientReceiptApplications = [],
   } = sources
+  const settlement = { refunds: clientRefunds, applications: clientReceiptApplications }
 
   // 1. The Dashboard's composition, unchanged.
   const snapshot = projectSnapshot({
@@ -291,18 +298,19 @@ export function buildCommercialReport({ project = null, currencyCode, sources = 
   ]
 
   // 6. Cash — recorded cash only (gross, incl. GST), never an invoice amount.
-  const inRows = cashInRows(clientReceipts, { projectId: project?.id ?? null })
+  // Net of posted refunds (negative rows): cash received = receipts − refunds.
+  const inRows = cashInRows(clientReceipts, { projectId: project?.id ?? null, refunds: clientRefunds })
   const outRows = cashOutRows(supplierPayments, { projectId: project?.id ?? null })
   const cashIn = totalActualCashIn(inRows)
   const cashOut = totalActualCashOut(outRows)
   // Credit notes and retention releases move no cash: they change what is
   // RECEIVABLE, through the one receivable contract.
   const { positions } = receivableContext(clientInvoices, clientCreditNotes, clientRetentionReleases)
-  const receivables = receivablesSummary(clientInvoices, clientReceipts, positions)
+  const receivables = receivablesSummary(clientInvoices, clientReceipts, positions, settlement)
   const cashFigures = [
     { key: 'cashIn', label: 'Cash received (client receipts)', kind: FIGURE_KIND.MONEY,
       figure: gated(REPORT_DEPENDENCIES.cashIn, cashIn, sourceStates),
-      note: 'Posted client receipts, gross' },
+      note: 'Posted client receipts less posted refunds to the client, gross' },
     { key: 'cashOut', label: 'Cash paid (supplier payments)', kind: FIGURE_KIND.MONEY,
       figure: gated(REPORT_DEPENDENCIES.cashOut, cashOut, sourceStates),
       note: 'Posted supplier payments, gross' },
@@ -319,7 +327,7 @@ export function buildCommercialReport({ project = null, currencyCode, sources = 
     // hidden, and never netted against what other invoices still owe.
     { key: 'owedToClient', label: 'Owed to client', kind: FIGURE_KIND.MONEY,
       figure: gated(REPORT_DEPENDENCIES.receivables, receivables.owedToClient, sourceStates),
-      note: 'Received beyond what is now receivable on an invoice (a credit note after receipt, or an over-allocation), gross — not netted against other invoices' },
+      note: 'Received beyond what is now receivable on an invoice (a credit note after receipt, or an over-allocation), less what has been refunded to the client, gross — not netted against other invoices' },
     { key: 'remainingPayable', label: 'Supplier invoices unpaid', kind: FIGURE_KIND.MONEY,
       figure: availableFigure('remainingPayable', snapshot.remainingPayable.value, sourceStates),
       note: 'Posted supplier invoices still payable, gross — not cash' },

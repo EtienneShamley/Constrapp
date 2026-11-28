@@ -134,6 +134,56 @@ export const CLIENT_RECEIPT_POSTING_ENABLED = defineBoolean('CLIENT_RECEIPT_POST
 // closed — and every project file states it explicitly.
 export const CLIENT_RECEIPT_ALL_COMPANIES = defineBoolean('CLIENT_RECEIPT_ALL_COMPANIES', { default: false })
 
+// Phase 2 step 5 (ADR-95) — client refunds and receipt applications
+// (postClientRefund, voidClientRefund, postClientReceiptApplication,
+// voidClientReceiptApplication). OFF by default and OFF in production until
+// their release is authorised; with it off each answers
+// `client-settlement-disabled` before reading any project data. A company must
+// ALSO carry `clientFinanceEnabled === true` (the operator flag credit notes
+// and releases use). The trusted void of an issued client invoice is NOT under
+// this switch: it is part of the receipt workflow (CLIENT_RECEIPT_POSTING_ENABLED).
+export const CLIENT_SETTLEMENT_ENABLED = defineBoolean('CLIENT_SETTLEMENT_ENABLED', { default: false })
+
+// ADR-90 — the three variation callables (createVariation, approveVariation,
+// applyVariationCommitment) share ONE switch. `false` + a redeploy of those
+// functions makes each answer `variation-processing-disabled` before any read
+// or write; every stored variation is unaffected. Once the FINAL Security
+// Rules are published no browser can create or approve a variation directly,
+// so this switch is then the BRAKE on those three actions (draft edits,
+// submit, reject and withdraw stay with the Rules and keep working).
+//
+// CUTOVER ORDER (production starts with the switch off):
+//   1. the three callables deployed, switch `false` (plus every callable whose
+//      generated bundle changed — DEPLOYMENT.md lists them);
+//   2. the switch set `true` and the three redeployed; verified by a refused
+//      unauthenticated call — the Rules published at this point are still the
+//      previous ones, so the served bundle keeps writing directly and nothing
+//      is interrupted;
+//   3. Hosting — the new bundle creates and approves through the callables;
+//   4. the FINAL Rules — a direct create, approve or apply is refused from
+//      then on (a tab still on the old bundle must reload for those actions).
+// The default is FALSE — fail closed, exactly as the flags above — and every
+// project file states it explicitly (functions/test/variations.test.js).
+export const VARIATION_PROCESSING_ENABLED = defineBoolean('VARIATION_PROCESSING_ENABLED', { default: false })
+
+// ADR-93 / ADR-94 — Phase 2 steps 3–4: the three supplier-finance callables
+// (progress claims, supplier invoices, supplier settlement). Default FALSE —
+// fail closed. Turned on only AFTER the final Rules that remove every client
+// write path to those registers are published (docs/DEPLOYMENT.md → Phase 2
+// steps 3–4): the historical baseline is established lazily by the first
+// operation, and must never be computed while an old bundle can still write.
+export const SUPPLIER_FINANCE_PROCESSING_ENABLED = defineBoolean('SUPPLIER_FINANCE_PROCESSING_ENABLED', { default: false })
+
+// ADR-96 — Phase 2 step 6: the original-contract-value correction callable.
+// Default FALSE — fail closed; on only after the final Rules that freeze the
+// value on the baseline are published.
+export const CONTRACT_VALUE_REVISION_ENABLED = defineBoolean('CONTRACT_VALUE_REVISION_ENABLED', { default: false })
+
+// ADR-97 — Phase 2 step 7: the estimating callable (`estimateOperation`).
+// Default FALSE — fail closed; on only after the Rules that make the estimate
+// collections read-only to clients are published.
+export const ESTIMATING_ENABLED = defineBoolean('ESTIMATING_ENABLED', { default: false })
+
 // One region, matching the Firestore location (docs/DEPLOYMENT.md → Functions).
 export const REGION = 'australia-southeast1'
 

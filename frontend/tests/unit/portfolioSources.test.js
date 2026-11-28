@@ -326,7 +326,7 @@ describe('loadApprovedBudget — pointer, header, snapshot, original, adjustment
 // ── 4. One project ───────────────────────────────────────────────────────────
 
 describe('loadProjectSources — every register, whole, with failures kept', () => {
-  it('reads the thirteen registers, the baseline and the approved budget', async () => {
+  it('reads the fifteen registers, the baseline and the approved budget', async () => {
     const p = readyProject()
     const reader = fakeReader(storeOf(p))
     const { sources, readStates, reads } = await loadProjectSources(reader, SCOPE)
@@ -358,23 +358,24 @@ describe('loadProjectSources — every register, whole, with failures kept', () 
     }
   })
 
-  it('the documented read count is the real one: 15 with no approved budget, 19 at most', async () => {
+  // Phase 2 step 5 added two registers (refunds, receipt applications): +2 everywhere.
+  it('the documented read count is the real one: 17 with no approved budget, 21 at most', async () => {
     const none = readyProject()
     none.pointer = null
     const a = fakeReader(storeOf(none))
-    expect((await loadProjectSources(a, SCOPE)).reads).toBe(15)
+    expect((await loadProjectSources(a, SCOPE)).reads).toBe(17)
     expect(a.calls.length).toBe(PORTFOLIO_READS_PER_PROJECT.min)
 
     const full = withVersion2()
     full.pointer = { ...full.pointer, adjustmentCount: 1, adjustmentNet: 500, lastAdjustmentId: 'adj1' }
     full.budgetAdjustments = [adjustment({ baseApprovalId: 'ba2', baseVersion: 2 })]
     const b = fakeReader(storeOf(full))
-    expect((await loadProjectSources(b, SCOPE)).reads).toBe(19)
+    expect((await loadProjectSources(b, SCOPE)).reads).toBe(21)
     expect(b.calls.length).toBe(PORTFOLIO_READS_PER_PROJECT.max)
 
     // The common case — one approved version, no adjustments.
     const c = fakeReader(storeOf(readyProject()))
-    expect((await loadProjectSources(c, SCOPE)).reads).toBe(17)
+    expect((await loadProjectSources(c, SCOPE)).reads).toBe(19)
   })
 
   it('the client credit notes and client retention releases are read like every other register, and a failed one is kept as failed', async () => {

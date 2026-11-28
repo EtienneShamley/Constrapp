@@ -1,3 +1,7 @@
+import { SupplierFinanceError } from '../../lib/supplierFinanceActions'
+import { useCommercialActivation } from '../../hooks/useCommercialActivation'
+import CommercialMaintenanceNotice from '../../components/CommercialMaintenanceNotice'
+import { supplierLedgerFromRegisters, supplierInvoiceFigures, allocateSupplierCredit } from '../../lib/supplierLedger'
 import { useState, useMemo } from 'react'
 import { useOutletContext, useNavigate } from 'react-router-dom'
 import Card from '../../components/Card'
@@ -19,7 +23,7 @@ import { directInvoiceConflictError, mixedModePoLineConflicts, mixedModeOverlapT
 import {
   SI_STATUS, SI_STATUS_LABELS, SI_BADGE_VARIANTS, SI_SOURCE,
   INVOICEABLE_PO_STATUSES, TAX_CODE, TAX_CODES, TAX_CODE_LABELS,
-  gstForLine, invoiceTotals, suggestDueDate,
+  invoiceTotals, suggestDueDate,
   duplicateInvoiceWarnings, claimHasActiveInvoice, postedInvoicedByPoLine,
   claimReconciliationError,
   isEditableInvoice, isClaimSourced, invoiceLineToForm, buildInvoiceLine,
@@ -36,10 +40,10 @@ import {
 import { useSupplierCreditNotes } from '../../hooks/useSupplierCreditNotes'
 import {
   SCN_STATUS, SCN_STATUS_LABELS, SCN_BADGE_VARIANTS,
-  isCreditableInvoice, targetInvoiceCostCodes, creditNoteTotals, creditNotesForInvoice,
+  targetInvoiceCostCodes, creditNoteTotals, creditNotesForInvoice,
   creditNoteExceptions, creditNoteSummary, buildCreditNoteLineItems,
-  duplicateCreditWarnings, validateCreditNoteDraft, postedCreditedGrossForInvoice, overCreditError,
-  CREDIT_NOTE_NOTICE, CREDIT_EXCEPTION_REMEDY, RETAINED_INVOICE_BLOCK_TEXT,
+  duplicateCreditWarnings, RETAINED_CREDIT_TEXT,
+  CREDIT_NOTE_NOTICE, CREDIT_EXCEPTION_REMEDY,
 } from '../../lib/supplierCreditNotes'
 
 const inputCls = 'w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
@@ -401,6 +405,10 @@ function SupplierInvoiceEditorModal({ onShowInvoice = () => {}, legacyClaimCount
       // as created by this request (it may be a colleague's).
       if (err instanceof SupplierInvoiceWriteError && err.kind === SI_WRITE_ERROR.ALREADY_INVOICED) {
         setLinkedInvoiceId(err.linkedInvoiceId ?? null)
+      }
+      // ADR-93: the backend names the invoice that already holds the claim.
+      if (err instanceof SupplierFinanceError && err.code === 'supplier-finance-already-invoiced') {
+        setLinkedInvoiceId(err.details?.linkedInvoiceId ?? null)
       }
       setError(err?.message || 'Failed to save. Check your connection and try again.')
       setSaving(false)
@@ -888,7 +896,7 @@ function InvoiceDetailModal({ invoice, reconciliation, allocatedPayments, credit
               )}
               {hasRetention && (
                 <p className="m-0 mt-2 text-[11px] text-brand-muted">
-                  {RETAINED_INVOICE_BLOCK_TEXT}
+                  {RETAINED_CREDIT_TEXT}
                 </p>
               )}
             </div>
@@ -940,7 +948,9 @@ function RowActions({ invoice, onTransition, onEdit, onRecordPayment, onRecordCr
         {/* Raising a credit needs the EXISTING credits to apply the cumulative
             over-credit cap, so the action is disabled while that list is
             unknown. */}
-        {isCreditableInvoice(invoice) && (
+        {/* ADR-94 (G1): a retained invoice can be credited too — the credit
+            then takes its retained share. */}
+        {typeof invoice.currency === 'string' && invoice.currency.length > 0 && (
           <Btn sm variant="ghost" disabled={creditActionsDisabled} onClick={() => onRecordCredit(invoice)}>Record credit note</Btn>
         )}
         <Btn sm variant="ghost" onClick={() => onRecordPayment(invoice)}>Record payment</Btn>
@@ -960,7 +970,7 @@ function RowActions({ invoice, onTransition, onEdit, onRecordPayment, onRecordCr
 // sibling credit notes cannot be rules-enforced — Deferred Control 25).
 const blankCreditRow = () => ({ costCodeId: '', description: '', amount: '', taxCode: TAX_CODE.GST })
 
-function CreditNoteModal({ invoice, creditNote, creditNotes, currencyCode, onClose, onSave }) {
+function CreditNoteModal({ invoice, creditNote, creditNotes, releases = [], currencyCode, onClose, onSave }) {
   const money = (n) => formatCurrency(n, currencyCode, { precise: true })
   const isEdit = !!creditNote
 
@@ -987,22 +997,32 @@ function CreditNoteModal({ invoice, creditNote, creditNotes, currencyCode, onClo
   const addRow = () => setRows(rs => [...rs, blankCreditRow()])
   const removeRow = (idx) => setRows(rs => (rs.length === 1 ? [blankCreditRow()] : rs.filter((_, i) => i !== idx)))
 
-  // Canonical lines: ex-GST amount + per-line GST, exactly like the invoice
-  // lines they reverse. Empty rows are dropped.
-  const builtLines = buildCreditNoteLineItems(
-    rows.map(r => ({
-      costCodeId:  r.costCodeId,
-      description: r.description,
-      amount:      Number(r.amount) || 0,
-      taxCode:     r.taxCode,
-      gstAmount:   gstForLine(Number(r.amount) || 0, r.taxCode),
-    })),
-    costCodes,
-  )
+  // ADR-94 — the preview IS the backend's allocation: each line's GST is a
+  // share of the invoice's STORED GST on that cost code and tax code, and on a
+  // retained invoice the credit takes its retained share. The ledger is built
+  // from the registers this page holds (this draft excluded); the backend
+  // re-derives everything against the authoritative ledger on save and again
+  // on posting.
+  const others = (creditNotes ?? []).filter(cn => cn.id !== creditNote?.id)
+  const ledgerEntry = supplierLedgerFromRegisters(invoice, { creditNotes: others, releases })
+  const figures = supplierInvoiceFigures(invoice)
+  const rowsForAllocation = rows
+    .filter(r => r.costCodeId && Number(r.amount) > 0)
+    .map(r => ({ costCodeId: r.costCodeId, taxCode: r.taxCode, amount: Math.round(Number(r.amount) * 100) / 100 }))
+  const allocation = figures.problem
+    ? { error: figures.problem }
+    : (ledgerEntry.state === 'inconsistent'
+        ? { error: `This invoice's settlement history is inconsistent: ${ledgerEntry.problem}` }
+        : (rowsForAllocation.length > 0 ? allocateSupplierCredit(figures, ledgerEntry.ledger, rowsForAllocation) : { error: null }))
+  const descriptions = new Map(rows.map(r => [`${r.costCodeId}|${r.taxCode}`, r.description]))
+  const builtLines = allocation.lines
+    ? allocation.lines.map(l => ({
+        costCodeId: l.costCodeId, costCodeName: l.costCodeName, description: String(descriptions.get(`${l.costCodeId}|${l.taxCode}`) || '').trim(),
+        amount: l.amountCents / 100, taxCode: l.taxCode, gstAmount: l.gstCents / 100,
+      }))
+    : buildCreditNoteLineItems(rows.map(r => ({ costCodeId: r.costCodeId, description: r.description, amount: Number(r.amount) || 0, taxCode: r.taxCode, gstAmount: 0 })), costCodes)
   const totals = creditNoteTotals(builtLines)
-
-  const alreadyCredited = postedCreditedGrossForInvoice(creditNotes, invoice.id, { excludeCreditNoteId: creditNote?.id ?? null })
-  const remainingCreditable = roundMoney((invoice.payableTotal || 0) - alreadyCredited)
+  const retainedPart = allocation.lines ? (allocation.retentionCents + allocation.retentionGstCents) / 100 : 0
 
   const dupWarnings = duplicateCreditWarnings(creditNotes, {
     id: creditNote?.id ?? null,
@@ -1011,28 +1031,16 @@ function CreditNoteModal({ invoice, creditNote, creditNotes, currencyCode, onClo
     supplierCreditReference,
   })
 
-  // One validation path — the same checks the hook re-runs on save. The
-  // over-credit branch is a HARD BLOCK, not a warn-and-acknowledge.
-  const validationError = validateCreditNoteDraft(
-    { supplierInvoiceId: invoice.id, creditDate, reason, lineItems: builtLines },
-    { invoice, creditNotes, excludeCreditNoteId: creditNote?.id ?? null },
-  )
+  const overCredit = allocation.error && rowsForAllocation.length > 0 ? allocation.error : null
+  const fieldError = !creditDate ? 'Enter the credit note date.'
+    : !reason.trim() ? 'Enter the reason this credit was issued.'
+      : rows.some(r => (r.costCodeId || Number(r.amount) > 0) && !String(r.description || '').trim()) ? 'Every credit line needs a description.'
+        : rowsForAllocation.length === 0 ? 'Add at least one line with an amount.' : null
+  const validationError = overCredit ?? fieldError
   const valid = !validationError
-
-  // Over-credit is detected through the DOMAIN function, so the threshold has
-  // exactly one definition — this only decides how it is worded on screen.
-  // It is surfaced separately from the generic validation line because it must
-  // appear as soon as the AMOUNTS are wrong, without waiting for the reason
-  // field: otherwise the Create button silently disables with no explanation.
-  const overCredit = overCreditError({
-    invoice,
-    proposedGross: totals.grossTotal,
-    creditNotes,
-    excludeCreditNoteId: creditNote?.id ?? null,
-  })
-  // The generic line still covers every other error, but never repeats the
-  // over-credit case in different words.
-  const showValidation = validationError && !overCredit && builtLines.length > 0 && reason.trim()
+  const showValidation = fieldError && builtLines.length > 0 && reason.trim()
+  const alreadyCredited = (ledgerEntry.ledger.creditedSubtotalCents + ledgerEntry.ledger.creditedGstCents) / 100
+  const remainingCreditable = figures.problem ? 0 : (figures.S + figures.G - ledgerEntry.ledger.creditedSubtotalCents - ledgerEntry.ledger.creditedGstCents) / 100
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -1177,14 +1185,12 @@ function CreditNoteModal({ invoice, creditNote, creditNotes, currencyCode, onClo
               button is disabled is next to both the figure that caused it and
               the control it blocks. */}
           {overCredit && (
-            <p className="m-0 text-[12px] text-brand-red font-semibold">
-              Credit exceeds the remaining creditable amount of {money(Math.max(remainingCreditable, 0))}.
-              {alreadyCredited > 0 && (
-                <span className="font-normal">
-                  {' '}({invoice.invoiceNumber} has a payable total of {money(invoice.payableTotal || 0)}, of which{' '}
-                  {money(alreadyCredited)} is already credited.)
-                </span>
-              )}
+            <p className="m-0 text-[12px] text-brand-red font-semibold">{overCredit}</p>
+          )}
+          {retainedPart > 0 && (
+            <p className="m-0 text-[12px] text-brand-muted">
+              {money(retainedPart)} of this credit releases retention still held on {invoice.invoiceNumber}; the rest
+              reduces what is payable.
             </p>
           )}
 
@@ -1265,6 +1271,13 @@ export default function ProjectInvoices() {
   const money = (n) => formatCurrency(n, currencyCode)
 
   const { supplierInvoices, supplierInvoicesLoading, createSupplierInvoice, updateSupplierInvoice, transitionStatus } = useSupplierInvoices(projectId)
+  // Phase 2 activation (lib/commercialActivation.js): a company not yet
+  // switched over sees supplier invoices and supplier credit notes READ-ONLY —
+  // create, edit, approve, post, cancel, credit notes and the record-payment
+  // link-through are withheld. The detail view stays. UX only; the server and
+  // the Rules refuse regardless.
+  const activation = useCommercialActivation()
+  const writable = activation.writable
   const { supplierPayments } = useSupplierPayments(projectId)
   // Retention releases raise an invoice's payable basis (ADR-30). A FAILED read
   // must never be treated as "nothing released" — that would understate every
@@ -1387,7 +1400,8 @@ export default function ProjectInvoices() {
     } catch (err) {
       // The cancel transaction names its reason (stale copy, posted, permission,
       // offline — ADR-68); anything else keeps the generic text.
-      setActionError(err instanceof SupplierInvoiceWriteError && err.message
+      // ADR-93: a backend refusal (segregation, verification, stale) carries its reason.
+      setActionError((err instanceof SupplierInvoiceWriteError || err instanceof SupplierFinanceError) && err.message
         ? err.message
         : 'Failed to update status. Check your connection and try again.')
     }
@@ -1401,14 +1415,15 @@ export default function ProjectInvoices() {
   // Firestore rules enforce draft-only editing as well, so a stale write is
   // rejected at the trust boundary too; both client guards remain because they
   // produce a legible message instead of "Missing or insufficient permissions".
-  // Two concurrent draft editors remain last-write-wins — rules have no
-  // optimistic-concurrency primitive.
+  // ADR-93: the save carries the revision the editor was OPENED on, so a
+  // second editor saving over a first is refused as stale, never
+  // last-write-wins (the D3 #41 lesson).
   async function handleUpdate(invoiceId, data) {
     const live = supplierInvoices.find(inv => inv.id === invoiceId)
     if (!live || !isEditableInvoice(live)) {
       throw new Error('This supplier invoice is no longer Draft. Close the editor and review the latest version.')
     }
-    await updateSupplierInvoice(live, data)
+    await updateSupplierInvoice({ ...live, revision: editing.revision }, data)
   }
 
   // The open editor tracks the LIVE document, so a status change elsewhere
@@ -1452,12 +1467,15 @@ export default function ProjectInvoices() {
         <div className="flex items-center gap-2">
           {noPOs && <Btn variant="ghost" sm onClick={goToPOs}>Go to Purchase Orders</Btn>}
           <Btn variant="ghost" sm onClick={goToPayments}>Supplier Payments</Btn>
-          <Btn sm onClick={() => setEditing('new')} disabled={purchaseOrdersLoading || !canCreate}>
-            + New Supplier Invoice
-          </Btn>
+          {writable && (
+            <Btn sm onClick={() => setEditing('new')} disabled={purchaseOrdersLoading || !canCreate}>
+              + New Supplier Invoice
+            </Btn>
+          )}
         </div>
       </div>
 
+      <CommercialMaintenanceNotice activation={activation} />
       {actionError && <p className="text-[12px] text-brand-red mb-3">{actionError}</p>}
 
       {mixedModeConflicts.length > 0 && (
@@ -1625,9 +1643,9 @@ export default function ProjectInvoices() {
             </p>
             {noPOs ? (
               <Btn variant="ghost" onClick={goToPOs}>Go to Purchase Orders</Btn>
-            ) : (
+            ) : writable ? (
               <Btn onClick={() => setEditing('new')} disabled={!canCreate}>+ Create your first supplier invoice</Btn>
-            )}
+            ) : null}
           </div>
         ) : filtered.length === 0 ? (
           <div className="px-5 py-12 text-center text-[13px] text-brand-muted">No invoices match your filters.</div>
@@ -1718,14 +1736,14 @@ export default function ProjectInvoices() {
                         <Badge label={SI_STATUS_LABELS[inv.status] ?? inv.status} variant={SI_BADGE_VARIANTS[inv.status]} sm />
                       </td>
                       <td className="px-3.5 py-3">
-                        <RowActions
+                        {writable && <RowActions
                           invoice={inv}
                           onTransition={handleTransition}
                           onEdit={setEditing}
                           onRecordPayment={handleRecordPayment}
                           creditActionsDisabled={creditStateUnknown}
                           onRecordCredit={(invoice) => setCreditEditor({ invoice, creditNote: null })}
-                        />
+                        />}
                       </td>
                     </tr>
                   )
@@ -1778,7 +1796,7 @@ export default function ProjectInvoices() {
                         <Badge label={SCN_STATUS_LABELS[cn.status] ?? cn.status} variant={SCN_BADGE_VARIANTS[cn.status]} sm />
                       </td>
                       <td className="px-3.5 py-2.5">
-                        <div className="flex gap-1.5 justify-end">
+                        {writable && <div className="flex gap-1.5 justify-end">
                           {cn.status === SCN_STATUS.DRAFT && target && (
                             <Btn sm variant="ghost" onClick={() => setCreditEditor({ invoice: target, creditNote: cn })}>Edit</Btn>
                           )}
@@ -1788,7 +1806,7 @@ export default function ProjectInvoices() {
                           {(cn.status === SCN_STATUS.DRAFT || cn.status === SCN_STATUS.POSTED) && (
                             <Btn sm variant="ghost" onClick={() => setCreditVoiding(cn)}>Void</Btn>
                           )}
-                        </div>
+                        </div>}
                       </td>
                     </tr>
                   )
@@ -1797,12 +1815,12 @@ export default function ProjectInvoices() {
             </table>
           </div>
           <p className="m-0 px-5 py-3 text-[11px] text-brand-muted border-t border-brand-border">
-            {CREDIT_NOTE_NOTICE} {RETAINED_INVOICE_BLOCK_TEXT}
+            {CREDIT_NOTE_NOTICE} {RETAINED_CREDIT_TEXT}
           </p>
         </Card>
       )}
 
-      {editing && (
+      {writable && editing && (
         <SupplierInvoiceEditorModal
           key={editing === 'new' ? 'new' : editing.id}
           invoice={liveEditing}
@@ -1833,12 +1851,13 @@ export default function ProjectInvoices() {
         />
       )}
 
-      {creditEditor && (
+      {writable && creditEditor && (
         <CreditNoteModal
           key={creditEditor.creditNote?.id ?? `new_${creditEditor.invoice.id}`}
           invoice={creditEditor.invoice}
           creditNote={creditEditor.creditNote}
           creditNotes={supplierCreditNotes}
+          releases={retentionReleases}
           currencyCode={currencyCode}
           onClose={() => setCreditEditor(null)}
           onSave={creditEditor.creditNote
@@ -1847,7 +1866,7 @@ export default function ProjectInvoices() {
         />
       )}
 
-      {creditVoiding && (
+      {writable && creditVoiding && (
         <VoidCreditNoteModal
           creditNote={creditVoiding}
           onClose={() => setCreditVoiding(null)}

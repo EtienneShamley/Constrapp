@@ -285,15 +285,24 @@ describe('the M2-A2 Stage-1 ruleset is derived, and differs in the two pairing l
     expect([lines[0], ...lines.slice(7)].join('\n')).toBe(finalSrc)
   })
 
-  it('Stage 1 keeps the FOUR earlier strict lines strict — it is not the legacy transitional file', () => {
-    expect(stage1).toContain('ADR-63 FINAL')
+  // ADR-90 retired the fourth earlier marker ('ADR-63 FINAL' — the variations
+  // approve scope pair): approval is a trusted-backend operation and no ruleset
+  // has a client approve branch, so there is no such line to keep strict. The
+  // three that remain (claims create, activities revision, claims approve) are.
+  it('Stage 1 keeps the earlier strict line strict — it is not the legacy transitional file (ADR-90 retired the variations scope-pair line, ADR-93 the two progressClaims lines, from every ruleset)', () => {
+    // ADR-93: the two claim lines ('ADR-63 / ADR-68 FINAL' create keys and
+    // 'ADR-68 FINAL' approve link keys) no longer exist — claims are created
+    // and approved by the backend — so only the ADR-65 line remains to check.
+    expect(stage1).not.toContain('ADR-63 / ADR-68 TRANSITIONAL')
+    expect(stage1).not.toContain('ADR-63 FINAL: BOTH pairs are REQUIRED')
+    expect(stage1).not.toContain('ADR-63 TRANSITIONAL')
     expect(stage1).toContain('ADR-65 FINAL')
-    expect(stage1).toContain('ADR-68 FINAL')
+    expect(stage1).not.toContain('ADR-68 TRANSITIONAL')
     expect(stage1).not.toContain('ADR-65 TRANSITIONAL')
     expect(read('firebase.m2a2-transitional.json')).toContain('"rules": "firestore.m2a2-transitional.rules"')
   })
 
-  it('the legacy transitional file keeps the M2-A2 pairing strict (it relaxes only its own four lines)', () => {
+  it('the legacy transitional file keeps the M2-A2 pairing strict (it relaxes only its own three lines — four until ADR-90)', () => {
     const legacy = readFileSync(TRANSITIONAL_RULES_PATH, 'utf8')
     expect(legacy).toBe(buildTransitionalRules(finalSrc))
     for (const pair of M2A2_LINE_PAIRS) expect(legacy).toContain(pair.final)

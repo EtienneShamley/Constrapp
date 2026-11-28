@@ -8,7 +8,7 @@ import {
   assertFails,
 } from '@firebase/rules-unit-testing'
 import {
-  doc, getDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, Timestamp,
+  doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, serverTimestamp, Timestamp,
 } from 'firebase/firestore'
 
 // ── Tender Package Security Rules — emulator tests ───────────────────────────
@@ -24,7 +24,7 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RULES_PATH = resolve(HERE, '../../firestore.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A = 'companyA'
 const COMPANY_B = 'companyB'
 const PROJECT_A = 'projectA'
@@ -86,12 +86,16 @@ function draftPayload(user, overrides = {}) {
     createdBy: user.uid,
     updatedAt: serverTimestamp(),
     updatedBy: user.uid,
+    // D4 material-edit provenance (ADR-96, D3 #46) — required at create.
+    lastMaterialEditBy: user.uid,
+    lastMaterialEditAt: serverTimestamp(),
     ...overrides,
   }
 }
 
 // Seeds a package directly, bypassing rules — the arrange step for update tests.
-async function seedPackage(id, status, user = USERS.admin, extra = {}) {
+// `legacy: true` drops the D4 provenance stamps (a package written before D3 #46).
+async function seedPackage(id, status, user = USERS.admin, extra = {}, { legacy = false } = {}) {
   await testEnv.withSecurityRulesDisabled(async (c) => {
     const db = c.firestore()
     const base = draftPayload(user)
@@ -110,13 +114,16 @@ async function seedPackage(id, status, user = USERS.admin, extra = {}) {
         cancelReason: 'Scope changed',
       } :
       { status: 'draft' }
-    await setDoc(doc(db, packagesPath(), id), {
+    const data = {
       ...base,
       createdAt: Timestamp.now(),
       updatedAt: Timestamp.now(),
+      lastMaterialEditAt: Timestamp.now(),
       ...lifecycle,
       ...extra,
-    })
+    }
+    if (legacy) { delete data.lastMaterialEditBy; delete data.lastMaterialEditAt }
+    await setDoc(doc(db, packagesPath(), id), data)
   })
 }
 
@@ -167,10 +174,17 @@ const cancelWrite = (user, reason = 'Scope changed', extra = {}) => ({
   updatedAt: serverTimestamp(), updatedBy: user.uid,
   ...extra,
 })
+// A COSMETIC edit shape (no D4 stamp) — what the hook writes when only notes /
+// closingDate change, and the issued-state carve-out.
 const draftEdit = (user, extra = {}) => ({
   updatedAt: serverTimestamp(), updatedBy: user.uid,
   ...extra,
 })
+// D4: a MATERIAL draft edit (name / description / scope / costCodes changed)
+// carries the caller as `lastMaterialEditBy` at server time (lib/purchaseOrders.js
+// → materialEditStamp with TENDER_MATERIAL_KEYS).
+const materialStamp = (user) => ({ lastMaterialEditBy: user.uid, lastMaterialEditAt: serverTimestamp() })
+const materialEdit = (user, extra = {}) => ({ ...draftEdit(user), ...materialStamp(user), ...extra })
 
 // Client-supplied clock values that must NEVER satisfy `== request.time` —
 // deliberately skewed, never Timestamp.now() (see docs/TESTING.md §0 note).
@@ -238,7 +252,8 @@ describe('MUST ALLOW', () => {
 
   it('2. draft edit of commercial content (name, scope, costCodes, closingDate, notes)', async () => {
     await seedPackage('p1', 'draft')
-    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.qs), 'p1'), draftEdit(USERS.qs, {
+    // D4: a material edit — it now carries the editor's provenance stamp.
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.qs), 'p1'), materialEdit(USERS.qs, {
       name: 'Steel & Metalwork Package',
       description: 'widened scope',
       scope: 'Now including secondary steel.',
@@ -360,8 +375,9 @@ describe('MUST REJECT', () => {
   it('5. draft edit breaking the shape (blank name, zero cost codes, bad date)', async () => {
     await seedPackage('p1', 'draft')
     const db = ctx(USERS.admin)
-    await assertFails(updateDoc(pkgRef(db, 'p1'), draftEdit(USERS.admin, { name: ' ' })))
-    await assertFails(updateDoc(pkgRef(db, 'p1'), draftEdit(USERS.admin, { costCodes: [] })))
+    // D4: name / costCodes are material — sent WITH the stamp so the refusal is the shape's.
+    await assertFails(updateDoc(pkgRef(db, 'p1'), materialEdit(USERS.admin, { name: ' ' })))
+    await assertFails(updateDoc(pkgRef(db, 'p1'), materialEdit(USERS.admin, { costCodes: [] })))
     await assertFails(updateDoc(pkgRef(db, 'p1'), draftEdit(USERS.admin, { closingDate: 'never' })))
   })
 
@@ -571,7 +587,7 @@ describe('serverTimestamp satisfies request.time', () => {
     const db = ctx(USERS.qs)
     const ref = pkgRef(db, 'flow')
     await assertSucceeds(setDoc(ref, draftPayload(USERS.qs)))
-    await assertSucceeds(updateDoc(ref, draftEdit(USERS.qs, { name: 'Steel — Rev A' })))
+    await assertSucceeds(updateDoc(ref, materialEdit(USERS.qs, { name: 'Steel — Rev A' })))   // D4: material → stamped
     await assertSucceeds(updateDoc(ref, issueWrite(USERS.qs)))
     await seedBid('bid_flow', 'flow')
     await assertSucceeds(updateDoc(ref, awardWrite(USERS.qs, 'bid_flow')))
@@ -590,5 +606,271 @@ describe('serverTimestamp satisfies request.time', () => {
     // Awarded is terminal.
     await assertFails(updateDoc(ref, draftEdit(USERS.qs, { notes: 'too late' })))
     await assertFails(updateDoc(ref, cancelWrite(USERS.qs)))
+  })
+})
+
+// ── ADR-96 / D4 — approval segregation on AWARD ─────────────────────────────
+//
+// D4: with the company's segregation policy enabled the awarder may be neither
+// the package's creator nor its LAST MATERIAL draft editor (`lastMaterialEditBy`,
+// D3 #46). Material: name, description, scope, costCodes. Cosmetic: notes,
+// closingDate. A package without recorded provenance fails CLOSED in strict mode.
+
+describe('ADR-96 / D4 — approval segregation: a package\'s preparer cannot award it when the policy is enabled', () => {
+  // A fourth financial member so creator, material editor, cosmetic editor and
+  // an independent awarder can all differ.
+  const PM2 = { uid: 'u_pm2', role: 'project_manager', companyId: COMPANY_A }
+  const seedPolicy = (segregationEnabled, companyId = COMPANY_A) => testEnv.withSecurityRulesDisabled(async (c) => {
+    await setDoc(doc(c.firestore(), `companies/${companyId}/approvalPolicy/current`), { segregationEnabled, updatedAt: Timestamp.now() })
+  })
+  const readPkg = async (id) => {
+    let data = null
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      const s = await getDoc(doc(c.firestore(), packagesPath(), id))
+      data = s.exists() ? s.data() : null
+    })
+    return data
+  }
+
+  // Created (and issued) by the QS, last MATERIALLY edited (and last updated) by
+  // the PM; the admin and PM2 are independent. D4 changed this fixture: before
+  // D3 #46 the Rules compared `updatedBy`, so `updatedBy: pm` alone made the PM
+  // a preparer; now only `lastMaterialEditBy` does, so the seed states it.
+  beforeEach(async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(doc(c.firestore(), 'users', PM2.uid), { role: PM2.role, companyId: PM2.companyId, name: PM2.uid })
+    })
+    await seedPackage('p1', 'issued', USERS.qs, { updatedBy: USERS.pm.uid, lastMaterialEditBy: USERS.pm.uid })
+    await seedBid('bid1', 'p1')
+  })
+
+  // ── policy disabled / absent / other company — unchanged ──────────────────
+
+  it('policy ABSENT: the creator awards their own package exactly as before', async () => {
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.qs), 'p1'), awardWrite(USERS.qs, 'bid1')))
+    expect(await readPkg('p1')).toMatchObject({ status: 'awarded', awardedBy: USERS.qs.uid, awardedBidId: 'bid1' })
+  })
+  it('policy ABSENT: the last (material) editor awards as before', async () => {
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.pm), 'p1'), awardWrite(USERS.pm, 'bid1')))
+  })
+  it('policy present with segregationEnabled: false — the creator awards', async () => {
+    await seedPolicy(false)
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.qs), 'p1'), awardWrite(USERS.qs, 'bid1')))
+  })
+  it('policy ABSENT: a legacy package with NO provenance stamp is awarded by its creator as before', async () => {
+    await seedPackage('lg0', 'issued', USERS.qs, {}, { legacy: true })
+    await seedBid('bid_lg0', 'lg0')
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.qs), 'lg0'), awardWrite(USERS.qs, 'bid_lg0')))
+  })
+  it('another company\'s ENABLED policy does not affect Company A', async () => {
+    await seedPolicy(true, COMPANY_B)
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.qs), 'p1'), awardWrite(USERS.qs, 'bid1')))
+  })
+
+  // ── strict mode — who may award ────────────────────────────────────────────
+
+  it('policy ENABLED: the creator and the last material editor are refused; the package is unchanged', async () => {
+    await seedPolicy(true)
+    const before = await readPkg('p1')
+    await assertFails(updateDoc(pkgRef(ctx(USERS.qs), 'p1'), awardWrite(USERS.qs, 'bid1')))
+    await assertFails(updateDoc(pkgRef(ctx(USERS.pm), 'p1'), awardWrite(USERS.pm, 'bid1')))
+    expect(await readPkg('p1')).toEqual(before)
+    expect(before).toMatchObject({ status: 'issued', awardedBy: null, awardedBidId: null })
+  })
+  it('policy ENABLED: an independent financial member awards', async () => {
+    await seedPolicy(true)
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.admin), 'p1'), awardWrite(USERS.admin, 'bid1')))
+    expect(await readPkg('p1')).toMatchObject({ status: 'awarded', awardedBy: USERS.admin.uid })
+  })
+  it('policy ENABLED: the company administrator has NO bypass — an admin creator and an admin material editor are refused', async () => {
+    await seedPolicy(true)
+    await seedPackage('adm1', 'issued', USERS.admin)
+    await seedPackage('adm2', 'issued', USERS.qs, { lastMaterialEditBy: USERS.admin.uid })
+    await seedBid('bid_adm1', 'adm1')
+    await seedBid('bid_adm2', 'adm2')
+    await assertFails(updateDoc(pkgRef(ctx(USERS.admin), 'adm1'), awardWrite(USERS.admin, 'bid_adm1')))
+    await assertFails(updateDoc(pkgRef(ctx(USERS.admin), 'adm2'), awardWrite(USERS.admin, 'bid_adm2')))
+  })
+
+  it('ARCHITECT CASE — A materially edits, B makes a cosmetic edit, A tries to award → REFUSED; B (not the creator) may award', async () => {
+    await seedPolicy(true)
+    // Creator: admin (through the rules).
+    await assertSucceeds(setDoc(pkgRef(ctx(USERS.admin), 'ac1'), draftPayload(USERS.admin)))
+    // A = QS: a material edit (scope) — the stamp moves to A.
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.qs), 'ac1'), materialEdit(USERS.qs, { scope: 'Steel incl. secondary members' })))
+    expect(await readPkg('ac1')).toMatchObject({ lastMaterialEditBy: USERS.qs.uid })
+    // B = PM: a cosmetic edit (notes + closing date) — B is the LAST editor, A stays the material editor.
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.pm), 'ac1'), draftEdit(USERS.pm, { notes: 'tidied', closingDate: '2026-09-15' })))
+    expect(await readPkg('ac1')).toMatchObject({ lastMaterialEditBy: USERS.qs.uid, updatedBy: USERS.pm.uid })
+    // Issuing is not an approval; anyone may issue.
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.pm), 'ac1'), issueWrite(USERS.pm)))
+    await seedBid('bid_ac1', 'ac1')
+    const issued = await readPkg('ac1')
+    // A (hidden behind B's cosmetic edit) is refused; so is the creator.
+    await assertFails(updateDoc(pkgRef(ctx(USERS.qs), 'ac1'), awardWrite(USERS.qs, 'bid_ac1')))
+    await assertFails(updateDoc(pkgRef(ctx(USERS.admin), 'ac1'), awardWrite(USERS.admin, 'bid_ac1')))
+    expect(await readPkg('ac1')).toEqual(issued)
+    // B made only a cosmetic edit and is not the creator — B may award.
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.pm), 'ac1'), awardWrite(USERS.pm, 'bid_ac1')))
+    expect(await readPkg('ac1')).toMatchObject({ status: 'awarded', awardedBy: USERS.pm.uid, lastMaterialEditBy: USERS.qs.uid })
+  })
+
+  it('the creator stays excluded after someone else\'s material edit (both preparers are checked)', async () => {
+    await seedPolicy(true)
+    await seedPackage('cr1', 'draft', USERS.qs)
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.pm), 'cr1'), materialEdit(USERS.pm, { name: 'Renamed' })))
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.pm), 'cr1'), issueWrite(USERS.pm)))
+    await seedBid('bid_cr1', 'cr1')
+    await assertFails(updateDoc(pkgRef(ctx(USERS.qs), 'cr1'), awardWrite(USERS.qs, 'bid_cr1')))
+    await assertFails(updateDoc(pkgRef(ctx(USERS.pm), 'cr1'), awardWrite(USERS.pm, 'bid_cr1')))
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.admin), 'cr1'), awardWrite(USERS.admin, 'bid_cr1')))
+  })
+
+  it('each of name / description / scope / costCodes is material; a MIXED material + cosmetic edit stamps the editor at server time', async () => {
+    for (const [i, patch] of [
+      { name: 'New name' },
+      { description: 'New description' },
+      { scope: 'New scope' },
+      { costCodes: [{ costCodeId: 'cc3', costCodeName: '03-100 — Secondary Steel' }] },
+    ].entries()) {
+      await seedPackage(`mk${i}`, 'draft', USERS.qs)
+      await assertFails(updateDoc(pkgRef(ctx(USERS.pm), `mk${i}`), draftEdit(USERS.pm, patch)))         // without the stamp
+      await assertSucceeds(updateDoc(pkgRef(ctx(USERS.pm), `mk${i}`), materialEdit(USERS.pm, patch)))
+      expect((await readPkg(`mk${i}`)).lastMaterialEditBy).toBe(USERS.pm.uid)
+    }
+    await seedPackage('mx1', 'draft', USERS.qs)
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.pm), 'mx1'), materialEdit(USERS.pm, { scope: 'Wider', notes: 'and a note', closingDate: '2026-10-01' })))
+    const pkg = await readPkg('mx1')
+    expect(pkg).toMatchObject({ lastMaterialEditBy: USERS.pm.uid, notes: 'and a note', closingDate: '2026-10-01' })
+    expect(pkg.lastMaterialEditAt.isEqual(pkg.updatedAt)).toBe(true)
+  })
+
+  it('policy toggled between edit and award: the policy at AWARD time decides', async () => {
+    await seedPackage('tg1', 'draft', USERS.admin)
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.qs), 'tg1'), materialEdit(USERS.qs, { scope: 'Edited while disabled' })))
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.qs), 'tg1'), issueWrite(USERS.qs)))
+    await seedBid('bid_tg1', 'tg1')
+    await seedPolicy(true)
+    await assertFails(updateDoc(pkgRef(ctx(USERS.qs), 'tg1'), awardWrite(USERS.qs, 'bid_tg1')))
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.pm), 'tg1'), awardWrite(USERS.pm, 'bid_tg1')))
+    // Edited while enabled, awarded after disabling → the material editor awards.
+    await seedPackage('tg2', 'draft', USERS.admin)
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.qs), 'tg2'), materialEdit(USERS.qs, { scope: 'Edited while enabled' })))
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.qs), 'tg2'), issueWrite(USERS.qs)))
+    await seedBid('bid_tg2', 'tg2')
+    await seedPolicy(false)
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.qs), 'tg2'), awardWrite(USERS.qs, 'bid_tg2')))
+  })
+
+  // ── stamp manipulation ─────────────────────────────────────────────────────
+
+  it('create: the stamp must be the caller at server time — another uid, null, a client clock or an omitted stamp is refused', async () => {
+    const db = ctx(USERS.qs)
+    await assertFails(setDoc(pkgRef(db, 'sm1'), draftPayload(USERS.qs, { lastMaterialEditBy: USERS.admin.uid })))
+    await assertFails(setDoc(pkgRef(db, 'sm2'), draftPayload(USERS.qs, { lastMaterialEditBy: null })))
+    await assertFails(setDoc(pkgRef(db, 'sm3'), draftPayload(USERS.qs, { lastMaterialEditAt: null })))
+    for (const [i, clock] of CLIENT_CLOCKS.entries()) {
+      await assertFails(setDoc(pkgRef(db, `sm4-${i}`), draftPayload(USERS.qs, { lastMaterialEditAt: clock() })))
+    }
+    for (const key of ['lastMaterialEditBy', 'lastMaterialEditAt']) {
+      const p = draftPayload(USERS.qs)
+      delete p[key]
+      await assertFails(setDoc(pkgRef(db, `sm5-${key}`), p))
+    }
+    await assertSucceeds(setDoc(pkgRef(db, 'sm6'), draftPayload(USERS.qs)))
+  })
+
+  it('material draft edit: a stamp naming someone else, a client clock, a deleted, an omitted or a STALE (stored) stamp is refused', async () => {
+    await seedPackage('me1', 'draft', USERS.qs)
+    const stored = await readPkg('me1')
+    const db = ctx(USERS.pm)
+    const patch = { scope: 'Materially changed' }
+    await assertFails(updateDoc(pkgRef(db, 'me1'), materialEdit(USERS.pm, { ...patch, lastMaterialEditBy: USERS.admin.uid })))
+    await assertFails(updateDoc(pkgRef(db, 'me1'), materialEdit(USERS.pm, { ...patch, lastMaterialEditBy: USERS.qs.uid })))
+    for (const clock of CLIENT_CLOCKS) {
+      await assertFails(updateDoc(pkgRef(db, 'me1'), materialEdit(USERS.pm, { ...patch, lastMaterialEditAt: clock() })))
+    }
+    await assertFails(updateDoc(pkgRef(db, 'me1'), materialEdit(USERS.pm, { ...patch, lastMaterialEditBy: deleteField(), lastMaterialEditAt: deleteField() })))
+    await assertFails(updateDoc(pkgRef(db, 'me1'), draftEdit(USERS.pm, patch)))     // omitted
+    await assertFails(updateDoc(pkgRef(db, 'me1'), draftEdit(USERS.pm, { ...patch, lastMaterialEditBy: stored.lastMaterialEditBy, lastMaterialEditAt: stored.lastMaterialEditAt })))
+    await assertFails(updateDoc(pkgRef(db, 'me1'), materialEdit(USERS.pm, { ...patch, lastMaterialEditAt: stored.lastMaterialEditAt })))
+    expect(await readPkg('me1')).toEqual(stored)
+  })
+
+  it('cosmetic draft edit (notes / closingDate): moving the stamp to anyone, refreshing its time or deleting it is refused', async () => {
+    await seedPackage('ce1', 'draft', USERS.qs)
+    const stored = await readPkg('ce1')
+    const db = ctx(USERS.pm)
+    for (const patch of [{ notes: 'cosmetic' }, { closingDate: '2026-12-24' }, {}]) {
+      await assertFails(updateDoc(pkgRef(db, 'ce1'), materialEdit(USERS.pm, patch)))
+      await assertFails(updateDoc(pkgRef(db, 'ce1'), draftEdit(USERS.pm, { ...patch, lastMaterialEditBy: USERS.admin.uid })))
+      await assertFails(updateDoc(pkgRef(db, 'ce1'), draftEdit(USERS.pm, { ...patch, lastMaterialEditAt: serverTimestamp() })))
+      await assertFails(updateDoc(pkgRef(db, 'ce1'), draftEdit(USERS.pm, { ...patch, lastMaterialEditBy: deleteField() })))
+    }
+    // Re-writing a material key with its stored value is not a material change either.
+    await assertFails(updateDoc(pkgRef(db, 'ce1'), materialEdit(USERS.pm, { name: stored.name, costCodes: stored.costCodes })))
+    expect(await readPkg('ce1')).toEqual(stored)
+    await assertSucceeds(updateDoc(pkgRef(db, 'ce1'), draftEdit(USERS.pm, { notes: 'cosmetic', closingDate: '2026-12-24' })))
+    expect(await readPkg('ce1')).toMatchObject({ lastMaterialEditBy: USERS.qs.uid, updatedBy: USERS.pm.uid })
+  })
+
+  it('issue, the ISSUED edit carve-out, award and cancel cannot write or move the stamp', async () => {
+    await seedPolicy(true)
+    await seedPackage('tr1', 'draft', USERS.qs)
+    await assertFails(updateDoc(pkgRef(ctx(USERS.admin), 'tr1'), issueWrite(USERS.admin, materialStamp(USERS.admin))))
+    await assertFails(updateDoc(pkgRef(ctx(USERS.admin), 'tr1'), cancelWrite(USERS.admin, 'Scope changed', materialStamp(USERS.admin))))
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.admin), 'tr1'), issueWrite(USERS.admin)))
+    // Issued: the closingDate / notes carve-out admits no stamp key.
+    await assertFails(updateDoc(pkgRef(ctx(USERS.admin), 'tr1'), draftEdit(USERS.admin, { notes: 'extended', ...materialStamp(USERS.admin) })))
+    await assertFails(updateDoc(pkgRef(ctx(USERS.admin), 'tr1'), draftEdit(USERS.admin, { closingDate: '2026-11-30', lastMaterialEditBy: USERS.pm.uid })))
+    await assertFails(updateDoc(pkgRef(ctx(USERS.admin), 'tr1'), draftEdit(USERS.admin, { notes: 'x', lastMaterialEditBy: deleteField() })))
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.admin), 'tr1'), draftEdit(USERS.admin, { notes: 'extended', closingDate: '2026-11-30' })))
+    await seedBid('bid_tr1', 'tr1')
+    // Award cannot launder the provenance — neither the creator renaming it, nor an independent awarder.
+    await assertFails(updateDoc(pkgRef(ctx(USERS.qs), 'tr1'), awardWrite(USERS.qs, 'bid_tr1', 'Apex Steel Pty Ltd', { lastMaterialEditBy: USERS.pm.uid })))
+    await assertFails(updateDoc(pkgRef(ctx(USERS.pm), 'tr1'), awardWrite(USERS.pm, 'bid_tr1', 'Apex Steel Pty Ltd', materialStamp(USERS.pm))))
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.pm), 'tr1'), awardWrite(USERS.pm, 'bid_tr1')))
+    expect(await readPkg('tr1')).toMatchObject({ status: 'awarded', awardedBy: USERS.pm.uid, lastMaterialEditBy: USERS.qs.uid })
+    // Issued → cancelled with a stamp change is refused too.
+    await seedPackage('tr2', 'issued', USERS.qs)
+    await assertFails(updateDoc(pkgRef(ctx(USERS.admin), 'tr2'), cancelWrite(USERS.admin, 'Scope changed', { lastMaterialEditAt: serverTimestamp() })))
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.admin), 'tr2'), cancelWrite(USERS.admin)))
+    expect((await readPkg('tr2')).lastMaterialEditBy).toBe(USERS.qs.uid)
+  })
+
+  // ── legacy packages (no provenance recorded) ───────────────────────────────
+
+  it('LEGACY issued package without a stamp, strict mode: award is refused for EVERYONE (fails closed) and the issued carve-out cannot establish one', async () => {
+    await seedPolicy(true)
+    await seedPackage('lg1', 'issued', USERS.qs, {}, { legacy: true })
+    await seedBid('bid_lg1', 'lg1')
+    for (const user of [USERS.admin, USERS.pm, USERS.qs, PM2]) {
+      await assertFails(updateDoc(pkgRef(ctx(user), 'lg1'), awardWrite(user, 'bid_lg1')))
+    }
+    await assertFails(updateDoc(pkgRef(ctx(USERS.pm), 'lg1'), draftEdit(USERS.pm, { notes: 'x', ...materialStamp(USERS.pm) })))
+    expect((await readPkg('lg1')).status).toBe('issued')
+  })
+
+  it('LEGACY draft without a stamp, strict mode: a cosmetic edit records nothing; a material save by A records A; after issue B (not the creator) may award, A and the creator may not', async () => {
+    await seedPolicy(true)
+    await seedPackage('lg2', 'draft', USERS.qs, {}, { legacy: true })
+    await assertFails(updateDoc(pkgRef(ctx(USERS.pm), 'lg2'), draftEdit(USERS.pm, { notes: 'n', ...materialStamp(USERS.pm) })))
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.pm), 'lg2'), draftEdit(USERS.pm, { notes: 'n' })))
+    expect((await readPkg('lg2')).lastMaterialEditBy).toBeUndefined()
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.pm), 'lg2'), materialEdit(USERS.pm, { scope: 'Re-scoped' })))   // A = PM
+    expect((await readPkg('lg2')).lastMaterialEditBy).toBe(USERS.pm.uid)
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.pm), 'lg2'), issueWrite(USERS.pm)))
+    await seedBid('bid_lg2', 'lg2')
+    await assertFails(updateDoc(pkgRef(ctx(USERS.pm), 'lg2'), awardWrite(USERS.pm, 'bid_lg2')))     // A
+    await assertFails(updateDoc(pkgRef(ctx(USERS.qs), 'lg2'), awardWrite(USERS.qs, 'bid_lg2')))     // creator
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.admin), 'lg2'), awardWrite(USERS.admin, 'bid_lg2')))   // B
+  })
+
+  it('policy ENABLED: issue, issued edit and cancel are unchanged for the preparer', async () => {
+    await seedPolicy(true)
+    await seedPackage('p2', 'draft', USERS.qs)
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.qs), 'p2'), issueWrite(USERS.qs)))
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.qs), 'p1'), draftEdit(USERS.qs, { notes: 'closing extended' })))
+    await assertSucceeds(updateDoc(pkgRef(ctx(USERS.qs), 'p1'), cancelWrite(USERS.qs)))
   })
 })

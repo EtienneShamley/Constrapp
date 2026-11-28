@@ -66,6 +66,10 @@ export default function BoqBudgetTransferModal({
   boqItems, budgetLines, costCodes, currencyCode,
   sourcesLoading = false, sourcesError = false,
   budgetApproved = false, approvedCaption = '',
+  // ADR-97: when set ({ id, number }), the transfer is sent WITH this approved
+  // estimate revision as its recorded source. The server accepts that only
+  // while the live BOQ is still the BOQ the revision priced.
+  estimate = null,
   onTransfer, onClose,
 }) {
   const money = (n) => formatCurrency(n, currencyCode)
@@ -125,7 +129,8 @@ export default function BoqBudgetTransferModal({
     setPending(request)
     setResult(null)
     write.run(
-      () => onTransfer(request).catch((err) => {
+      // ADR-97: without an estimate, exactly the ADR-81 call.
+      () => (estimate ? onTransfer(request, estimate.id) : onTransfer(request)).catch((err) => {
         // A certain refusal ends this request; only an uncertain one is kept.
         if (err?.kind !== BOQ_TRANSFER_ERROR.UNCERTAIN) setPending(null)
         throw err
@@ -147,6 +152,12 @@ export default function BoqBudgetTransferModal({
   return (
     <ActivityDialog title="Transfer BOQ to working budget" titleId="boq-transfer-title" onClose={onClose} busy={write.busy} panelClassName="max-w-[860px]">
       <form onSubmit={submit} className="p-5">
+        {estimate && (
+          <p className="m-0 mb-3 rounded-lg border border-brand-accent/25 bg-brand-accent/5 px-3 py-2 text-[12px] text-brand-text" data-estimate-handover={estimate.id}>
+            This transfer will be recorded as the handover of approved estimate <strong>{estimate.number}</strong>. It carries the BOQ’s cost-coded
+            cost amounts only — never the selling price — and the server refuses it if the BOQ has changed since that revision was approved.
+          </p>
+        )}
         <p className="m-0 mb-3 text-[12px] text-brand-text-soft">
           Each cost code&apos;s priced BOQ total becomes <strong className="text-brand-text">one working budget line</strong>.
           Amounts are ex-GST and are calculated again on the server from the BOQ as it stands when you confirm — this

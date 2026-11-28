@@ -33,6 +33,8 @@ import {
 import { useClientReceipts } from '../../hooks/useClientReceipts'
 import { useClientCreditNotes } from '../../hooks/useClientCreditNotes'
 import { useClientRetentionReleases } from '../../hooks/useClientRetentionReleases'
+import { useClientRefunds } from '../../hooks/useClientRefunds'
+import { useClientReceiptApplications } from '../../hooks/useClientReceiptApplications'
 import { useClientInvoiceLedgers } from '../../hooks/useClientInvoiceLedgers'
 import { fromCents } from '../../lib/money'
 import {
@@ -51,6 +53,9 @@ import {
 import ClientCreditNoteModal from './clientCredit/ClientCreditNoteModal'
 import ClientCreditPostModal from './clientCredit/ClientCreditPostModal'
 import ClientCreditVoidModal from './clientCredit/ClientCreditVoidModal'
+import { useCommercialActivation } from '../../hooks/useCommercialActivation'
+import CommercialMaintenanceNotice from '../../components/CommercialMaintenanceNotice'
+import { clientInvoiceVoidOffered } from '../../lib/commercialActivation'
 import ClientCreditDetailModal from './clientCredit/ClientCreditDetailModal'
 import ClientCreditNotePrint from './clientCredit/ClientCreditNotePrint'
 import {
@@ -945,6 +950,10 @@ export default function ProjectClientInvoices() {
   // UX ONLY — Firestore Rules and the backend are the enforcement. A company
   // that is loading or could not be read is null here, so NOT activated.
   const financeActive = clientFinanceActivated(company)
+  // Phase 2 activation (lib/commercialActivation.js): the void of an ISSUED
+  // invoice is a Phase 2 operation, withheld until the company is switched
+  // over. Drafts, issuing, credit notes and retention are unaffected. UX only.
+  const activation = useCommercialActivation()
 
   // ── Printing ONE credit note (the ADR-79 print mechanism) ──────────────────
   // The document is mounted only while a print is in progress — synchronously,
@@ -975,7 +984,15 @@ export default function ProjectClientInvoices() {
     createClientInvoice, updateClientInvoice, issueClientInvoice, voidClientInvoice,
   } = useClientInvoices(mid)
   const { baseline, baselineLoading } = useProjectCommercial(mid)
-  const { clientReceipts, clientReceiptsError } = useClientReceipts(mid)
+  const { clientReceipts, clientReceiptsError: receiptsReadError } = useClientReceipts(mid)
+  // Phase 2 step 5: what an invoice HOLDS also counts applications and refunds.
+  const { clientRefunds, clientRefundsError } = useClientRefunds(mid)
+  const { clientReceiptApplications, clientReceiptApplicationsError } = useClientReceiptApplications(mid)
+  const clientReceiptsError = receiptsReadError || clientRefundsError || clientReceiptApplicationsError
+  const settlement = useMemo(
+    () => ({ refunds: clientRefunds, applications: clientReceiptApplications }),
+    [clientRefunds, clientReceiptApplications],
+  )
   const {
     clientCreditNotes, clientCreditNotesLoading, clientCreditNotesError,
     createClientCreditNote, updateClientCreditNote, postClientCreditNote, voidClientCreditNote,
@@ -1046,10 +1063,10 @@ export default function ProjectClientInvoices() {
   )
   // ── Reconciliation, all derived at read time ───────────────────────────────
   // Nothing here is written onto a client invoice document.
-  const received = useMemo(() => receivedByInvoice(clientReceipts), [clientReceipts])
+  const received = useMemo(() => receivedByInvoice(clientReceipts, settlement), [clientReceipts, settlement])
   const receivables = useMemo(
-    () => receivablesSummary(clientInvoices, clientReceipts, ctx.positions),
-    [clientInvoices, clientReceipts, ctx.positions],
+    () => receivablesSummary(clientInvoices, clientReceipts, ctx.positions, settlement),
+    [clientInvoices, clientReceipts, ctx.positions, settlement],
   )
   const reconciliationById = useMemo(
     () => new Map(receivables.rows.map(r => [r.id, r])),
@@ -1431,6 +1448,7 @@ export default function ProjectClientInvoices() {
         </div>
       </div>
 
+      <CommercialMaintenanceNotice activation={activation} />
       {clientInvoicesError && (
         <p className="text-[12px] text-brand-amber mb-3">Couldn&apos;t load client invoices — check your connection and access.</p>
       )}
@@ -1612,7 +1630,7 @@ export default function ProjectClientInvoices() {
                               Client retention
                             </Btn>
                           )}
-                          {(inv.status === CI_STATUS.DRAFT || isIssued) && (
+                          {clientInvoiceVoidOffered(inv.status, activation) && (
                             <Btn
                               sm variant="ghost"
                               disabled={voidRefused}
@@ -1784,7 +1802,7 @@ export default function ProjectClientInvoices() {
         />
       )}
 
-      {voiding && (
+      {voiding && clientInvoiceVoidOffered(voiding.status, activation) && (
         <VoidModal invoice={voiding} onClose={() => setVoiding(null)} onConfirm={voidClientInvoice} />
       )}
 

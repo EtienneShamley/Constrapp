@@ -1,4 +1,5 @@
 import { CODE, fail } from '../lib/errors.js'
+import { segregationGuard } from '../lib/approvalPolicy.js'
 import { userRef, assertActiveRole } from '../lib/authz.js'
 import { AUDIT, auditInTx } from '../lib/audit.js'
 import { isValidId } from '../lib/validation.js'
@@ -211,6 +212,11 @@ async function postEntry(deps, kind, { uid, projectId, entryId, requestId = null
       fail(CODE.CLIENT_ENTRY_NOT_DRAFT, { entryStatus: entry.status })
     }
     if (entry.status !== kind.status.DRAFT) fail(CODE.CLIENT_ENTRY_NOT_DRAFT, { entryStatus: entry.status ?? null })
+    // ADR-96: posting a client credit note or retention release changes what is
+    // owed — segregated when the company policy enables it.
+    const segregation = segregationGuard(db, uid, { label: kind.idKey === 'creditNoteId' ? 'client credit note' : 'client retention release' })
+    await segregation.read(tx, { companyId: ctx.companyId })
+    segregation.check(entry)
 
     // 5. The invoice as a source record; the draft as an untrusted document;
     //    then the entry re-derived from the invoice and its ledger.
@@ -224,6 +230,10 @@ async function postEntry(deps, kind, { uid, projectId, entryId, requestId = null
     const next = kind.apply(before, { id: entryId, ...derived.figures })
     const broken = calc.ledgerInvariantError(invoice, next)
     if (broken) fail(CODE.CLIENT_LEDGER_INVARIANT, { invariant: broken })
+    // Phase 2 step 5 (S1): a release RAISES what is receivable — money already
+    // refunded to the client out of this invoice must still be covered.
+    const unsettled = calc.settlementInvariantError(invoice, next)
+    if (unsettled) fail(CODE.CLIENT_REFUNDS_DEPEND, { invariant: unsettled, number: entry[kind.numberKey] ?? null })
 
     // 6. The writes.
     writeLedger(tx, ctx.ledgerRef, ctx.ledgerSnap, next, uid)
@@ -234,6 +244,7 @@ async function postEntry(deps, kind, { uid, projectId, entryId, requestId = null
       after: {
         projectId, invoiceId, [kind.idKey]: entryId, number: entry[kind.numberKey] ?? null,
         status: kind.status.POSTED, currency: invoice.currency, seq: next.seq, ledger: ledgerTotals(next),
+        segregation: segregation.record(),
       },
     }, now())
     return { replay: false, status: kind.status.POSTED, entryId, invoiceId, seq: next.seq }
@@ -271,6 +282,15 @@ async function voidEntry(deps, kind, { uid, projectId, entryId, reason, requestI
       fail(CODE.CLIENT_ENTRY_NOT_POSTED, { entryStatus: entry.status })
     }
 
+    // ADR-96 (final-batch ruling B): taking back a POSTED entry undoes a fact
+    // an independent approver posted, so with segregation enabled it is itself
+    // an independent decision — not the entry's creator or last material
+    // editor. (After posting, `updatedBy` is the poster, who MAY void: the
+    // preparers are named explicitly.) A draft has moved nothing.
+    const segregation = segregationGuard(db, uid, { label: kind.idKey === 'creditNoteId' ? 'void of a posted client credit note' : 'void of a posted client retention release' })
+    await segregation.read(tx, { companyId: ctx.companyId })
+    if (wasPosted) segregation.check({ createdBy: entry.createdBy, lastMaterialEditBy: entry.lastMaterialEditBy ?? entry.createdBy })
+
     const before = ctx.ledgerState
     let next = before
     if (wasPosted) {
@@ -281,15 +301,23 @@ async function voidEntry(deps, kind, { uid, projectId, entryId, reason, requestI
       next = kind.applyVoid(before, entry)
       const broken = calc.ledgerInvariantError(invoice, next)
       if (broken) fail(CODE.CLIENT_LEDGER_INVARIANT, { invariant: broken, number: refused.number })
+      // Phase 2 step 5 (S1): voiding a credit note RAISES what is receivable —
+      // a settlement (a refund of the overpayment the credit created) that it
+      // would invalidate is corrected first, or the client pays again.
+      const unsettled = calc.settlementInvariantError(invoice, next)
+      if (unsettled) fail(CODE.CLIENT_REFUNDS_DEPEND, { invariant: unsettled, number: refused.number })
       if (kind.voidLowersReceivable) {
         // What is receivable once the release is taken back must still cover
         // what posted receipts have allocated to this invoice — both read from
         // the ONE ledger document, never from the receipts. `receivedCents` is
         // exact: it includes the receipts posted before the backend took over
         // (the baseline whose marker this transaction read).
+        // Since Phase 2 step 5 the money the invoice HOLDS is received less
+        // refunded (identical to `receivedCents` until a refund exists).
         const receivableBasisAfterCents = calc.ledgerPosition(invoice, next).receivableBasisCents
-        if (receivableBasisAfterCents < next.receivedCents) {
-          fail(CODE.CLIENT_RECEIPTS_DEPEND, { receivedCents: next.receivedCents, receivableBasisAfterCents, number: refused.number })
+        const heldCents = calc.netReceivedCents(next)
+        if (receivableBasisAfterCents < heldCents) {
+          fail(CODE.CLIENT_RECEIPTS_DEPEND, { receivedCents: heldCents, receivableBasisAfterCents, number: refused.number })
         }
       }
       writeLedger(tx, ctx.ledgerRef, ctx.ledgerSnap, next, uid)
@@ -306,6 +334,7 @@ async function voidEntry(deps, kind, { uid, projectId, entryId, reason, requestI
         projectId, invoiceId, [kind.idKey]: entryId, number: entry[kind.numberKey] ?? null,
         status: kind.status.VOID, currency: entry.currency ?? null, reason,
         ledgerMoved: wasPosted, seq: wasPosted ? next.seq : null, ledger: ledgerTotals(next),
+        segregation: wasPosted ? segregation.record() : null,
       },
     }, now())
     return { replay: false, status: kind.status.VOID, entryId, invoiceId, seq: wasPosted ? next.seq : null }

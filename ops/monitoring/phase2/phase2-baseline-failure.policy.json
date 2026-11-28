@@ -1,0 +1,30 @@
+{
+  "displayName": "Phase 2 financial callables: historical baseline refused",
+  "combiner": "OR",
+  "enabled": true,
+  "severity": "ERROR",
+  "userLabels": {
+    "programme": "phase2",
+    "component": "financial-callables",
+    "policy": "baseline-failure"
+  },
+  "conditions": [
+    {
+      "displayName": "A refusal with a baseline code (supplier-finance or client-receipt baseline)",
+      "conditionMatchedLog": {
+        "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.location=\"australia-southeast1\" AND resource.labels.service_name=(\"createvariation\" OR \"updatevariationdraft\" OR \"approvevariation\" OR \"applyvariationcommitment\" OR \"progressclaimoperation\" OR \"supplierinvoiceoperation\" OR \"suppliersettlementoperation\" OR \"postclientrefund\" OR \"voidclientrefund\" OR \"postclientreceiptapplication\" OR \"voidclientreceiptapplication\" OR \"voidclientinvoice\" OR \"contractvalueoperation\" OR \"estimateoperation\" OR \"postclientcreditnote\" OR \"voidclientcreditnote\" OR \"postclientretentionrelease\" OR \"voidclientretentionrelease\" OR \"postclientreceipt\" OR \"voidclientreceipt\" OR \"transferboqtobudget\" OR \"approvefinalaccount\") AND log_id(\"run.googleapis.com/stdout\") AND jsonPayload.message=(\"variation call refused\" OR \"supplier-finance call refused\" OR \"client finance call refused\" OR \"contract-value call refused\" OR \"estimate call refused\" OR \"boq transfer call refused\" OR \"final account call refused\") AND jsonPayload.code=(\"client-receipt-baseline-inconsistent\" OR \"client-receipt-baseline-invalid\" OR \"client-receipt-baseline-missing\" OR \"client-receipt-baseline-too-large\" OR \"supplier-finance-baseline-invalid\")"
+      }
+    }
+  ],
+  "alertStrategy": {
+    "notificationRateLimit": {
+      "period": "3600s"
+    },
+    "autoClose": "86400s"
+  },
+  "documentation": {
+    "mimeType": "text/markdown",
+    "subject": "A project's historical baseline was refused",
+    "content": "## What this means\n\nAn operation was refused because a project's historical baseline cannot be established or is not usable. **Every operation of that family stays refused in that project until it is reviewed**; nothing was written, no figure was clamped and no history was rewritten.\n\n| Code | Meaning |\n|---|---|\n| `supplier-finance-baseline-invalid` | The first supplier-finance operation found a posted payment, credit note or release that cannot be attributed to an invoice, or a claim naming no purchase order (MISSING SOURCE, ADR-94); or an operation found the marker absent or not `complete`. |\n| `client-receipt-baseline-invalid` | A legacy posted receipt has a malformed allocation (ADR-89). |\n| `client-receipt-baseline-inconsistent` | A posted receipt already carries backend fields while no marker exists, or a ledger already carries receipts. |\n| `client-receipt-baseline-too-large` | Legacy receipts touch more than 448 invoices; an operator baseline is needed. |\n| `client-receipt-baseline-missing` | The marker is absent at an operation that requires it. |\n\n## Do this\n\n1. Find the line: `jsonPayload.message:\"call refused\" AND jsonPayload.code=~\"baseline\"` in the services above. Note the time, `fn`, `uid`. The project id is not on the refusal line: take it from the user, or from the matching request in the same minute.\n2. Run the read-only inventory for that company: `node ops/recovery/phase2-inventory.mjs --project constrapp-69b5d --company <companyId>` and read `supplierBaselinePreview` and `baselineSource` for the project. It names every unattributable document by id and code.\n3. Tell the Product Owner which project is blocked. A repair needs a reviewed, separately authorised plan; there is no repair tool and none may be improvised. Never edit a register, a ledger or a marker in the console.\n\nRepeats are expected: every attempt in that project is refused again. This notification is sent at most once an hour.\n\nNever paste a log entry, an amount, a customer name or a token into a ticket or chat: give the service, the time, the project and document ids, and the code.\n\nRunbook: `ops/monitoring/phase2/README.md`. Cutover and recovery: `docs/DEPLOYMENT.md`, section *Phase 2 — the complete cutover*."
+  }
+}

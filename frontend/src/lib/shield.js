@@ -5,11 +5,12 @@ import {
 } from './progressClaims'
 import {
   SI_STATUS, SI_STATUS_LABELS, SI_COUNTING_STATUSES,
-  invoiceTotals, normaliseInvoiceRef, postedInvoicedByPoLine, postedInvoicedByPo, postedInvoicedByVariationLine, invoicedClaimIds,
+  invoiceTotalsFor, normaliseInvoiceRef, postedInvoicedByPoLine, postedInvoicedByPo, postedInvoicedByVariationLine, invoicedClaimIds,
 } from './supplierInvoices'
 import { remainingCommitment } from './commitment'
 import { sourceLineIdentityError, sourceLineLabel } from './sourceLine'
 import { toCents, safeAmount } from './payments'
+import { calcVersionOf } from './supplierCalc'
 import {
   normaliseSupplierName, allocationExceptions, payablesSummary, overReconciledPayableRows,
   postedSupplierPayments,
@@ -397,7 +398,12 @@ const INTEGRITY_ISSUE_LABELS = {
 // and retention, in the order the message names the most meaningful first.
 // `invoiceTotals` is the one authoritative composition (lib/supplierInvoices.js):
 // it sums the STORED per-line amounts and gstAmounts, so this comparison never
-// re-derives GST from an amount and cannot raise the one-cent create artefact.
+// re-derives a LINE's GST from its amount and cannot raise the one-cent create
+// artefact. ONE figure IS re-derived: `retentionGst`, from the retention amount
+// at the legacy 10% expression. That is why the supplier-invoice formulas
+// cannot move to the exact policy until this check recalculates under the
+// invoice's own calculation version (ADR-91 Decision 5; Phase 2 step 3). The
+// user-facing caveat below says exactly this.
 const INTEGRITY_FIELDS = [
   ['payableTotal',   'payable total'],
   ['payableGst',     'payable GST'],
@@ -429,6 +435,7 @@ function malformedReason(inv) {
   const badLine = inv.lineItems.findIndex(li => !li || typeof li !== 'object' || !finite(li.amount))
   if (badLine !== -1) return `line ${badLine + 1} has no numeric amount`
   if (!finite(inv.retention)) return 'retention is not a number'
+  if (calcVersionOf(inv) === null) return 'unknown calculation version'
   const badField = INTEGRITY_FIELDS.find(([key]) => !finite(inv[key]))
   if (badField) return `stored ${badField[1]} is missing`
   return null
@@ -467,7 +474,10 @@ function evaluateInvoiceIntegrity(supplierInvoices, sourceStates) {
       })
       continue
     }
-    const recomputed = invoiceTotals(inv.lineItems, inv.retention)
+    // ADR-91 Decision 5: recomputed under the invoice's OWN calculation
+    // version (a version-2 invoice's retention GST is exact half-up), so an
+    // exact document never shows false drift and tolerances are not widened.
+    const recomputed = invoiceTotalsFor(inv.lineItems, inv.retention, calcVersionOf(inv))
     const drift = INTEGRITY_FIELDS.find(([key]) => toCents(inv[key]) !== toCents(recomputed[key]))
     if (drift) {
       const [key, label] = drift
@@ -506,7 +516,8 @@ function evaluateInvoiceIntegrity(supplierInvoices, sourceStates) {
   const caveats = [
     'Only posted supplier invoices are assessed: drafts are still being authored and approved-but-unposted ' +
     'invoices feed no figure yet. Figures are compared in whole cents against the invoice\'s own stored lines ' +
-    'and retention through the same invoiceTotals composition the app writes with — no GST is re-derived.',
+    'and retention through the same invoiceTotals composition the app writes with. The GST of each line is taken ' +
+    'as stored and never re-derived; the GST on retention is derived from the retention amount at 10%.',
     NOT_WRONGDOING_CAVEAT,
   ]
   if (malformedCount > 0) {
@@ -1146,7 +1157,10 @@ function evaluateCommitmentStateConflicts(purchaseOrders, progressClaims, suppli
     'reconcile by cancelling or crediting the record that should not stand.',
     'An applied supplier variation that could not be incorporated (missing or cancelled PO, a PO line that does not ' +
     'exist, a cost-code mismatch, or a revised PO line value below zero) keeps its amount in unapplied exposure — ' +
-    'it is never counted against another PO line or cost code, and no source document is edited.',
+    'it is never counted against another PO line or cost code, and no source document is edited. Constrap now ' +
+    'checks every line against its purchase order and cost codes before a variation is approved or applied, and ' +
+    'refuses one that does not reconcile; a row here is therefore a variation that was applied before that check ' +
+    'existed, or one whose purchase order changed afterwards.',
     'Recognised claims above a revised PO line value are listed with claim recognition and posted invoicing as ' +
     'separate figures (a claim and its posted invoice are never both counted). Remaining Committed floors the line ' +
     'at zero, so this is the only place the overrun appears. Supplier credit notes carry no PO line index and do ' +
@@ -1256,7 +1270,7 @@ function evaluateFinancialExceptions(sources, sourceStates) {
   const allocation = allocationExceptions(supplierPayments, invoices)
   const credit = creditNoteExceptions(supplierCreditNotes, invoices)
   const release = releaseExceptions(retentionReleases, invoices)
-  const overReleased = overReleasedRows(retentionInvoiceRows(invoices, retentionReleases))
+  const overReleased = overReleasedRows(retentionInvoiceRows(invoices, retentionReleases, supplierCreditNotes))
   const payables = payablesSummary(invoices, supplierPayments, supplierCreditNotes, releasedMap)
   const overReconciled = overReconciledPayableRows(payables.rows)
 

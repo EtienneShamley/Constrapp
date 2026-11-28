@@ -167,8 +167,21 @@ describe('the launcher isolates the emulator configuration and says what is true
     }
     expect(LAUNCHER).toContain("VITE_FIREBASE_APPCHECK_SITE_KEY: ''")
     expect(LAUNCHER).toContain("VITE_FIREBASE_APPCHECK_DEBUG_TOKEN: ''")
-    expect(LAUNCHER).toContain("const PROJECT_ID = 'constrapp-rules-test'")
+    // D3 #17: the project is the ONE demo project, taken from the isolation
+    // module (never a literal here, never a real project) …
+    expect(LAUNCHER).toContain("import { prepareIsolation, TEST_PROJECT_ID } from './emulatorIsolation.mjs'")
+    expect(LAUNCHER).toMatch(/const PROJECT_ID = TEST_PROJECT_ID\b/)
+    expect(read('scripts/emulatorIsolation.mjs')).toContain("export const TEST_PROJECT_ID = 'demo-constrap-test'")
+    expect(LAUNCHER).toContain('VITE_FIREBASE_PROJECT_ID: PROJECT_ID')
+    // … and the emulators, the Functions runtime and the bootstrap script run
+    // in the ISOLATED environment (no credential file, CLI sign-in or
+    // credential variable), under that project.
+    // Final release batch: `--storage` (local drawings / Quant acceptance) adds the Storage emulator to the
+    // SAME isolated child; the default set and the isolated env are unchanged.
+    expect(LAUNCHER).toContain("['emulators:start', '--only', WITH_STORAGE ? 'auth,firestore,functions,storage' : 'auth,firestore,functions', '--project', PROJECT_ID], { env: isolation.env }")
+    expect(LAUNCHER).toContain('env: { ...isolation.env, GCLOUD_PROJECT: PROJECT_ID,')
     expect(LAUNCHER).not.toContain('constrapp-69b5d')
+    expect(LAUNCHER).not.toContain('constrapp-rules-test')
     expect(LAUNCHER).not.toMatch(/writeFileSync|appendFileSync/)
   })
 

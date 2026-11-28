@@ -25,7 +25,7 @@ describe('worker service account per project', () => {
   it('every project env file names file-link-worker@ in THAT project, and the deploy-time regex accepts it', async () => {
     const { WORKER_SA_PATTERN } = await import('../src/lib/params.js')
     const re = new RegExp(WORKER_SA_PATTERN)
-    expect(envFiles).toEqual(expect.arrayContaining(['.env.constrapp-69b5d', '.env.constrapp-rules-test']))
+    expect(envFiles).toEqual(expect.arrayContaining(['.env.constrapp-69b5d', '.env.demo-constrap-test']))
     for (const f of envFiles) {
       const project = f.slice('.env.'.length)
       const sa = valueOf(f, 'FILE_LINK_WORKER_SERVICE_ACCOUNT')
@@ -85,7 +85,7 @@ describe('callable surface', () => {
     expect(PARAMS).toContain("export const FILE_LINK_WORKER_SERVICE_ACCOUNT = defineString('FILE_LINK_WORKER_SERVICE_ACCOUNT'")
     expect(PARAMS).toMatch(/validationRegex: WORKER_SA_PATTERN/)
     const code = (PARAMS + INDEX).split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
-    expect(code).not.toMatch(/constrapp-69b5d|constrap-dc46-validation|constrapp-rules-test|[0-9]{6,}-compute@/)
+    expect(code).not.toMatch(/constrapp-69b5d|constrap-dc46-validation|demo-constrap-test|[0-9]{6,}-compute@/)
     // The callables keep the default runtime: only the worker has its own identity.
     expect(INDEX.slice(INDEX.indexOf('const CALL_OPTIONS'), INDEX.indexOf('let handlers'))).not.toMatch(/serviceAccount/)
     expect(INDEX).toMatch(/if \(!cfg\.enabled\) \{[^}]*return \}/)

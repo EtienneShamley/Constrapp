@@ -22,13 +22,17 @@ export function useBoqBudgetTransfer(projectId) {
   const { company } = useCompany()
   const companyId = company?.id ?? null
 
-  const transferBoqToBudget = useCallback(async ({ reviewKey, setToZero }) => {
+  // ADR-97: the optional second argument names the APPROVED estimate revision
+  // this transfer is recorded against (the Estimate page only); the BOQ page
+  // never passes it, so its request is exactly the ADR-81 request.
+  const transferBoqToBudget = useCallback(async ({ reviewKey, setToZero }, estimateId = null) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     return runBoqBudgetTransfer({
       call: async (data) => (await httpsCallable(functions, 'transferBoqToBudget', { timeout: TRANSFER_CALL_TIMEOUT_MS })(data)).data,
       projectId,
       reviewKey,
       setToZero,
+      estimateId,
     })
   }, [companyId, projectId, user])
 

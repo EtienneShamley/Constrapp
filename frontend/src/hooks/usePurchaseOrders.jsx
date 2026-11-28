@@ -11,6 +11,7 @@ import { stageProjectCurrencyLock } from './projectCurrencyLock'
 import { resolveProjectCurrency } from '../lib/currency'
 import {
   PO_STATUS, canTransition, poTotals, formatPoNumber, lineTotal, validatePoDraft, buildPurchaseOrderDocument,
+  materialEditStamp, PO_MATERIAL_KEYS,
 } from '../lib/purchaseOrders'
 import { PO_CANCEL_BLOCKER_KIND, poCancellationGuard } from '../lib/poCancellation'
 import { runTransitionPurchaseOrder, PoWriteError, PO_WRITE_ERROR } from '../lib/purchaseOrderActions'
@@ -170,13 +171,11 @@ export function usePurchaseOrders(projectId) {
     const lines = lineItems.map(li => ({ ...li, lineTotal: lineTotal(li.qty, li.unitPrice) }))
     const { subtotal, gst, total } = poTotals(lines)
     const ref = doc(db, 'companies', companyId, 'projects', projectId, 'purchaseOrders', po.id)
+    const next = { description: description?.trim() || '', notes: notes?.trim() || '', lineItems: lines, subtotal, gst, total }
     await updateDoc(ref, {
-      description: description?.trim() || '',
-      notes:       notes?.trim() || '',
-      lineItems:   lines,
-      subtotal,
-      gst,
-      total,
+      ...next,
+      // D3 #46: a material change stamps its editor; a notes-only edit does not.
+      ...materialEditStamp(po, next, PO_MATERIAL_KEYS, user.uid, serverTimestamp()),
       updatedAt:   serverTimestamp(),
       updatedBy:   user.uid,
     })

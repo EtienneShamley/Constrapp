@@ -652,9 +652,13 @@ describe('a growing project never loses the ability to post or void', () => {
     const caller = ['users/u_pm', `companies/${COMPANY_A}`, P, MARKER]
     const expected = {
       postReceipt: [...caller, `${P}/clientReceipts/cr1`, `${P}/clientInvoices/invA`, `${P}/clientInvoiceLedgers/invA`],
-      voidCredit: [...caller, `${P}/clientCreditNotes/cn1`, `${P}/clientInvoices/invA`, `${P}/clientInvoiceLedgers/invA`],
-      voidRelease: [...caller, `${P}/clientRetentionReleases/rr1`, `${P}/clientInvoices/invA`, `${P}/clientInvoiceLedgers/invA`],
-      voidReceipt: [...caller, `${P}/clientReceipts/cr1`, `${P}/clientInvoiceLedgers/invA`],
+      // Final batch (ADR-96 ruling B): voiding a POSTED credit or release reads the company's
+      // approval policy — one more fixed DOCUMENT, still no query.
+      voidCredit: [...caller, `${P}/clientCreditNotes/cn1`, `${P}/clientInvoices/invA`, `${P}/clientInvoiceLedgers/invA`, `companies/${COMPANY_A}/approvalPolicy/current`],
+      voidRelease: [...caller, `${P}/clientRetentionReleases/rr1`, `${P}/clientInvoices/invA`, `${P}/clientInvoiceLedgers/invA`, `companies/${COMPANY_A}/approvalPolicy/current`],
+      // Phase 2 step 5: + the receipt's own settlement ledger (refunds / applications
+      // depending on it are refused) — one more DOCUMENT, still no query.
+      voidReceipt: [...caller, `${P}/clientReceipts/cr1`, `${P}/clientInvoiceLedgers/invA`, `${P}/clientReceiptLedgers/cr1`],
     }
     for (const op of Object.keys(expected)) {
       // The SAME documents, by path, with 5,200 receipts as with none; no query at all.

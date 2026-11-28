@@ -12,6 +12,14 @@ import { useClientReceipts } from '../../hooks/useClientReceipts'
 import { useClientInvoices } from '../../hooks/useClientInvoices'
 import { useClientCreditNotes } from '../../hooks/useClientCreditNotes'
 import { useClientRetentionReleases } from '../../hooks/useClientRetentionReleases'
+import { useClientRefunds } from '../../hooks/useClientRefunds'
+import { useClientReceiptApplications } from '../../hooks/useClientReceiptApplications'
+import { useCompany } from '../../hooks/useCompany'
+import { useCommercialActivation } from '../../hooks/useCommercialActivation'
+import CommercialMaintenanceNotice from '../../components/CommercialMaintenanceNotice'
+import { clientFinanceActivated } from '../../lib/clientEntryShape'
+import { REFUND_SOURCE } from '../../lib/clientSettlement'
+import { RefundModal, ApplyModal, SettlementVoidModal, SettlementRegister } from './clientReceipts/ClientSettlement'
 import { useContacts } from '../../hooks/useContacts'
 import { CONTACT_TYPE } from '../../lib/contacts'
 import { isFinancialRole } from '../../lib/margin'
@@ -25,7 +33,7 @@ import {
   allocatableInvoices, allocateOldestFirst, buildAllocations,
   invoiceOverAllocationWarnings, allocationExceptions, ALLOCATION_EXCEPTION_REMEDY,
   receiptSummary, receivablesSummary, postBlockedReason, isFutureDatedReceipt,
-  validateReceiptDraft,
+  validateReceiptDraft, receiptAvailable,
 } from '../../lib/clientReceipts'
 import { CLIENT_RECEIPT_OVER_ALLOCATION_PREFIX } from '../../lib/clientLedgerActions'
 import { receivableContext } from '../../lib/clientReceivables'
@@ -742,6 +750,29 @@ export default function ProjectClientReceipts() {
     clientRetentionReleases, clientRetentionReleasesLoading, clientRetentionReleasesError,
   } = useClientRetentionReleases(mid)
   const { contacts } = useContacts()
+  // Phase 2 step 5 (ADR-95): refunds and receipt applications.
+  const { company } = useCompany()
+  const {
+    clientRefunds, clientRefundsLoading, clientRefundsError, newRefundId, postClientRefund, voidClientRefund,
+  } = useClientRefunds(mid)
+  const {
+    clientReceiptApplications, clientReceiptApplicationsLoading, clientReceiptApplicationsError,
+    newApplicationId, postClientReceiptApplication, voidClientReceiptApplication,
+  } = useClientReceiptApplications(mid)
+  const settlement = useMemo(
+    () => ({ refunds: clientRefunds, applications: clientReceiptApplications }),
+    [clientRefunds, clientReceiptApplications],
+  )
+  const settlementError = clientRefundsError || clientReceiptApplicationsError
+  // Offered only where the operator activated client finance; the server decides.
+  // Phase 2 activation (lib/commercialActivation.js): refunds, applications
+  // and their voids are also withheld until the company is switched over.
+  // Receipts themselves (Phase 1) are unaffected. UX only.
+  const activation = useCommercialActivation()
+  const settlementOffered = clientFinanceActivated(company) && !settlementError && activation.writable
+  const [refunding, setRefunding] = useState(null)       // { target, refundId }
+  const [applying, setApplying]   = useState(null)       // { receipt, available, applicationId }
+  const [correcting, setCorrecting] = useState(null)     // { record, kind }
 
   const [editing, setEditing] = useState(null)   // receipt | 'new' | null
   const [posting, setPosting] = useState(null)
@@ -757,7 +788,7 @@ export default function ProjectClientReceipts() {
     [contacts],
   )
 
-  const summary = useMemo(() => receiptSummary(clientReceipts), [clientReceipts])
+  const summary = useMemo(() => receiptSummary(clientReceipts, settlement), [clientReceipts, settlement])
   // The ONE receivable contract (lib/clientReceivables.js): what each issued
   // invoice is owed after posted credit notes and retention still held. The
   // same positions feed the summary, the allocation picker and its warnings.
@@ -774,10 +805,10 @@ export default function ProjectClientReceipts() {
     [clientCreditNotesError, clientRetentionReleasesError],
   )
   const receivableUnknown = allocationNotices.length > 0
-  const balanceUnknown = receivableUnknown || clientReceiptsError
+  const balanceUnknown = receivableUnknown || clientReceiptsError || settlementError
   const receivables = useMemo(
-    () => receivablesSummary(clientInvoices, clientReceipts, positions),
-    [clientInvoices, clientReceipts, positions],
+    () => receivablesSummary(clientInvoices, clientReceipts, positions, settlement),
+    [clientInvoices, clientReceipts, positions, settlement],
   )
   const exceptions = useMemo(
     () => allocationExceptions(clientReceipts, clientInvoices),
@@ -816,7 +847,8 @@ export default function ProjectClientReceipts() {
       </Card>
     )
   }
-  if (clientReceiptsLoading || clientInvoicesLoading || clientCreditNotesLoading || clientRetentionReleasesLoading) {
+  if (clientReceiptsLoading || clientInvoicesLoading || clientCreditNotesLoading || clientRetentionReleasesLoading
+    || clientRefundsLoading || clientReceiptApplicationsLoading) {
     return <div className="text-[13px] text-brand-muted">Loading receipts…</div>
   }
 
@@ -827,7 +859,7 @@ export default function ProjectClientReceipts() {
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
           <Metric label="Receipts Recorded" value={money(summary.postedAmount)} help={`${summary.postedCount} posted`} />
           <Metric label="Allocated" value={money(summary.allocated)} help="Matched to invoices" />
-          <Metric label="Unallocated — on account" value={money(summary.unallocated)} help="Reduces no invoice balance" />
+          <Metric label="Unallocated — on account" value={settlementError ? <Unavailable /> : money(summary.unallocated)} help={summary.refunded > 0 ? `After applications and refunds · ${money(summary.refunded)} refunded` : 'Reduces no invoice balance'} />
           <Metric label="Draft Receipts" value={money(summary.draftAmount)} help={`${summary.draftCount} draft · not counted`} />
           <Metric label="Received to Date" value={money(receivables.received)} help="Against issued invoices" />
           <Metric
@@ -875,6 +907,9 @@ export default function ProjectClientReceipts() {
               <span key={r.id} className="text-[12px] text-brand-text">
                 <span className="font-semibold">{r.invoiceNumber}</span>{' '}
                 <span className="text-brand-red font-semibold">{OWED_TO_CLIENT_LABEL} {money(-r.remaining)}</span>
+                {settlementOffered && (
+                  <Btn sm variant="ghost" onClick={() => setRefunding({ target: { source: REFUND_SOURCE.INVOICE, row: r }, refundId: newRefundId() })}>Refund</Btn>
+                )}
               </span>
             ))}
           </div>
@@ -996,6 +1031,9 @@ export default function ProjectClientReceipts() {
                         <span className={toCents(r.unallocatedAmount) > 0 ? 'text-brand-amber font-semibold' : 'text-brand-muted'}>
                           {money(r.unallocatedAmount)}
                         </span>
+                        {r.status === PAYMENT_STATUS.POSTED && toCents(receiptAvailable(r, settlement)) !== toCents(r.unallocatedAmount) && (
+                          <span className="block text-[11px] text-brand-muted">{money(receiptAvailable(r, settlement))} still available</span>
+                        )}
                       </td>
                       <td className="px-3.5 py-3 text-[12px] text-brand-muted">{invoiceNumbers || '—'}</td>
                       <td className="px-3.5 py-3">
@@ -1007,6 +1045,12 @@ export default function ProjectClientReceipts() {
                             <>
                               <Btn sm variant="ghost" onClick={() => setEditing(r)}>Edit</Btn>
                               <Btn sm variant="success" onClick={() => setPosting(r)}>Post</Btn>
+                            </>
+                          )}
+                          {settlementOffered && r.status === PAYMENT_STATUS.POSTED && toCents(receiptAvailable(r, settlement)) > 0 && (
+                            <>
+                              <Btn sm variant="ghost" onClick={() => setApplying({ receipt: r, available: receiptAvailable(r, settlement), applicationId: newApplicationId() })}>Apply</Btn>
+                              <Btn sm variant="ghost" onClick={() => setRefunding({ target: { source: REFUND_SOURCE.RECEIPT, receipt: r, available: receiptAvailable(r, settlement) }, refundId: newRefundId() })}>Refund</Btn>
                             </>
                           )}
                           {(r.status === PAYMENT_STATUS.DRAFT || r.status === PAYMENT_STATUS.POSTED) && (
@@ -1022,6 +1066,16 @@ export default function ProjectClientReceipts() {
           </div>
         )}
       </Card>
+
+      <CommercialMaintenanceNotice activation={activation} className="mt-3.5" />
+      <SettlementRegister
+        refunds={clientRefunds}
+        applications={clientReceiptApplications}
+        currencyCode={currencyCode}
+        canVoid={activation.writable}
+        onVoidRefund={(record) => setCorrecting({ record, kind: 'refund' })}
+        onVoidApplication={(record) => setCorrecting({ record, kind: 'application' })}
+      />
 
       <p className="m-0 mt-3 text-[11px] text-brand-muted">
         Constrap records cash movements and their allocations. It cannot verify that money was genuinely received.
@@ -1061,6 +1115,20 @@ export default function ProjectClientReceipts() {
 
       {voiding && (
         <VoidModal receipt={voiding} onClose={() => setVoiding(null)} onConfirm={voidClientReceipt} />
+      )}
+
+      {activation.writable && refunding && (
+        <RefundModal target={refunding.target} refundId={refunding.refundId} currencyCode={currencyCode}
+          onClose={() => setRefunding(null)} onConfirm={postClientRefund} />
+      )}
+      {activation.writable && applying && (
+        <ApplyModal receipt={applying.receipt} available={applying.available} applicationId={applying.applicationId}
+          invoices={receivables.rows} currencyCode={currencyCode}
+          onClose={() => setApplying(null)} onConfirm={postClientReceiptApplication} />
+      )}
+      {activation.writable && correcting && (
+        <SettlementVoidModal record={correcting.record} kind={correcting.kind} onClose={() => setCorrecting(null)}
+          onConfirm={correcting.kind === 'refund' ? voidClientRefund : voidClientReceiptApplication} />
       )}
 
       {detail && (

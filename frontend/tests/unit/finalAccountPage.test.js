@@ -38,6 +38,9 @@ vi.mock('../../src/hooks/useClientInvoices', () => ({ useClientInvoices: () => l
 vi.mock('../../src/hooks/useClientReceipts', () => ({ useClientReceipts: () => list('clientReceipts') }))
 vi.mock('../../src/hooks/useClientCreditNotes', () => ({ useClientCreditNotes: () => (S.failCredits ? { clientCreditNotes: [], clientCreditNotesLoading: false, clientCreditNotesError: true } : list('clientCreditNotes')) }))
 vi.mock('../../src/hooks/useClientRetentionReleases', () => ({ useClientRetentionReleases: () => list('clientRetentionReleases') }))
+// Phase 2 step 5: the two settlement registers (refunds, receipt applications).
+vi.mock('../../src/hooks/useClientRefunds', () => ({ useClientRefunds: () => list('clientRefunds') }))
+vi.mock('../../src/hooks/useClientReceiptApplications', () => ({ useClientReceiptApplications: () => list('clientReceiptApplications') }))
 vi.mock('../../src/hooks/useFinalAccounts', () => ({
   useFinalAccounts: () => ({
     finalAccounts: S.accountsError ? [] : S.accounts, finalAccountsLoading: false, finalAccountsError: S.accountsError,

@@ -1,6 +1,8 @@
 import { PO_STATUS, GST_RATE, roundMoney } from './purchaseOrders'
 import { claimTotals } from './progressClaims'
 import { isVariationOriginLine, indexOrNull, variationLineCountOf } from './sourceLine'
+import { CALC_VERSION, roundToCents, gstOnAmount } from './supplierCalc'
+import { fromCents, gstOfCents, toCents } from './money'
 
 // ── Supplier Invoices (accounts payable) ─────────────────────────────────────
 // Supplier invoices are the cost-side "bills" a company receives from its
@@ -150,6 +152,16 @@ export function gstForLine(amount, taxCode) {
   return taxCode === TAX_CODE.GST ? roundMoney(amt * GST_RATE) : 0
 }
 
+// GST for one line under a document's calculation version (ADR-91). LEGACY is
+// `gstForLine`; EXACT is 10% of the line's whole cents, half away from zero.
+// Null for an unknown version or an out-of-range exact amount.
+export function gstForLineFor(amount, taxCode, version = CALC_VERSION.LEGACY) {
+  if (version === CALC_VERSION.LEGACY) return gstForLine(amount, taxCode)
+  if (version !== CALC_VERSION.EXACT) return null
+  if (taxCode !== TAX_CODE.GST) return 0
+  return gstOnAmount(amount, CALC_VERSION.EXACT)
+}
+
 export const formatSupplierInvoiceNumber = (n) => `SI-${String(n).padStart(4, '0')}`
 
 // Header totals from ex-GST line amounts and per-line GST.
@@ -185,6 +197,41 @@ export function invoiceTotals(lineItems, retention = 0) {
   const payableTotal = roundMoney(grossTotal - retentionTotal)
   return { subtotal, gstTotal, grossTotal, retention: retained, retentionGst, retentionTotal, net, payableGst, payableTotal }
 }
+
+// Header totals under the invoice's OWN calculation version (ADR-91).
+//   LEGACY — `invoiceTotals`, unchanged to the byte.
+//   EXACT  — integer cents throughout: subtotal and GST are sums of the
+//            lines' stored cents; retention is clamped to the subtotal; its GST
+//            is 10% of the retained cents, half away from zero.
+// Null for an unknown version or a figure outside the supported range.
+export function invoiceTotalsFor(lineItems, retention = 0, version = CALC_VERSION.LEGACY) {
+  if (version === CALC_VERSION.LEGACY) return invoiceTotals(lineItems, retention)
+  if (version !== CALC_VERSION.EXACT) return null
+  let subtotalCents = 0
+  let gstCents = 0
+  for (const li of lineItems ?? []) {
+    const a = roundToCents(Number(li?.amount) || 0)
+    const g = roundToCents(Number(li?.gstAmount) || 0)
+    if (a === null || g === null) return null
+    subtotalCents += a
+    gstCents += g
+  }
+  const retentionInput = roundToCents(Number(retention) || 0)
+  if (retentionInput === null) return null
+  const retainedCents = Math.min(retentionInput, subtotalCents)
+  const retentionGstCents = gstOfCents(retainedCents)
+  const grossCents = subtotalCents + gstCents
+  const c = fromCents
+  return {
+    subtotal: c(subtotalCents), gstTotal: c(gstCents), grossTotal: c(grossCents),
+    retention: c(retainedCents), retentionGst: c(retentionGstCents), retentionTotal: c(retainedCents + retentionGstCents),
+    net: c(subtotalCents - retainedCents), payableGst: c(gstCents - retentionGstCents),
+    payableTotal: c(grossCents - retainedCents - retentionGstCents),
+  }
+}
+
+// Whole cents of a stored two-decimal figure.
+export const invoiceCents = (amount) => toCents(Number(amount) || 0)
 
 // Reconciliation guard for the progress_claim path: a claim-sourced invoice must
 // pay exactly the approved claim's certified GST and total. Returns null when it

@@ -8,6 +8,8 @@ import { useWriteAction } from '../../hooks/useWriteAction'
 import { formatCurrency } from '../../lib/formatters'
 import { roundMoney } from '../../lib/purchaseOrders'
 import { useProfile } from '../../hooks/useProfile'
+import { useCommercialActivation } from '../../hooks/useCommercialActivation'
+import CommercialMaintenanceNotice from '../../components/CommercialMaintenanceNotice'
 import { useSupplierPayments } from '../../hooks/useSupplierPayments'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
 import { useSupplierCreditNotes } from '../../hooks/useSupplierCreditNotes'
@@ -100,7 +102,6 @@ function PaymentEditorModal({
     }
     return [blankRow()]
   })
-  const [acknowledged, setAcknowledged] = useState(false)
   const write = useWriteAction('Supplier payment draft')
 
   const supplier = supplierContacts.find(c => c.id === supplierId) ?? null
@@ -139,7 +140,6 @@ function PaymentEditorModal({
       setRows([blankRow()])
     }
     setSupplierId(next)
-    setAcknowledged(false)
   }
 
   const setRow = (idx, patch) => setRows(rs => rs.map((r, i) => (i === idx ? { ...r, ...patch } : r)))
@@ -169,7 +169,6 @@ function PaymentEditorModal({
     setRows(proposal.length
       ? proposal.map(a => ({ supplierInvoiceId: a.supplierInvoiceId, allocatedAmount: String(a.allocatedAmount) }))
       : [blankRow()])
-    setAcknowledged(false)
   }
 
   const builtAllocations = useMemo(
@@ -185,15 +184,18 @@ function PaymentEditorModal({
 
   // Over-allocating the PAYMENT is impossible — the money does not exist.
   const overAllocatesPayment = toCents(allocated) > toCents(cash)
-  // Over-reconciling an INVOICE is warned with an acknowledgement, never
-  // blocked: it cannot be enforced anywhere (rules cannot sum sibling documents).
+  // Over-allocating an INVOICE is REFUSED (Deferred Control 18, ADR-94): the
+  // backend checks every allocation against the invoice ledger, so this
+  // preview blocks the save instead of asking for an acknowledgement. Cash paid
+  // beyond what an invoice is owed is recorded as the payment's UNALLOCATED
+  // amount.
   const warnings = useMemo(
     () => invoiceOverPaymentWarnings(builtAllocations, supplierInvoices, supplierPayments, {
       excludePaymentId: payment?.id ?? null, creditNotes: supplierCreditNotes, releasedByInvoiceId,
     }),
     [builtAllocations, supplierInvoices, supplierPayments, supplierCreditNotes, payment?.id, releasedByInvoiceId],
   )
-  const needsAck = warnings.length > 0
+  const overAllocatesInvoice = warnings.length > 0
 
   const futureDated = isFutureDate(paymentDate)
 
@@ -205,7 +207,7 @@ function PaymentEditorModal({
     })
     ?? validateAllocations(builtAllocations, cash, 'supplierInvoiceId')
 
-  const valid = !validationError && (!needsAck || acknowledged)
+  const valid = !validationError && !overAllocatesInvoice
 
   function handleSubmit(e) {
     e.preventDefault()
@@ -427,25 +429,14 @@ function PaymentEditorModal({
         </div>
 
         {warnings.map((w, i) => (
-          <p key={i} className="m-0 text-[12px] text-brand-amber">⚠ {w.message}</p>
+          <p key={i} className="m-0 text-[12px] text-brand-red">✕ {w.message}</p>
         ))}
 
-        {needsAck && (
-          <label className="flex items-start gap-2 text-[12px] text-brand-text cursor-pointer">
-            <input
-              type="checkbox"
-              className="mt-0.5"
-              checked={acknowledged}
-              onChange={e => setAcknowledged(e.target.checked)}
-            />
-            <span>
-              I understand this pays more than the invoice&apos;s remaining payable and want to save it anyway.
-              <span className="block text-brand-muted mt-0.5">
-                Constrap warns but never blocks over-reconciliation, and cannot prevent two users allocating the
-                same remaining payable at the same time.
-              </span>
-            </span>
-          </label>
+        {overAllocatesInvoice && (
+          <p className="m-0 text-[12px] text-brand-text">
+            An allocation exceeds what remains payable on its invoice. Reduce it — any cash paid beyond what is owed
+            stays on this payment as its unallocated amount.
+          </p>
         )}
 
         {/* Allocated / unallocated summary */}
@@ -726,6 +717,13 @@ export default function ProjectSupplierPayments() {
   // same reasoning the retentionReleases rules apply to voiding a release).
   const payableStateUnknown = creditStateUnknown || retentionReleasesError
 
+  // Phase 2 activation (lib/commercialActivation.js): a company not yet
+  // switched over sees supplier payments READ-ONLY — new, edit, post and void
+  // (and the "Record payment" hand-off) are withheld; the detail view stays.
+  // UX only; the server and the Rules refuse regardless.
+  const activation = useCommercialActivation()
+  const writable = activation.writable
+
   // ── "Record payment" hand-off from a posted Supplier Invoice ──────────────
   //
   // The hand-off arrives as ONE-SHOT route state. It is read in the useState
@@ -857,6 +855,8 @@ export default function ProjectSupplierPayments() {
         </Card>
       )}
 
+      <CommercialMaintenanceNotice activation={activation} />
+
       {/* ── Cash paid ──────────────────────────────────────────────────────── */}
       <Card className="mb-3.5">
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
@@ -950,7 +950,7 @@ export default function ProjectSupplierPayments() {
           {supplierContacts.length === 0 && (
             <Btn variant="ghost" sm onClick={() => navigate('/contacts')}>Add a supplier contact</Btn>
           )}
-          <Btn sm onClick={openNew} disabled={supplierContacts.length === 0 || payableStateUnknown}>+ New Payment</Btn>
+          {writable && <Btn sm onClick={openNew} disabled={supplierContacts.length === 0 || payableStateUnknown}>+ New Payment</Btn>}
         </div>
       </div>
 
@@ -996,7 +996,7 @@ export default function ProjectSupplierPayments() {
             </p>
             {supplierContacts.length === 0
               ? <Btn variant="ghost" onClick={() => navigate('/contacts')}>Go to Contacts</Btn>
-              : <Btn onClick={openNew} disabled={payableStateUnknown}>+ Record your first payment</Btn>}
+              : writable ? <Btn onClick={openNew} disabled={payableStateUnknown}>+ Record your first payment</Btn> : null}
           </div>
         ) : filtered.length === 0 ? (
           <div className="px-5 py-12 text-center text-[13px] text-brand-muted">No payments match your filters.</div>
@@ -1048,7 +1048,7 @@ export default function ProjectSupplierPayments() {
                         <Badge label={PAYMENT_STATUS_LABELS[p.status] ?? p.status} variant={PAYMENT_BADGE_VARIANTS[p.status]} sm />
                       </td>
                       <td className="px-3.5 py-3">
-                        <div className="flex gap-1.5 justify-end">
+                        {writable && <div className="flex gap-1.5 justify-end">
                           {p.status === PAYMENT_STATUS.DRAFT && (
                             <>
                               {/* Editing re-opens the allocation picker and
@@ -1062,7 +1062,7 @@ export default function ProjectSupplierPayments() {
                           {(p.status === PAYMENT_STATUS.DRAFT || p.status === PAYMENT_STATUS.POSTED) && (
                             <Btn sm variant="ghost" onClick={() => setVoiding(p)}>Void</Btn>
                           )}
-                        </div>
+                        </div>}
                       </td>
                     </tr>
                   )
@@ -1150,7 +1150,7 @@ export default function ProjectSupplierPayments() {
         accounting integrations are future work.
       </p>
 
-      {editing && !payableStateUnknown && (
+      {writable && editing && !payableStateUnknown && (
         <PaymentEditorModal
           key={editing === 'new' ? `new_${resolvedPreselect?.supplierInvoiceId ?? resolvedPreselect?.supplierId ?? 'blank'}` : editing.id}
           payment={editing === 'new' ? null : editing}
@@ -1168,7 +1168,7 @@ export default function ProjectSupplierPayments() {
         />
       )}
 
-      {posting && !payableStateUnknown && (
+      {writable && posting && !payableStateUnknown && (
         <PostModal
           payment={posting}
           currencyCode={currencyCode}
@@ -1177,7 +1177,7 @@ export default function ProjectSupplierPayments() {
         />
       )}
 
-      {voiding && (
+      {writable && voiding && (
         <VoidModal payment={voiding} onClose={() => setVoiding(null)} onConfirm={voidSupplierPayment} />
       )}
 

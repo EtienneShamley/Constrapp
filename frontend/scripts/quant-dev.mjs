@@ -38,6 +38,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
+import { assertRealAuthLauncherAllowed } from './realAuthLauncherGuard.mjs'
 
 const FRONTEND = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -71,6 +72,8 @@ if (missing.length) die([`frontend/.env.local is missing: ${missing.join(', ')}`
 
 const PROJECT_ID = readEnv('VITE_FIREBASE_PROJECT_ID')
 const BUCKET = readEnv('VITE_FIREBASE_STORAGE_BUCKET')
+// D3 #40: real project id + real Auth — never started by accident.
+assertRealAuthLauncherAllowed({ projectId: PROJECT_ID, launcher: 'test:quant' })
 
 // The emulator ports the app will be told about — read from firebase.json so
 // the launcher, the emulators and the app can never disagree.

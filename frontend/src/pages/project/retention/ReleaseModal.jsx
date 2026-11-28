@@ -2,10 +2,9 @@ import { useState, useMemo } from 'react'
 import Btn from '../../../components/Btn'
 import { formatCurrency } from '../../../lib/formatters'
 import { todayIso } from '../../../lib/payments'
-import {
-  releaseTotals, releasedExGstForInvoice, remainingRetentionExGst, validateReleaseDraft,
-  RETENTION_RELEASE_CONCURRENCY_NOTICE,
-} from '../../../lib/retention'
+import { isIsoDateShape } from '../../../lib/payments'
+import { RETENTION_RELEASE_CONCURRENCY_NOTICE } from '../../../lib/retention'
+import { supplierLedgerFromRegisters, supplierInvoiceFigures, allocateSupplierRelease } from '../../../lib/supplierLedger'
 
 // ── Release retention on one supplier invoice ────────────────────────────────
 //
@@ -15,12 +14,10 @@ import {
 // released amount becomes part of the invoice's payable and is then settled by
 // an ordinary Supplier Payment.
 //
-// ⚠️ THE CUMULATIVE CAP IS HARD-BLOCKED HERE. Releasing more than the retention
-// still available is refused outright — there is no acknowledgement override,
-// because the normal UI must never knowingly create an over-release. This is a
-// correctness guard, NOT the security boundary: Firestore rules cannot sum
-// sibling releases, so two people releasing the same retention simultaneously
-// can still both succeed (docs/SECURITY.md → Deferred Control 24).
+// THE CUMULATIVE CAP. The preview below refuses a release beyond the retention
+// still held; the AUTHORITATIVE check is the trusted backend's, against the
+// invoice's settlement ledger, on save and again on posting (ADR-94 — Deferred
+// Control 24 closed in code), so concurrent releases cannot both succeed.
 
 const labelCls = 'block text-[11px] font-bold text-brand-muted uppercase tracking-[0.4px] mb-1.5'
 const inputCls = 'w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-[13px] text-brand-text placeholder:text-brand-muted focus:border-brand-accent focus:outline-none'
@@ -35,22 +32,23 @@ function Row({ label, value, strong, muted }) {
 }
 
 export default function ReleaseModal({
-  invoice, release = null, releases, currencyCode, onSave, onClose,
+  invoice, release = null, releases, creditNotes = [], currencyCode, onSave, onClose,
 }) {
   const money = (n) => formatCurrency(n, currencyCode, { precise: true })
   const editing = !!release
 
-  // What has already been released, EXCLUDING the draft being edited so it never
-  // counts itself. This is also the `previouslyReleasedAmount` snapshot the hook
-  // will store — it is derived, never authored by the user.
-  const alreadyReleased = useMemo(
-    () => releasedExGstForInvoice(releases, invoice.id, { excludeReleaseId: release?.id ?? null }),
-    [releases, invoice.id, release],
+  // ADR-94 — the invoice ledger as the registers on this page imply it (this
+  // draft excluded): releases and the retained part of credits draw on one
+  // pool, and a release's GST is a share of the invoice's STORED retention GST
+  // (ADR-91 Decision 4). The backend re-derives it against the authoritative
+  // ledger on save and again on posting.
+  const ledgerEntry = useMemo(
+    () => supplierLedgerFromRegisters(invoice, { releases: (releases ?? []).filter(r => r.id !== release?.id), creditNotes }),
+    [invoice, releases, creditNotes, release],
   )
-  const available = useMemo(
-    () => remainingRetentionExGst(invoice, alreadyReleased),
-    [invoice, alreadyReleased],
-  )
+  const figures = useMemo(() => supplierInvoiceFigures(invoice), [invoice])
+  const alreadyReleased = ledgerEntry.ledger.releasedRetentionCents / 100
+  const available = figures.problem ? 0 : Math.max(0, figures.R - ledgerEntry.ledger.releasedRetentionCents - ledgerEntry.ledger.creditedRetentionCents) / 100
 
   const [amount, setAmount]           = useState(release ? String(release.amount) : '')
   const [releaseDate, setReleaseDate] = useState(release?.releaseDate || todayIso())
@@ -59,20 +57,19 @@ export default function ReleaseModal({
   const [saving, setSaving]           = useState(false)
   const [error, setError]             = useState(null)
 
-  // Live derived GST/total using the exact cumulative-delta model that both the
-  // hook and Firestore rules apply — so what is previewed is what is stored.
-  const preview = useMemo(
-    () => releaseTotals(alreadyReleased, Number(amount) || 0),
-    [alreadyReleased, amount],
-  )
+  const entered = Math.round((Number(amount) || 0) * 100) / 100
+  const allocation = figures.problem
+    ? { error: figures.problem }
+    : (ledgerEntry.state === 'inconsistent'
+        ? { error: `This invoice's settlement history is inconsistent: ${ledgerEntry.problem}` }
+        : (entered > 0 ? allocateSupplierRelease(figures, ledgerEntry.ledger, entered) : { error: 'The release amount must be greater than zero.' }))
+  const preview = allocation.error
+    ? { amount: entered, gstAmount: 0, releaseTotal: entered }
+    : { amount: allocation.amountCents / 100, gstAmount: allocation.gstCents / 100, releaseTotal: (allocation.amountCents + allocation.gstCents) / 100 }
 
-  const validationError = validateReleaseDraft({
-    supplierInvoiceId: invoice.id,
-    amount, releaseDate, reason,
-    invoices: [invoice],
-    releases,
-    excludeReleaseId: release?.id ?? null,
-  })
+  const validationError = allocation.error
+    ?? (!isIsoDateShape(releaseDate) ? 'Enter the date this release was agreed.'
+      : (!String(reason || '').trim() ? 'Enter a reason for releasing this retention.' : null))
   const blocked = !!validationError
 
   async function submit(e) {

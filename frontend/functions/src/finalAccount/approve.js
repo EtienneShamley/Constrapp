@@ -2,6 +2,7 @@ import { CODE, fail } from '../lib/errors.js'
 import { userRef, assertActiveRole } from '../lib/authz.js'
 import { AUDIT, auditInTx } from '../lib/audit.js'
 import { FieldValue } from '../lib/firebaseAdmin.js'
+import { segregationGuard } from '../lib/approvalPolicy.js'
 import * as calc from '../generated/finalAccountCalc.js'
 
 // ── approveFinalAccount — the ONE financial operation in the trusted backend ──
@@ -52,6 +53,9 @@ const ORDERED = [
   // The receivable contract (ADR-87 / ADR-88): invoiced, receivable, retention
   // held and owed-to-client figures are derived from these two as well.
   'clientCreditNotes', 'clientRetentionReleases',
+  // Phase 2 step 5: refunds (cash out of what was received) and receipt
+  // applications — net cash, what each invoice holds, unsettled money.
+  'clientRefunds', 'clientReceiptApplications',
 ]
 
 // The most documents ONE register may hold for an approval. The transaction
@@ -163,6 +167,12 @@ export async function approveFinalAccount(deps, { uid, projectId, number, expect
     if (account.status !== calc.FINAL_ACCOUNT_STATUS.DRAFT) fail(CODE.FINAL_ACCOUNT_NOT_DRAFT)
     if (account.number !== number || account.revision !== expectedRevision) fail(CODE.FINAL_ACCOUNT_STALE)
     if (account.openItemsAcknowledged !== true) fail(CODE.FINAL_ACCOUNT_CHANGED)
+    // ADR-96: approval segregation — the preparer of the draft (its creator and
+    // the last user who refreshed it) may not approve it while the company
+    // policy enables segregation.
+    const segregation = segregationGuard(db, uid, { label: 'Final Account' })
+    await segregation.read(tx, { companyId })
+    segregation.check(account)
 
     // 3. Every source, through the transaction.
     const { sources, readAt } = await readFinalAccountSources(tx, { companyRef, projectRef }, sourceLimit)
@@ -203,6 +213,7 @@ export async function approveFinalAccount(deps, { uid, projectId, number, expect
         projectId, number, status: calc.FINAL_ACCOUNT_STATUS.APPROVED, revision: expectedRevision + 1, selfApproved,
         currency: currencyCode, finalContractSum: content.figures.finalContractSum, finalCost: content.figures.finalCost,
         budgetApprovalId: content.sources.budgetApprovalId,
+        segregation: segregation.record(),
       },
     }, now())
     return { replay: false, companyId, number, revision: expectedRevision + 1, selfApproved }

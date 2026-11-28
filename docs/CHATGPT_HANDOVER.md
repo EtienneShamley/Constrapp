@@ -1,1478 +1,809 @@
-# Constrap — ChatGPT Development Handover
+# Constrap — ChatGPT Architectural Handover
 
-Operational handover for a **new ChatGPT (architect) conversation**. It lets a
-fresh session resume Constrap development without the previous conversation
-history. It is an index and a checkpoint, **not** a second copy of the
-documentation: where this file and a source document disagree, the source
-document wins and this file must be corrected.
+**The consolidated entry point for ChatGPT architectural continuity.** A new
+ChatGPT conversation that reads this file should be able to take over as Lead
+Software Architect without the earlier conversations. It summarises and
+indexes the repository; it does not replace it (see *Source-of-truth
+hierarchy* below).
 
-**Last updated:** 27 November 2026 (NZDT), **Commercial Finance Phase 1 — production closeout** revision. On `docs/commercial-finance-phase-1-closeout` from `main` at `c9df38b` (documentation only; uncommitted). Evidence: PROD-VERIFIED (read-only) and PROD-BROWSER in the isolated acceptance company, plus the Product Owner's executed release steps.
-
-**Commercial Finance Phase 1 (CF1–CF6) — LIVE and CLOSED within its accepted scope (Lead Architect — REPORTED).** (TESTING.md §82; tracker B18; DEPLOYMENT.md → *Release record (as executed)*; ADR-85 to ADR-89, with ADR-89 → *Void policy* and *Production closure*.)
-
-- **Released (Product Owner, 26 Nov 22:30 – 27 Nov 03:19 UTC):** `main` `9e31bb0` → six callables (A) → Rules `0e228bd0…` (B) → probes, frozen inventory (C, D) → `approveFinalAccount` + Hosting `2f85dee4071c61d6` (E) → receipts for TEST (F1, `0f623c6`) → non-zero baseline reconciled (F2) → receipts for all (F3, `4c54a45`) → finance switch + TEST activation (G, `c9df38b`) → acceptance (H) → **Apex activated by the operator script (I; no deploy)**. 17 services; Storage Rules unchanged.
-- **Accepted evidence:** F2 marker 1 / 1 / 1 / 60000 and ledger 110000 → 50000 after the historical void, replay without effect; Stage H every figure equal to an independent integer-cent calculation; seven ledgers reconciled to their entries; 15 direct writes refused; concurrent and replayed posts without a second effect; 29 audit events exactly; Final Account blocked by an amount owed, approved after valid lifecycle; GST §44 steps 1, 2 and the financial parts of 3 PASSED in production.
-- **Void policy (architect):** invariant-based; strict reverse order not required; jurisdiction-specific tax compliance → Phase 3.
-- **Apex:** `clientFinanceEnabled` true with one audit event; no Apex financial test transaction; its receipt baseline awaits its first genuine receipt operation.
-- **Lessons recorded:** every targeted Functions deploy needs `functions:team:<name>`; each switch change is two lines (value + release-safety pin); Hosting `index.html` is cached for an hour — confirm the bundle before browser checks; deactivating a company is a brake, not a data rollback.
-- **Carried forward:** D3 #35 (payable side), #36, #37, #39; alerts for the six new callables; Hosting entry-point cache; Dashboard §22 checks 2–3; printed credit-note paper layout; Final Account CSV; §44 3a external-role checks; production role matrix; refunds and credit settlement; load testing; international tax compliance; CI/CD performance and cost.
-- **Exact next action:** architect review and integration of this closeout (documentation only). Then **Phase 2 — Commercial Completion** (ROADMAP): estimating; approval segregation; client refunds and credit settlement; remaining commercial lifecycle gaps; trusted-backend migration of the three near-ceiling paths (D3 #37). Not started.
-
-*As written at the final integration gate:* 27 November 2026 (NZDT), **Commercial Finance Phase 1 — final integration safeguards, architect review** revision. On `feature/commercial-finance-phase-1` from `main` at `8702728` (uncommitted). Evidence: LOCAL / EMULATOR, plus one read-only aggregate production inventory — nothing deployed, production not written.
-
-**Commercial Finance Phase 1 — backend architecture, six callables and the CLAUDE.md / AGENT.md amendments APPROVED (REPORTED); two integration blockers resolved — IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION.** (TESTING.md §77–§81; tracker B13–B17; ADR-85 to ADR-89 with A1–A9 and S1–S5.)
-
-- **Historical receipts (S1):** production holds 9 posted receipts allocating to 5 issued invoices (read-only inventory, TESTING.md §81.2). They are brought into the invoice ledgers by an exact one-time baseline per project, established in one transaction by the first finance operation there; nothing runs on a project without the marker; no historical document is rewritten; voiding a historical receipt adjusts the ledger exactly once. The earlier "lower bound" is gone.
-- **Cutover (S2):** both switches `false` at deploy. Callables → restrictive Rules → verify, wait 10 minutes → read-only baseline inventory → Hosting → enable receipts → activate TEST company → acceptance → general availability. Receipts cannot be posted or voided between the Rules and the enabling (announced maintenance restriction). Never restore the previous Rules after receipts are enabled.
-- **Receipt scope for the cutover (S6):** a third parameter, `CLIENT_RECEIPT_ALL_COMPANIES` (`false` at cutover), limits trusted receipt processing to a company carrying the server-written `clientReceiptsEnabled` flag (`set-client-finance.mjs --receipts`). TEST company first (F1), non-zero baseline exercised and reconciled there (F2), every company only after architect acceptance (F3). The production customer's receipts stay under the maintenance restriction until F3. Architect GO for integration given 27 November 2026 (REPORTED); the gate was added afterwards on instruction.
-- **Company activation (S3):** `companies/{id}.clientFinanceEnabled`, server-written by `functions/scripts/set-client-finance.mjs`; enforced by Rules (retention; draft credit notes and releases) and the four callables; the browser hides the features. Receipts are not gated.
-- **Range (S4):** 999,999,999,999.99 per invoice and ten times that per receipt, enforced by the server and the Rules; ledger totals must be safe integers.
-- **Evidence:** unit 116 / 6,085; rules 40 / 2,632; Functions 9 / 256 and 14 / 623; commit-1 tree verified separately (unit 104 / 5,357; rules 39 / 2,492). Rules 236,120 bytes; binding file 236,800 — **8,200 under budget**; compiled size unmeasured.
-- **Open:** D3 #35, #37 (Phase 2 plan), #39; GST §44 and every acceptance step in production; the refund / credit-settlement workflow; the load test (Phase 3); the baseline has run only on the emulator.
-- **Exact next action:** Lead Architect review; GO / NO-GO for integration; the two commits only on the Product Owner's instruction (DEPLOYMENT.md has the exact commands).
-
-*As written at the previous gate (final release-readiness pass):* 26 November 2026 (NZDT), **Commercial Finance Phase 1 — final release-readiness pass, final architect review** revision. On `feature/commercial-finance-phase-1` from `main` at `8702728` (uncommitted). Evidence: LOCAL / EMULATOR only — nothing deployed, production not read or written.
-
-**Commercial Finance Phase 1, ADR-89 APPROVED (REPORTED), final pass complete — IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION.** (TESTING.md §77–§80; tracker B13–B16; ADR-85 to ADR-89 with *Final-pass amendments* A1–A9.)
-
-- **Receipt dependency (A1–A3):** no receipt scan and no 5,000 limit. The invoice ledger carries `receivedCents`; `postClientReceipt` and `voidClientReceipt` are trusted callables; the Rules leave a client drafts and draft-voids of receipts. A release void reads one ledger document. Measured: identical document reads with 0 and with 5,200 unrelated receipts. Warn-and-acknowledge is now enforced by the server (a stale tab cannot over-allocate silently). No migration; legacy receipts untouched.
-- **Six new callables** (four credit-note / release, two receipt) plus a changed `approveFinalAccount`. Two kill switches: `CLIENT_RECEIPT_POSTING_ENABLED` (**true** at release) and `CLIENT_FINANCE_POSTING_ENABLED` (**false** at release — staged activation).
-- **Void UX (A4):** a refused void names the blocking credit note, release or receipt.
-- **Monetary (A5, A6):** the one-cent receivable rise was an incorrect rounding result; corrected by rounding direction and proven not to recur. Supported range 999,999,999,999.99 per client invoice.
-- **D3 #38 (A8):** resolved locally — the emulator build sends an unsigned emulator-only App Check token; nothing of it is in a production build.
-- **Evidence:** unit 115 / 6,019; rules 40 / 2,621; Functions 9 / 249 and 13 / 552; local browser acceptance, corrected GST §44 (1a–3b) and the compatibility matrix all PASS with stated limits (TESTING.md §80.5–80.7).
-- **Rules:** 235,321 bytes; binding file 236,001 — **8,999 under the 245,000 budget**. Compiled size unmeasured — a release prerequisite.
-- **Release order (when authorised; DEPLOYMENT.md):** two commits → Azure green → read-only check that production holds no retained client invoice → seven callables → Rules → Hosting immediately → verify → activate the finance switch → production acceptance on the acceptance company. After records exist: fix forward; the switches are the brake.
-- **Open:** D3 #35 (payable rounding), D3 #37 (Phase 2 architecture plan — untouched), D3 #39 (App Check wording on two older callable surfaces), the refund / credit-settlement workflow (before customer onboarding), the load test (Phase 3), GST §44 and all acceptance in production.
-- **Exact next action:** Lead Architect final review; GO / NO-GO for integration; commits only on the Product Owner's instruction.
-
-*As written at the second gate (before the final pass):* 26 November 2026 (NZDT), **Commercial Finance Phase 1 — authoritative backend correction, final integration gate** revision. On `feature/commercial-finance-phase-1` from `main` at `8702728` (uncommitted; awaiting the Lead Architect's review). Evidence: LOCAL / EMULATOR only — nothing deployed, production not read or written.
-
-**Commercial Finance Phase 1 with the ADR-89 correction — IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION.** (TESTING.md §77–§79; tracker B13–B15; ADR-85 to ADR-89.)
-
-- **Decision (Lead Architect, 26 November 2026 — REPORTED):** NO-GO on the first design (cumulative caps in a Rules-paired ledger); functional work preserved. Posting and voiding of client credit notes and client retention releases, and every ledger write, are now **trusted callables**; the Rules keep reads, drafts and immutability. Long-term scalability, maintainability, financial integrity and cost efficiency are permanent requirements — the ten principles are in ENGINEERING_STANDARDS.md §9 and ARCHITECTURE.md.
-- **The rule going forward (ADR-89, Decision 1):** a mutation that reads an array or a register, holds a cumulative or cross-document invariant, or derives stored financial figures is built in the backend; simple scalar writes stay with the client SDK and Rules.
-- **Callables:** `postClientCreditNote`, `voidClientCreditNote`, `postClientRetentionRelease`, `voidClientRetentionRelease` — identifiers and a reason in, never an amount; the server re-derives every figure from the invoice and its ledger with the generated copy of the browser's own modules; one transaction, one audit event, idempotent. Kill switch `CLIENT_FINANCE_POSTING_ENABLED`.
-- **Blockers closed:** A (invalid lines can no longer be persisted as posted) and B / Deferred Control 49 (a release void that receipts rely on is refused by the server).
-- **Financial edge case resolved:** the credit that raised the receivable on a mixed-tax, high-retention invoice was incorrect semantics; the allocation rule and one exact invariant (retention GST held ≤ the retained share of the GST still billed) now prevent it, including after voids. The 20,000,000.00 retention limit is removed.
-- **Evidence:** unit 113 / 5,935; rules 40 / 2,597; Functions 9 / 241 and 12 / 497; browser acceptance A–L on local emulators; GST §44 steps run locally (two cannot be performed as written — recorded).
-- **Rules:** 235,387 bytes; binding file 236,067 — **8,933 under the 245,000 budget** (first design: 1,216). Compiled size unmeasured — a release prerequisite.
-- **Open:** D3 #35 (payable rounding), D3 #37 (three near-ceiling blocks — the next backend migrations), D3 #38 (dev launcher and App Check), the refund / credit-settlement workflow (required before customer onboarding), the load test (plan in ARCHITECTURE.md), GST §44 in production.
-- **Release order (when authorised):** two commits → Azure green → Rules → five callables → Hosting. After the first credit note, release or retained invoice exists: fix forward; the kill switch is the safe brake (DEPLOYMENT.md).
-- **Exact next action:** Lead Architect review; GO / NO-GO for integration.
-
-*As written at the first gate (NO-GO):* 26 November 2026 (NZDT), **Commercial Finance Phase 1 — final integration gate** revision. On `feature/commercial-finance-phase-1` from `main` at `8702728` (uncommitted; awaiting the Lead Architect's review). Evidence: LOCAL / EMULATOR only — nothing deployed, production not read or written.
-
-**Commercial Finance Phase 1 (CF1–CF6) — IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION.** (TESTING.md §77–§78; tracker B13, B14; ADR-85 to ADR-88.)
-
-- **Architect rulings (26 November 2026 — REPORTED):** ADR-85 to ADR-88 approved and numbered. Per-invoice ledger; exact receivable-side GST; proportional retention GST; proportional credit against retained invoices; invoice void refused while posted entries exist; version-aware Final Account comparison; payable-side rounding unchanged.
-- **Built:** `clientCreditNotes` (`CCN-`), `clientRetentionReleases` (`CRR-`), `clientInvoiceLedgers/{invoiceId}`; retention fields on client invoices; `lib/money.js`; ONE receivable selector (`lib/clientReceivables.js`) read by Client Invoices, Receipts, Cash Flow, the Commercial Report, Portfolio and the Final Account; a **Client Retention** sub-tab; `approveFinalAccount` reads two more registers.
-- **Evidence:** unit 111 / 5,789; rules 40 / 2,548; Functions 8 / 179 and 11 / 372; lint and build clean; targeted browser run on local emulators with figures matching independent calculation.
-- **Rules:** 243,104 bytes; the binding (transitional) file is 243,784 — **1,216 under the 245,000 budget. The next Rules change needs a capacity recovery first.** Compiled size unmeasured — an explicit release prerequisite.
-- **D3 #35:** receivable side resolved; **payable side OPEN** (unchanged; version-aware correction recorded). **D3 #37:** investigated — three pre-existing blocks within about 6–10% of the expression ceiling on allowed requests; follow-up recommended.
-- **Not done:** GST §44 manual steps 1–3 in a browser; the untested browser paths in TESTING.md §78.5; any production step.
-- **Release order (when authorised):** two commits (ADR-85 hoist; then the finance work) → Azure green → Rules → `approveFinalAccount` → Hosting. **After the first credit note, release or retained invoice exists, do not roll Hosting or Rules back — fix forward** (DEPLOYMENT.md).
-- **Exact next action:** Lead Architect review of the consolidated Phase 1 report; GO / NO-GO for integration.
-
-*As written at the assessment checkpoint:* 26 November 2026 (NZDT), **Commercial Finance Phase 1 — assessment checkpoint** revision. On `feature/commercial-finance-phase-1` from `main` at `8702728` (uncommitted; awaiting the Lead Architect's rulings). Evidence: LOCAL / EMULATOR only — nothing deployed, production not read or written.
-
-**Commercial Finance Phase 1 (CF1–CF6) — IN PROGRESS; stopped at the consolidated architect review.** (TESTING.md §77; tracker B13.)
-
-- **CF3 — Rules capacity recovery 3 (ADR-85): IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION.** Seven lifecycle helpers hoisted from byte-identical conjunct runs; `firestore.rules` 236,737 → **228,289** bytes; the binding headroom (the transitional file, 228,969) is **16,031**. Proven by `scripts/verify-rules-helper-hoist.mjs --base 8702728`; rules suite 39 / 2,492 unchanged; unit 104 / 5,357; lint clean. Rules-only; may be published alone. Compiled size is unmeasured.
-- **What governs a Rules publish (VERIFIED against current Firebase / Google Cloud documentation):** 256 KB source, 250 KB compiled (reported only at publish), 1,000 expressions per request, 10 / 20 document-access calls. Source bytes are necessary, not sufficient.
-- **CF2 — rounding (D3 #35): ASSESSED; ADR-86 PROPOSED.** The one-cent-low GST comes from seven `roundMoney(x × 0.1)` call sites. Recommended: a shared exact integer-cent module; the receivable chain exact for new documents; corrective documents derive GST from stored figures; the payable side unchanged pending a versioned correction. **No calculation has changed.**
-- **CF1 — architecture: ADR-87 (client credit notes) and ADR-88 (client retention) PROPOSED.** Nine *(architect)* rulings requested; the consequential ones are the Rules-paired per-invoice ledger, retention GST as a proportional share, and how a credit falls on a retained invoice.
-- **CF4, CF5, CF6 — NOT STARTED.** GST §44 manual steps 1–3 remain NOT RUN.
-- **New finding D3 #37:** 4,560 "maximum of 1000 expressions" messages on refused requests in a full rules run, on `main` and unchanged by the recovery.
-- **Exact next action:** the Lead Architect rules on the *(architect)* items and confirms the ADR numbers; implementation then resumes on this branch.
-
-*As written before this phase:* 26 November 2026 (NZDT), **D3 #32 production verification and L3 closeout** revision. On `docs/l3-membership-closeout` (uncommitted, documentation only; awaiting the Lead Architect's review).
-
-**L3 Stage 2 — CLOSED within its accepted scope. D3 #32 CLOSED. D3 #34
-CLOSED.** (TESTING.md §76; tracker B12.)
-
-- **Release.** `main` `0bdca38` (commit `893bed3`), Hosting release
-  `edc2bf6f34568d78`, 25 November 2026 20:32:18 UTC, deployed by the Product
-  Owner. The live bundle on all three origins is identical to a build of
-  that commit. Firestore and Storage Rules are byte-identical to the
-  repository and unchanged since 23 November; no Function or monitoring
-  change.
-- **Membership.** 9 profiles: 3 admitted (all `company_admin`), 6
-  deactivated, none malformed, **none newly restricted**. Every enabled Auth
-  account has a profile.
-- **Production acceptance (TEST Company Admin, `constrapp-69b5d.web.app`
-  only).** Normal start-up, project access and reload PASS with no notice
-  and no console error. **E2-A PASS:** *Waiting for the server*, never a
-  denial, no protected content, recovery in 1.8 s without a reload.
-  **E2-B PASS:** an established session through a 30 s disconnection with
-  no screen change and no sign-out; and the project route's own *Waiting
-  for the server* with recovery in 1.7 s.
-- **How, and its limit.** DevTools request blocking is not available to the
-  browser extension. The application was loaded in a same-origin frame
-  whose `fetch` / `XMLHttpRequest` were made to fail for the Firestore host.
-  It is the released bundle on production data; the failure is injected at
-  the request API, not on the wire, and not in a top-level tab.
-- **E2-C** was not run in production and stays a limitation: no service
-  worker, no offline start-up. A future offline-first PWA requirement.
-- **Integrity.** No production write. Between the before and after
-  snapshots only the reconciliation worker's own document changed. Test
-  identities still disabled. 111 financial register documents unchanged.
-- **New production observation, recorded against D3 #36:** every cold load
-  of a project URL shows *Project not found.* for 55–100 ms before the
-  company read answers. Not introduced by this release.
-- **Open, preserved:** E2-C; D3 #33 (P3); D3 #35 (GST rounding assessment);
-  D3 #36 (P2, before customer onboarding); GST §44 steps 1–3; Dashboard §22
-  checks 2–3; D3 #11 (58 older write sites).
-- **Next milestone: client credit-note architecture assessment and ADR**
-  (with the D3 #35 rounding-semantics assessment; then the Rules capacity
-  assessment). Needs its own brief.
-
-*As written for the correction revision:* 25 November 2026 (NZDT), **D3 #32 membership resolution correction** revision.
-
-**D3 #32 — IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION**
-(TESTING.md §75; tracker B11). On `fix/membership-resolution-state`,
-uncommitted, awaiting the Lead Architect's review. Not deployed.
-
-- **Root cause.** With the Firestore backend unreachable the SDK answers the
-  `users/{uid}` listener at once from its empty cache with a document that
-  "does not exist". The profile provider took that as a settled answer and
-  the membership gate said *No active membership* to a real member.
-- **Correction.** Only a server-confirmed snapshot decides membership. A
-  cache-only answer shows *Waiting for the server*; it neither denies nor
-  admits. The listener asks for metadata changes, which is what delivers the
-  server's confirmation that a document really is missing. A session that
-  was already confirmed is unchanged by a dropped connection. Three source
-  files: `hooks/useProfile.jsx`, `lib/team.js`, `components/MembershipGate.jsx`.
-- **Authorisation is not weakened.** The gate is client-side presentation.
-  Firestore and Storage Rules were not changed and still decide every read
-  and write. A cached active profile no longer enters the shell.
-- **Evidence.** Unit 103 files / 5,333 tests after the architect corrections
-  (89 new; 5,315 at the first report; the regression test
-  fails against `main`'s source). Local browser acceptance on emulators:
-  E2-A and E2-B PASS; deactivation, role change, refused read, identity
-  switch and an L3 uncertain write PASS. **Nothing was run against
-  production.**
-- **D3 #34.** E2 is rewritten as E2-A (application loaded, Firestore
-  unreachable before membership is resolved), E2-B (membership confirmed,
-  then data unavailable) and E2-C (full offline hard reload). E2-C is a
-  recorded limitation: Constrap has no service worker and does not start
-  offline. Kept as a requirement for a future PWA / offline-first increment.
-- **Deployment.** Hosting only. No Rules, Functions, index, monitoring, Auth
-  configuration or data change.
-- **L3 is not closed; E2 stays OPEN** until the correction is deployed and
-  E2-A / E2-B are run in production (TESTING.md §75.9).
-- **Architect corrections (25 November 2026 — REPORTED; implemented
-  26 November; TESTING.md §75.10).** Accepted in principle. The 22–25 ms
-  waiting notice is **accepted** — no delay, timer or debounce. Local E2-A
-  and E2-B accepted. **The gate now refuses a server-confirmed profile with
-  a missing, malformed or unsupported role, or a non-string `companyId`:**
-  a *needs attention* notice, no shell, no automatic sign-out, and it admits
-  by itself once the record is corrected. The six documented roles are
-  admitted, read from the one existing role table (`lib/formatters.js`).
-  Every backend path (acceptance, bootstrap, reactivation, role change)
-  writes a valid role, so no supported lifecycle changes and no migration is
-  needed. A numeric `companyId` used to crash the company provider above the
-  gate; corrected with a one-line guard.
-- **Release preflight (Lead Architect, 26 November 2026 — REPORTED: GO for
-  integration, subject to the preflight; TESTING.md §75.11).** `super_admin`
-  retained with no added permission; legacy profiles preserved; the
-  `CompanyProvider` guard approved; **D3 #36 is P2, before customer
-  onboarding, not blocking.** **Production membership inventory (read-only,
-  aggregates): 9 profiles — 3 valid active, all `company_admin`, 2 of them
-  legacy; 6 deactivated; none malformed; none newly restricted.** One more
-  gap closed: a `companyId` string containing `/` could throw or resolve to
-  another path; the existing id contract now applies. Unit 5,336.
-  **Deploy (Hosting only), from `frontend/`:** `npm ci`, `npm run lint &&
-  npm run test:unit && npm run build`, `firebase deploy --only hosting
-  --project constrapp-69b5d`. D3 #32, D3 #34 and L3 E2 stay pending
-  production verification.
-- *As asked at the corrections report — now decided above:* `super_admin` is admitted because it is a
-  documented role that may exist on a production profile — confirm or
-  reverse. A hand-provisioned production profile with a missing or misspelt
-  role would now see the notice; not checked (no production read).
-- **New tracked finding D3 #36** — cache-only answers are still taken as
-  final in `CompanyProvider` and on Dashboard, Projects and Portfolio.
-  Recorded, not corrected; reliability hardening and offline design.
-- *As asked at the first report — now decided above:* (1) a 22–25 ms *Waiting for the
-  server* notice on a same-tab sign-out and sign-in — accept, or add a
-  presentation delay; (2) the gate still admits a server-confirmed profile
-  that has a `companyId` but no usable role (unchanged behaviour; the Rules
-  refuse it everything) — tighten or leave; (3) the company read and three
-  list pages still ignore `fromCache` (unchanged; out of scope).
-- **Preserved:** D3 #33 (P3, deferred); D3 #35 and the rounding-semantics
-  assessment; no financial calculation changed; the decided order of work.
-
-*As written for the decision revision:* 25 November 2026 (NZDT), L3 regression acceptance **decision** revision (run 25 November 2026 00:32–01:08 UTC; Lead Architect decision the same day — REPORTED).
-
-**Decision: GO for documentation integration; NO-GO for full L3 closure**
-(TESTING.md §74.10; tracker B10).
-
-- **L3 Stage 2 — not closed.** E1 (production) and E3–E10 (local emulators
-  only) are accepted with their evidence classes and limitations. **E2 is
-  OPEN** against tracker D3 #32.
-- **GST boundary hotfix:** deployment verified; calculation compatibility
-  accepted. TESTING.md §44 manual steps 1–3 remain outstanding.
-- **Premium Dashboard v2:** deployment verified; tested financial
-  calculations accepted. §22 checks 2 and 3 remain open.
-- **Triage:** D3 #32 is **P2 and the next implementation task** — correct
-  the membership-state handling without weakening authorisation; no service
-  worker or PWA. D3 #33 is P3, deferred. D3 #34 (the E2 procedure) is
-  corrected with #32.
-- **Financial precision (tracker D3 #35):** the application's GST is one
-  cent below exact half-up on some half-cent boundaries. The Rules admit it;
-  that is compatibility, not independent mathematical correctness.
-  Governing decision: PROJECT_DECISIONS.md → *ADR-40 / ADR-57 Correction:
-  GST Boundary Hotfix* (*Limitations*). An assessment of rounding semantics
-  is tracked before client credit notes and client retention. No calculation
-  or historical record changes now.
-- **Order decided:** 1 D3 #32 membership reliability fix → 2 L3 E2 corrected acceptance → 3 client credit-note architecture assessment and ADR → 4 Firestore Rules capacity assessment and any necessary capacity recovery → 5 client credit-note implementation → 6 client retention.
-  Estimating, approval segregation and the remaining approved commercial
-  roadmap are preserved.
-- Unchanged: regression fixtures; PM, QS and external test identities
-  deactivated; real customer external onboarding separately gated.
-
-*As written at the run (before the decision):* **Last updated:** 25 November 2026 (NZDT), L3 / GST / Dashboard regression acceptance revision (run 25 November 2026 00:32–01:08 UTC).
-
-**Git checkpoint:** `main` at `875910e` (*Merge C1-D monitoring acceptance
-closeout*; commit `6e00f98`), equal to `origin/main` (fetched 25 November
-2026 NZDT — VERIFIED). The C1-D closeout is **integrated**. Azure `main` CI is
-GREEN (REPORTED by the Product Owner). This revision was prepared on the
-uncommitted branch `docs/l3-regression-acceptance`: documentation only.
-Nothing was deployed and no production business data was written.
-
-**L3 Stage 2 E1–E10, GST boundary hotfix and Premium Dashboard v2 —
-consolidated regression acceptance: RUN, awaiting the Lead Architect's
-decision** (tracker B10; TESTING.md §74).
-
-- **Deployed state (PROD-VERIFIED, read-only):** the live bundle on all
-  three origins is SHA-256-identical to a clean build of `main` `875910e`;
-  the live Firestore (236,737 bytes) and Storage rulesets are byte-identical
-  to the repository. `main` contains the GST hotfix (`ea2eea8`), Dashboard v2
-  (`ba52821`) and L3 Stage 2 (`b7f825f`). **The "production state
-  unconfirmed" items in section F are resolved as to deployment.** Their
-  original release dates remain unrecorded.
-- **L3 E1–E10:**
-  - E1 PASSED in production (TEST Company Admin, `web.app`).
-  - E3–E10 PASSED on **local emulators only**, with failure injection in a
-    throwaway headless browser. Production writes and disconnections were
-    out of scope.
-  - **E2 did NOT pass as written.** An offline reload never loads the page.
-    With the database unreachable at load, the app shows a false *No active
-    membership* notice (tracker D3 #32). The designed *Waiting for the
-    server* state works when the connection drops after the membership read.
-- **GST hotfix:** the application's rounding, the shared Rules pin, the
-  retention-release delta and the claim-sourced apportionment all agree with
-  an independent exact-decimal check (10 million amounts, 2 million release
-  pairs, 20,000 apportionments). Fixture Z's stored GST agrees. TESTING.md
-  §44 manual steps 1–3 were **not run** in production: they need new
-  financial records. This verifies the software against its specification
-  (flat 10% Australian GST on any project, whatever its currency); it is not
-  a statement of tax compliance.
-- **Dashboard v2:** portfolio counts, six project snapshots in five
-  currencies, the chart labels and the CAD programme panel equal independent
-  expectations from raw records, to the displayed whole unit. No stale
-  figure appeared while switching. TESTING.md §22 checks 2 (external roles)
-  and 3 (layout) were not run.
-- **Integrity:** the test company and Apex Builders are unchanged by update
-  time; the four deactivated test accounts are still disabled; the five
-  alert policies are unchanged; no invitation was created.
-- **Browser event:** the testing tab on `web.app` opened in the Product
-  Owner's personal Apex session. One read-only Dashboard load; nothing
-  clicked or written. The Product Owner replaced the session with the TEST
-  Company Admin. **Check the session uid on any origin before the first
-  action.**
-- **New findings:** D3 #32 (P2 proposed), #33 (P3 proposed), #34 (test
-  procedure). No release blocker found.
-- **Recommended at the run (since decided — top of this file):** close L3 E1 and E3–E10 on this evidence and
-  keep E2 open against a Hosting-only correction of D3 #32; accept the GST
-  hotfix and Dashboard v2 with their unexecuted checks recorded; then resume
-  commercial implementation with **client credit notes**, after a Rules
-  capacity recovery (tracker D4a).
-
-*As written for the C1-D monitoring acceptance revision:* **Last updated:** 25 November 2026 (NZDT), C1-D monitoring acceptance revision (run 24 November 2026 21:56–22:36 UTC).
-
-**Git checkpoint:** `main` at `caf6ecf` (*Merge C1-C GANTT acceptance
-closeout*; documentation commit `b72a83e`), equal to `origin/main` (fetched
-25 November 2026 NZDT — VERIFIED). The C1-C closeout is **integrated**. Azure
-`main` CI is GREEN (REPORTED by the Product Owner). This revision was prepared
-on the uncommitted branch `docs/c1d-monitoring-acceptance`: documentation,
-plus the L3 availability policy file and its pinned test aligned with
-production. Nothing was deployed.
-
-**C1-D — Monitoring and alert delivery: CLOSED (Lead Architect decision, 25 November 2026 — REPORTED); integration of `docs/c1d-monitoring-acceptance` authorised.** **Evidence limitations (stand after closure):** the billing-administrator channel was not tested in this run; exact email arrival times are unknown; not every permanent policy has fired on its intended condition (only policy B, once); the permanent policies' recovery-notification behaviour is unverified; receipt of policy B's 17 November email is unverified; observed timings are not service levels. **Next milestone: L3 Stage 2 E1–E10 remaining acceptance.** *As written at the run:* **C1-D — Monitoring and alert delivery: RUN, awaiting architect review**
-(tracker B9; TESTING.md §73; DEPLOYMENT.md → *L3 Stage 1* → *C1-D alert
-delivery acceptance record*). D1–D7 PASS:
-- **Inventory (PROD-VERIFIED):**
-  - 5 alert policies, all enabled and none edited since creation;
-  - 2 email channels, unmodified since 16 November;
-  - 1 uptime check, with all 6 locations passing;
-  - 1 log metric;
-  - 0 open incidents;
-  - zero 5xx on all 11 services in 30 days.
-- **Parity:** DC46 A, B and C, the metric and the uptime check are identical
-  to their files. The L3 availability policy was created with a check-id
-  filter and `resource.label.*` grouping, verified to have the intended
-  meaning. Its file and test are now aligned; the live policy is unchanged.
-- **Approved synthetic test:** one temporary heartbeat policy, on the Product
-  Owner channel only (the billing administrator was unavailable).
-  - Created 22:08:41; heartbeat 22:24:03; incident opened 22:29:20.
-  - **Natural recovery** and closure 22:33:35; deleted 22:34:58.
-  - Opening email received by 11:32 NZDT, recovery email by 11:34 NZDT
-    (REPORTED; exact arrival times not visible).
-- **Clean-up PROD-VERIFIED:**
-  - the five policies are byte-identical to before; channels unchanged;
-  - no open incident; the audit log shows only the create and the delete;
-  - worker and Scheduler healthy;
-  - no business-data mutation and no account change.
-- **Historical correction:** policy B opened a real incident on 17 November
-  at 19:18:06, closed on 18 November at 19:22:24 (the predicted activation
-  overdue line). Its receipt was not recorded. The statements that "policy B
-  never matched" are corrected.
-- **Gaps retained for hardening and customer readiness:**
-  - a `transferBoqToBudget` failure alert;
-  - callable errors without a 5xx;
-  - membership-reconciliation monitoring;
-  - backup monitoring;
-  - billing-outage monitoring;
-  - independent notification paths.
-
-*As written at the run:* **Recommended:** GO for C1-D closure. Next: L3 Stage 2 E1–E10.
-*As written for the C1-C closeout revision:* **Last updated:** 25 November 2026 (NZDT), C1-C closeout revision.
-**C1-C — GANTT functional acceptance: CLOSED (Lead Architect decision, 25
-November 2026 — REPORTED); Git integration of `docs/c1c-gantt-acceptance`
-authorised.** Scheduling, dependencies, baseline management, revision
-protection, variance calculations and downstream consistency accepted; the
-existing role evidence accepted — no test account to be reactivated.
-**Carried forward, tracked and NOT passed:** native print / PDF R1–R13; Safari and Firefox; Day / Month chart visuals; the dashed baseline outlines; the individual attention-filter checks; overnight G11; offline capture; the unexecuted stale quick-action and stale cancellation scenarios. D3 #30, #31 → P3 deferred
-UX corrections. **Deferred Control 23 retained as a data-integrity hardening
-requirement before customer readiness** (tracker D1 R-7). The unintended
-invalid-date write and its correction stay in the record; the final fixture
-state was re-read and holds only valid calendar dates. Future negative
-production probes must first verify the expected enforcement mechanism.
-**Browser isolation (deviation recorded):** `app.constrap.com` is the Product
-Owner's personal session only and is never replaced for a test;
-`constrapp-69b5d.web.app` the TEST Company Admin;
-`constrapp-69b5d.firebaseapp.com` every other test identity; close only
-Claude-controlled testing tabs and windows. The CAD fixture is retained; all
-temporary accounts stay disabled. **Next milestone: C1-D — monitoring and
-alert delivery** (needs its own brief).
-*As written for the run revision:* **Last updated:** 25 November 2026 (NZDT), C1-C GANTT production acceptance revision (run 24 November 2026 20:30–21:16 UTC).
-**Git checkpoint:** `main` at `8b8c3e5` (*Merge L4 and Stage A acceptance
-closeout*; documentation commit `0062cb7`), equal to `origin/main` (fetched 25
-November 2026 NZDT — VERIFIED). Azure `main` CI GREEN — REPORTED by the Product
-Owner. This revision was prepared on the uncommitted branch
-`docs/c1c-gantt-acceptance` (documentation only; nothing deployed).
-**C1-C — GANTT production acceptance: RUN** (closed — see above).
-Release state PROD-VERIFIED: Firestore `67b6425a…` and Storage `2f3a4788…`
-byte-identical to `main`; the live bundle `index-BOg2hoYg.js` SHA-256-identical
-to a clean build of `main`; no GANTT source change since `9ce433d` — so GANTT
-1A1 / 1A2 / 1B, PULSE 1C and ADR-79 are live as merged. On one new retained
-fixture in the isolated company (`V2Vj8jds7RUkBAmZ1jzm`, *TEST CAD-1 — C1-C
-GANTT programme acceptance*, CAD — its own Portfolio group), with expectations
-from a separate Python date model fed with the stored records:
-- **Scheduling (§40–§41) PASS:** inclusive calendar-day durations (incl. a
-  month end), finish-to-start earliest starts with lag and the milestone
-  same-day rule, boundary starts, conflict refused until acknowledged, cycle
-  candidates exactly the transitive successors, overdue / blocked / due-soon.
-  Nothing is rescheduled automatically; no critical path; FS only.
-- **Revision guard PASS:** a stale save refused with nothing written and the
-  edits kept; *Reload latest* then save kept both users' edits (revision 3).
-- **Baselines (§42) PASS:** capture, self-approval shown, immutability (hashes
-  constant), variance and envelope (+7, +11) against the active and a
-  historical baseline, drift and the refused approval after a further change,
-  re-baselining, withdrawal, an invalid programme refused at capture.
-- **PULSE parity, CSV (in memory — nothing saved), Dashboard panel PASS.**
-  Overview and Portfolio carry no programme figure (not built). Progress
-  variance not built.
-- **Server side:** 22 direct SDK writes refused by the deployed Rules.
-- **Not run (proposed as limits):** print / PDF R1–R13; a QS or external
-  session on the programme (emulator 5 files / 445 tests + §71 M8); Safari /
-  Firefox; Day / Month chart visuals and baseline outlines.
-- **Engineer error recorded:** one probe wrote an impossible date
-  (`2026-02-30`) to a fixture activity — accepted by design (Deferred
-  Control 23); corrected through the editor.
-- **New findings (P3):** D3 #30 (baseline review dialog closes silently when
-  the draft is withdrawn elsewhere), #31 (cancelled successor's predecessor
-  text says *Starts before its predecessor allows*).
-- **Integrity:** Apex 258 documents identical; only the 19 fixture documents
-  added; no audit event; NZD 26%, GBP 12,565.34, Z revision 2 unchanged; PM,
-  QS and external accounts still disabled.
-Record: SECURITY_DATA_TEST_TRACKER.md → B8; TESTING.md §72. *As written at
-the run:* next action the architect's C1-C closure decision; recommended next
-milestone C1-D.
-*As written for the previous revision (L4 / Stage A):* **Last updated:** 25 November 2026 (NZDT), L4 / Stage A consolidated acceptance revision (run 24 November 2026 19:00–19:42 UTC).
-**Git checkpoint:** `main` at `0cf17e6` (*Merge C1-A Final Account acceptance
-closeout*; documentation commit `c05e16a`), equal to `origin/main` (fetched 25
-November 2026 NZDT — VERIFIED). Azure `main` CI GREEN — REPORTED by the Product
-Owner. This revision was prepared on the uncommitted branch
-`docs/l4-stage-a-acceptance` (documentation only; nothing deployed).
-**L4 acceptance: CLOSED with recorded evidence limitations. M2-A2 Stage A
-internal-role regression: CLOSED within its applicable scope (Lead Architect
-decision, 25 November 2026 — REPORTED).** Accepted as decided: T14 as `client`
-on the existing production and emulator evidence; M1, M2 and the stale-bundle
-part of M7 superseded; the M4 BOQ-item lock variant (budget-line variant not
-run); the M5 currency pin emulator-only; T15 not executed; the F16 notice
-observed in production; W2–W4 with display findings. **Next milestone: C1-C
-GANTT production acceptance.** The evidence is the consolidated production
-run of 24 November 19:00–19:42 UTC, in the isolated company `constrap-acceptance-test` on one new
-retained synthetic project (L4 `gdaYQYRD7cc0yUTkK0cD`, *TEST GBP-1 — L4
-BOQ-to-budget acceptance*, GBP — its own Portfolio currency group):
-- **L4 (§67):** **T9 PASS** — a transfer request made stale by a second user's
-  BOQ edit was refused by the server (`boq-transfer-stale-review`), the dialog
-  said nothing was written, and nothing was. **Quant step of T16 PASS** — a
-  measured 96.006 m² was applied to a BOQ item; the chain drawing → quantity →
-  BOQ → working budget → **approved version 1 (GBP 12,565.34)** equals
-  independent `Decimal` expectations to the cent on every surface. **T14 PASS
-  as `subcontractor`** at three layers (no BOQ tab or button; Rules denials;
-  the callable's `boq-transfer-forbidden`). **T14 as `client` was not re-run**
-  (Product Owner decision: one reactivation; earlier production evidence §68
-  X1–X3 and §63 P20). A real network disconnection is still not tested.
-- **Stage A (§68):** **M3** (Project Manager edit of all five fields), **M4**
-  (QS lists everything, cannot create or edit — UI and Rules; currency lock
-  engaged by the QS's first priced BOQ item) and **M8** (Portfolio, Commercial
-  Report, Final Account, GANTT for all three internal roles) **PASS**; M5 page
-  load PASS, its currency pin not run (nothing to pin); **M1, M2 and the
-  stale-bundle part of M7 are superseded** — that release stage is over and
-  they were never verified.
-- **§61:** W2, W3, W4 PASS. **§62 F16: the *Final Account is restricted* notice
-  is now OBSERVED in production** (a signed-in `subcontractor` on fixture Z; no
-  figure, no control).
-- **Budget approval authority:** a QS can prepare but not approve — no control,
-  and the Rules refused the application's own approve transaction sent from the
-  QS session; the Company Admin approved.
-- **Accounts:** the TEST Project Manager, QS and the one re-activated external
-  identity were **deactivated** through the Team page at the end; Auth
-  disabled, tokens revoked, assignments removed, revocation sweep complete;
-  reconciliation report: no inconsistencies. The TEST Company Admin stays
-  active. A further role session needs a new invitation.
-- **Integrity:** Apex Builders identical (258 documents); projects A–C and
-  fixtures X, Y, Z untouched; NZD weighted margin still 26%; Z's approved
-  revision 2 still agrees with the records.
-- **Integrity limits that stand:** token replay after deactivation not
-  tested; Apex Storage objects not compared; the Apex comparison is by
-  document path and update time, not content; the Hosting bundle not
-  re-compared with a build.
-- **New findings (no data exposed) — P2 external-role UI correction bundle
-  (architect, 25 November):** tracker D3 #27 (Budget tab
-  by URL as an external role shows a loading fault, not a restricted notice),
-  #28 (Purchase Orders tab shows an empty register and a create button), #29
-  (Commercial sub-navigation shown to external roles). **D3 #28 was inspected
-  for an authorisation defect and none was found:** the `purchaseOrders` Rules
-  allow read, create and update only to the three internal roles
-  (`financialMember`), and existing emulator tests refuse a create by an
-  assigned subcontractor and client (TESTING.md §71). A production create by
-  an external role was not attempted.
-Record: SECURITY_DATA_TEST_TRACKER.md → B7; TESTING.md §71. The Project
-Manager, QS and external test accounts stay deactivated; the TEST Company
-Admin, the GBP fixture and every earlier fixture are retained. Real customer external onboarding stays
-separately gated. Statements further down that the Project Manager and QS are
-active, or that T9, T14, W2–W4 or the F16 notice are open, pre-date this
-revision.
-*As written for the previous revision (C1-A closeout):* **Last updated:** 25 November 2026, C1-A closeout revision (acceptance run recorded 24 November 2026 UTC).
-**Git checkpoint:** `main` at `2561344` (*Merge C1-B Portfolio acceptance
-closeout*; documentation commit `c236bd9`), equal to `origin/main` (fetched 24
-November 2026 — VERIFIED). This revision was prepared on the uncommitted
-branch `docs/c1a-final-account-acceptance` (documentation only).
-**C1-B — L2-C Portfolio: CLOSED** and Azure `main` CI GREEN (both REPORTED by
-the Lead Architect, 24 November 2026).
-**C1-A — L2-B Final Account: CLOSED (Lead Architect decision, 25 November
-2026 — REPORTED).** The remaining production acceptance was run on 24
-November 2026 (10:21–10:53 UTC). In the isolated company `constrap-acceptance-test`, on one
-dedicated synthetic project that is retained (Z `5hmVvUCoOIEPrzdeowYK`, *TEST
-USD-1 — Final Account acceptance*, USD): **F5, F6, F15, Project Manager
-approval, the native print / PDF part of F14 and retest R5 PASSED**;
-independent `Decimal` expectations equal the stored approved revision, the
-screen, the Reports tab, the Portfolio, the CSV and the PDF to the cent.
-Approval is reachable only through the `approveFinalAccount` callable for all
-three internal roles (24 direct-write shapes denied by the deployed Rules; a
-QS call refused `not-approver`); a repeated approval is answered without a
-second write. **F16 is PARTLY evidenced:** no figure reaches a signed-out,
-deactivated or non-financial account (production), but the *Final Account is
-restricted* notice for a signed-in non-financial account was not observed in
-production (unit test only — both external test accounts stay disabled).
-**The architect accepted F16 on that combined evidence; the notice is NOT
-recorded as observed in production, and its browser check is carried forward
-to the external-role session that L4 T14 and §61 W4 need.** R5 rests on
-stored-state evidence, and client-side and cash figures were exercised at
-zero only — both limitations stand.
-Revision 1 withdrawn, revision 2 approved by the Project Manager on a draft
-the QS prepared. Apex Builders, Projects A–C and fixtures X / Y unchanged; the
-TEST Project Manager and QS remain **active** for the remaining internal-role
-tests. Fixture Z, its supplier contact, the two counters and the approved
-revision are retained. New cosmetic findings, tracker D3 #22–#26, are in the
-deferred UX and reporting correction bundle. Self-approval remains a
-documented policy gap for a future approval-segregation implementation.
-**Next milestone: L4 remaining acceptance and M2-A2 Stage A internal-role
-regression.** Record:
-SECURITY_DATA_TEST_TRACKER.md → B6; TESTING.md §62c. Rows further down that
-call Final Account acceptance PENDING pre-date this revision.
-*As written for the previous revision (C1-B):* **Last updated:** 24 November 2026 (UTC), C1-B Portfolio acceptance revision.
-**Git checkpoint:** `main` at `62e824a` (*Merge operator tooling security
-hardening*; feature commit `bc64487`), equal to `origin/main` (fetched 24
-November 2026 — VERIFIED). This revision was prepared on the uncommitted
-branch `docs/c1b-portfolio-acceptance` (documentation only).
-**Operator tooling safety — INTEGRATED** (D3 #1–#3, #16, #18 complete; unit
-5,244, Functions pure 179, Functions emulator 367, `npm run test:team` PASS ×4;
-Azure `main` green — REPORTED by the Lead Architect; no deployment; production
-transaction cleanup never exercised; D3 #17 open).
-**C1-B — L2-C Portfolio acceptance — all checks run, awaiting the architect's
-closure decision.** Read-only run in Apex Builders (05:14–05:27 UTC): P1–P6,
-P8, P12, P13, P21, P22 PASS, parity on five rows to the cent (ACCEPTED by the
-architect), M1 = 10, M4 = 136 reads per Portfolio read. Final targeted run in
-the isolated test company (07:15–07:37 UTC): **P7, P9, P18 PASS in
-production** on two retained synthetic **NZD** commercial fixtures (weighted
-margin 26.00% against independent expectations); **P15 PASS on local
-emulators only**. Two internal test identities now exist and are **active** in
-`constrap-acceptance-test` — a new Project Manager (`KSC9zf…`) and the
-re-activated QS (`PvzTgu…`); their final state awaits architect review. Apex
-Builders unchanged. Record: SECURITY_DATA_TEST_TRACKER.md → B4, B5; TESTING.md §63.
-*As written for the previous revision (M2-A2 final closeout):*
-**Git checkpoint:** `main` at `bd9021c` (*Merge M2-A2 external member
-provisioning*; feature commit `cddfca8`), equal to `origin/main` (fetched 24
-November 2026 — VERIFIED). This revision was prepared on the uncommitted
-branch `docs/m2-a2-stage-b-closeout` (documentation only).
-**M2-A2 — External Project Isolation: Stage A (ADR-83) and Stage B (ADR-84)
-LIVE and CLOSED; Deferred Control 20 CLOSED (Lead Architect, 24 November
-2026).** The three Stage B callables (`acceptinvitation-00005-mol`,
-`deactivatemember-00005-suy`, `resendinvitation-00005-mer`) have been live
-since 23 November 2026 ~09:11 UTC with source identical to `main` (VERIFIED);
-Rules and Hosting unchanged. Production acceptance in the isolated test
-company `constrap-acceptance-test` PASSED: TESTING.md §69 S1–S3, R1–R3,
-P1–P14; §68 X1–X7; §63 P19–P20 for both external roles (the Portfolio page's
-request payloads were not decoded — recorded limitation). Reconcile clean;
-directory 13 / 13; both external test accounts and the QS deactivated; TEST
-admin, three projects and five fixtures retained; Apex Builders unchanged.
-**Real customer external onboarding remains BLOCKED** pending a readiness
-decision; residual risks are tracked. The central acceptance and progress
-index is now [SECURITY_DATA_TEST_TRACKER.md](SECURITY_DATA_TEST_TRACKER.md).
-*As written for the previous revision (Stage B):* **Last updated:** 23 November 2026 (NZ), Stage B revision. **Git
-checkpoint:** `main` at `10807b8` (*Merge M2-A2 Stage A closeout*), equal to
-`origin/main` (fetched 23 November 2026 — VERIFIED). This revision was
-prepared on the uncommitted branch `feature/m2-a2-external-provisioning`.
-**M2-A2 Stage B — External member assignments and provisioning (ADR-84):
-IMPLEMENTED — NOT DEPLOYED, awaiting architect review.** Functions and
-operator scripts only — no Rules, Storage Rules, Hosting or new callable.
-An operator-created invitation carries the projects of a `client` /
-`subcontractor`; `acceptInvitation` re-validates them and writes
-`users/{uid}.projectIds` in the membership transaction (and removes the
-field for an internal role); `deactivateMember` removes it; operator-only
-assignment changes are audited and queue a file-link revocation on removal.
-Scripts: `provision-external-member.mjs`, `set-member-projects.mjs` — dry-run
-by default, never print a link. Unit 101 files / 5,244, Rules emulator 39 files / 2,492,
-Functions pure 7 files / 155, Functions emulator 11 files / 354 — all PASS. **Nothing
-deployed; no script run against production; no external account exists;
-external onboarding remains BLOCKED** until the three callables are deployed
-and TESTING.md §69 passes in an isolated test company.
-*As written for the previous revision (closeout):* `main` at `22cf7db`
-(*Merge M2-A2 external project isolation*), prepared on
-`docs/m2a2-stage-a-closeout` (documentation only).
-**M2-A2 — External Project Isolation (ADR-83): STAGE A LIVE — CLOSED and
-production-accepted, 23 November 2026 (Lead Architect decision).** FINAL
-Firestore Rules, restricted Storage Rules and Hosting are deployed and
-identical to `main` (VERIFIED read-only); the directory backfill is verified
-10 of 10; a paired project create and edit passed in production; the
-directory fields are verified; project documents and internal budgets are
-protected by the deployed Rules. No known Stage A implementation defect.
-**Limitations:** no real external-role production browser test yet; external
-onboarding remains BLOCKED; TESTING.md §63 P19–P20 (C1-B) remain pending;
-Stage B (provisioning and assignment management) is NOT implemented;
-Deferred Control 20's live external-role acceptance is outstanding.
-*As written for the previous revision (before deployment):* `main` at
-`6a1a1ac`, prepared on `feature/m2-a2-external-project-isolation` — M2-A2
-STAGE A IMPLEMENTED, NOT DEPLOYED; DC20 not closed in production; Stage B
-NOT STARTED.
-**C1-A — DEPLOYED to production and browser-retested (REPORTED by the Lead
-Architect, 23 November 2026; not re-read from production in this revision).**
-Final Account positive-path acceptance PASSED in production on 22 November
-2026 (TESTING.md §62b). The forecast-readiness correction (`5b67a3f`, merged
-as `6a1a1ac` — VERIFIED in Git) was deployed and retested in the browser:
-**R1, R2 and R4 PASSED; R3's approval blocking PASSED.** **Accepted,
-non-blocking UX limitation:** in R3 the wording does not name the missing
-cost code. R5 is not recorded. **Coverage gaps that remain** (emulator
-coverage only): the role-specific checks — F5, F6, F15, F16 and Project
-Manager approval — and the native print dialog / PDF file (F14). Statements
-further down that no Final Account revision has been approved in production,
-and TESTING.md §62b's own "NOT DEPLOYED, production retest PENDING" heading,
-pre-date this.
-*As written for the previous revision:* **Last updated:** 22 November 2026 (NZ). **Git checkpoint:** `main` at
-`74c2a6f` (*Merge L4 transfer acceptance corrections*), equal to
-`origin/main` (fetched 22 November 2026 — VERIFIED). This revision was
-prepared on the uncommitted branch `docs/post-l4-roadmap-alignment`
-(documentation only). **L4 is CLOSED — LIVE and production-accepted**
-(REPORTED by the Lead Architect, 22 November 2026). **L5 (Xero) is ASSESSED —
-IMPLEMENTATION DEFERRED** (ADR-82, PROPOSED, not approved). **Constrap IQ and
-Quant AI are DEFERRED.** The post-L4 priorities are in section H.
-*As written for the previous revision:* **Last updated:** 21 November 2026 (NZ). **Git checkpoint:** `main` at
-`b7f825f` (*Merge L3 application error recovery*), equal to `origin/main`
-(fetched 21 November 2026 — VERIFIED). This revision was prepared on the
-uncommitted branch `feature/l4-boq-budget-transfer` (**L4 — BOQ → working
-budget transfer, ADR-81 — IMPLEMENTED, NOT DEPLOYED; awaiting architect
-review**). **L3 is CLOSED** (REPORTED by the Lead Architect, 21 November
-2026; the Stage 2 Hosting deploy is not independently verified here).
-*As written for the previous revision:* `main` at
-`4bd358a` (*Merge L3 recovery and monitoring preparation*), prepared on
-`fix/l3-application-error-recovery` (L3 Stage 2 —
-IMPLEMENTED, NOT DEPLOYED). **L3 Stage 1 is CLOSED** (monitoring created — VERIFIED read-only 21
-November 2026; restoration verification successful — REPORTED by the Lead
-Architect; alert delivery not tested at that point — *tested 24 November 2026 UTC through a temporary policy on the Product Owner channel, C1-D*). Records: DEPLOYMENT.md → *L3 Stage 1*.
-
-**DC46 is closed.** Deferred Control 46 was CLOSED on 18 November 2026 with
-documented accepted risks, after final external-member acceptance in
-production. The consolidated documentation closeout was merged as `84c9fb3`. Historical release records in the source documents keep the wording
-of their own dates (older revision names, "not activated" in a dated
-record); each DC46 section now opens with its current status.
-
-**This file is a point-in-time snapshot.** It does not replace checking the
-current Git state or verifying production. Maintenance is mandatory —
-[AGENT.md](../AGENT.md) → *Development Continuity — ChatGPT Handover*.
-
-**Status words used throughout — never blur them:**
-
-| Word | Meaning |
+| | |
 |---|---|
-| **VERIFIED** | Read directly from the repository (files, Git history) when this file was last updated |
-| **REPORTED** | Stated by the Product Owner or the architect and recorded in the repository documents; not independently re-checked here. A production "LIVE" claim is REPORTED in this file unless the line says what was read from production and when |
-| **PROPOSED** | Designed or prepared; does not exist in production |
-| **BLOCKED** | Cannot proceed until a named precondition or authorisation is met |
-| **NOT STARTED** | No design, code or scope in the repository |
+| **Last updated** | 28 November 2026 (NZDT) — consolidated checkpoint for Phase 2 steps 3–6 (Steps 0–2 closed locally) |
+| **Branch** | `feature/commercial-completion-phase-2` (VERIFIED) |
+| **HEAD** | `dfe3618` = `origin/main` (*Merge Commercial Finance Phase 1 closeout*); tree `a3514a50` (VERIFIED) |
+| **Working tree** | **Uncommitted** Phase 2 steps 0–2 implementation plus this documentation (VERIFIED) |
+| **Production** | Last recorded release: Commercial Finance Phase 1, cutover executed 26–27 November 2026 UTC (REPORTED; DEPLOYMENT.md → *Release record (as executed)*). **Nothing on the Phase 2 branch is deployed.** Production was not read for this revision |
+| **Azure CI** | Green on the Phase 1 merges `9e31bb0` → `c9df38b` (REPORTED). **CI on `dfe3618` not verified in this session** |
+| **History** | Earlier revisions of this file, verbatim: [CHATGPT_HANDOVER_HISTORY.md](CHATGPT_HANDOVER_HISTORY.md) (archive, not authoritative) |
+
+**Evidence classes used throughout:** **VERIFIED** (checked in the repository,
+Git or a test run) · **REPORTED** (recorded in a repository document as stated
+by the Product Owner or Lead Architect, not re-checked) · **IMPLEMENTED** (in
+code and tested locally, not deployed) · **PROPOSED** · **APPROVED** (decision
+recorded, not necessarily built) · **NOT STARTED** · **DEFERRED** ·
+**BLOCKED**. Passing tests or CI never make anything "live".
+
+## Source-of-truth hierarchy
+
+1. **Source code and reproducible test evidence** establish what the
+   application actually does.
+2. **Approved ADRs** ([PROJECT_DECISIONS.md](PROJECT_DECISIONS.md)) establish
+   architectural intent and constraints.
+3. **[ROADMAP.md](../ROADMAP.md)** establishes planned direction (and, for
+   Phase 2, the progress register).
+4. **Progress registers** —
+   [SECURITY_DATA_TEST_TRACKER.md](SECURITY_DATA_TEST_TRACKER.md),
+   [TESTING.md](TESTING.md) sections, [DEPLOYMENT.md](DEPLOYMENT.md) release
+   records — establish recorded delivery and acceptance status.
+5. **This handover** consolidates 1–4 for continuity. It never overrides them.
+
+When they disagree: name the contradiction, state what is verified, record
+the discrepancy (section O), correct stale documentation where the intended
+behaviour is established, and escalate genuine architectural or financial
+policy conflicts. An unresolved contradiction is never presented as fact.
 
 ---
 
-## A. Current checkpoint
+## A. Product identity and purpose
 
-| Item | State |
-|---|---|
-| **Current milestone** | **None in progress. Commercial Finance Phase 1 LIVE and CLOSED within its accepted scope (27 November 2026; TESTING.md §82). Next: Phase 2 — Commercial Completion, not started.** *As written at the final integration gate:* **Commercial Finance Phase 1 with the ADR-89 backend correction — IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION (26 November 2026; at the final integration gate; TESTING.md §79).** *As written at the first gate:* **Commercial Finance Phase 1 (CF1–CF6) — IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION (26 November 2026; first gate — NO-GO; TESTING.md §77–§78).** *As written at the assessment checkpoint:* **Commercial Finance Phase 1 (CF1–CF6) — IN PROGRESS on `feature/commercial-finance-phase-1` (26 Nov 2026; uncommitted; TESTING.md §77).** CF3 Rules capacity recovery 3 (ADR-85): **IMPLEMENTED — PENDING INTEGRATION AND PRODUCTION VERIFICATION** (228,289 bytes; binding headroom 16,031; not published). CF2 rounding assessment (D3 #35): **delivered; ADR-86 PROPOSED**, no calculation changed. CF1 architecture: **ADR-87 (client credit notes) and ADR-88 (client retention) PROPOSED** — nine *(architect)* rulings requested. CF4, CF5, CF6: **NOT STARTED**, blocked on those rulings. *As written before this phase:* **Client credit-note architecture assessment and ADR — NEXT, not started (needs its own brief).** L3 Stage 2 is **CLOSED within its accepted scope**; D3 #32 and D3 #34 are **CLOSED** (26 November 2026; TESTING.md §76). *As written before the release:* **D3 #32 membership reliability fix — IMPLEMENTED on `fix/membership-resolution-state` (25 November 2026; uncommitted) — PENDING INTEGRATION AND PRODUCTION VERIFICATION; awaiting the Lead Architect's review** (TESTING.md §75; tracker B11). Hosting-only; not deployed. L3 E2 stays OPEN until E2-A and E2-B are run in production. *As written before the fix:* **D3 #32 membership reliability fix — NEXT, not started** (Lead Architect, 25 November 2026 — REPORTED; needs its own brief). L3 Stage 2 is **not closed**: E1 and E3–E10 accepted with their evidence limitations, **E2 open** against tracker D3 #32 (TESTING.md §74.10). *As written at the run:* **L3 Stage 2 E1–E10, GST boundary hotfix and Premium Dashboard v2 — consolidated regression acceptance: RUN 25 November 2026, awaiting the Lead Architect's decision** (top of this file; tracker B10; TESTING.md §74). E2 is open against tracker D3 #32. *As written for the C1-D revision:* **None in progress. C1-D — monitoring and alert delivery CLOSED (Lead Architect, 25 November 2026 — REPORTED)**, with evidence limitations recorded (top of this file; tracker B9; TESTING.md §73). **Next: L3 Stage 2 E1–E10 remaining acceptance.** *As written at the run:* C1-D — RUN 24 November 2026 UTC, awaiting architect review. *As written for the C1-C closeout revision:* **None in progress. C1-C GANTT functional acceptance CLOSED (Lead Architect, 25 November 2026 — REPORTED)**, presentation, browser and resilience checks carried forward (top of this file; tracker B8; TESTING.md §72). **Next: C1-D — monitoring and alert delivery.** *As written at the run:* C1-C GANTT production acceptance — RUN 25 November 2026 NZDT, awaiting architect review. L4 acceptance and the Stage A regression CLOSED (25 November). *As written for earlier revisions:* **None in progress. M2-A2 Stage A (ADR-83) and Stage B (ADR-84) — LIVE and CLOSED; Deferred Control 20 CLOSED (Lead Architect, 24 November 2026).** Stage B callables live since 23 November 2026 (`-00005-*`); production acceptance PASSED 23–24 November 2026 (TESTING.md §69, §68 X1–X7, §63 P19–P20) — record: ADR-84 → *Stage B closure record*; DEPLOYMENT.md → *M2-A2 Stage B → Release record*. Test company `constrap-acceptance-test` RETAINED (TEST admin active; external and QS test accounts disabled; three projects and five fixtures). **Real customer external onboarding BLOCKED pending a readiness decision.** *As written for the previous revision:* **M2-A2 Stage B — External member assignments and provisioning (ADR-84) — IMPLEMENTED on `feature/m2-a2-external-provisioning` (uncommitted), NOT DEPLOYED, awaiting architect review (23 November 2026).** Functions and operator scripts only; `firestore.rules` unchanged at 236,737 bytes; Hosting bundle unchanged (`index-BOg2hoYg.js`). Release: DEPLOYMENT.md → *M2-A2 Stage B* — redeploy `acceptInvitation`, `deactivateMember`, `resendInvitation` only. Unit 101 files / 5,244, Rules emulator 39 files / 2,492, Functions pure 7 files / 155, Functions emulator 11 files / 354 — all PASS. **External onboarding BLOCKED; DC20's live acceptance outstanding; §68 X1–X6, §63 P19–P20 and §69 P1–P14 NOT RUN.** *As written for the previous revision:* **None in progress. M2-A2 Stage A (ADR-83) — LIVE, CLOSED and production-accepted 23 November 2026.** Firestore ruleset `67b6425a…` (236,737 bytes), Storage ruleset `2f3a4788…` (10,323 bytes) and Hosting bundle `index-BOg2hoYg.js` identical to `main` `22cf7db` (VERIFIED read-only). Test project `Iusni6U8enVn47fKBGDB` (*M2-A2 Security Acceptance — VERIFIED*) created and edited through the application, each as one commit with its directory entry; 10 projects, 10 matching entries; the nine existing projects unchanged. The test project is RETAINED and contributes to the Portfolio totals — do not delete or modify it. The Storage Rules were published after the FINAL Firestore Rules (DEPLOYMENT.md → *M2-A2 Stage A → Release record*). **Not done:** any external-role session in production; §68 M1, M2, M4, M5, M7, M8 and X1–X6. **Proposed next: M2-A2 Stage B — operator provisioning and assignment management (PROPOSED, assessed 23 November 2026, not approved).** *As written before deployment:* **M2-A2 — External Project Isolation, Stage A (ADR-83) — IMPLEMENTED on `feature/m2-a2-external-project-isolation` (uncommitted), NOT DEPLOYED, awaiting architect review (23 November 2026).** Server-managed `users/{uid}.projectIds`; the project document internal-only; an external-safe `projectDirectory` entry pinned to its project in the same commit; Firestore and Storage reads scoped to assigned projects for `client` / `subcontractor` only; no assignment, no access. Unit 101 files / 5,244, Rules emulator 39 / 2,492, Functions pure 6 / 136, Functions emulator 10 / 310 — all PASS; Rules 236,737 bytes (8,263 headroom). NOT browser-verified. **DC20 is OPEN in production; external onboarding BLOCKED; §63 P19–P20 pending; Stage B NOT STARTED.** Release: DEPLOYMENT.md → *M2-A2 Stage A* — a dedicated Stage-1 ruleset (`firestore.m2a2-transitional.rules`); **never publish `firestore.transitional.rules`**. *As written for the previous revision:* **None in progress. L4 CLOSED — LIVE and production-accepted, 22 November 2026 (REPORTED by the Lead Architect):** Azure CI and the production deployment passed; production financial acceptance passed; the final confirmation-UX correction (`d90e21f`, `main` `74c2a6f`) passed; SHIELD versions 1 and 2 verified. Remaining browser gaps: T9, T14, the Quant step of T16 and a real disconnection — emulator coverage retained. The *L4 Acceptance Sandbox* (`3OyBieoY4QHAfQsxBH8T`) stays in production and contributes to the company Portfolio totals; do not delete or modify it (TESTING.md §67 → *L4 closure record*). **Proposed next milestone: C1 — Core acceptance closeout (PROPOSED, not approved — section J).** *As written for the previous revision:* **L4 — BOQ → working budget transfer (ADR-81) — DEPLOYED (`main` `a30699e`, REPORTED). Production acceptance 22 November 2026 in the retained sandbox *L4 Acceptance Sandbox* (`3OyBieoY4QHAfQsxBH8T`, Apex Builders): 13 of 16 PASS, T16 partly exercised, T9 and T14 NOT TESTED in production (emulator coverage only); lost response simulated, real disconnection NOT tested; SHIELD versions 1 and 2 PASS; the sandbox's amounts appear in the company Portfolio. Acceptance UX correction (confirmation bound to the reviewed request; uncertain-outcome wording; copy) IMPLEMENTED on `fix/l4-transfer-acceptance` (uncommitted), Hosting-only, NOT DEPLOYED, NOT browser-verified** (TESTING.md §67). *As implemented 21 November:* Rules + ONE new callable (`transferBoqToBudget`) + Hosting; unit 99 files / 5,152, Rules emulator 36 / 2,336, Functions emulator 10 / 295, Functions pure 5 / 130 — all PASS; Rules 232,776 bytes (12,224 headroom) (DEPLOYMENT.md → *L4*). *Previous milestone:* **L3 Stage 2 — application error recovery (ADR-80) — IMPLEMENTED on `fix/l3-application-error-recovery` (uncommitted); NOT DEPLOYED; Hosting-only; unit suite 96 files / 5,041 tests PASS; browser behaviour NOT VERIFIED** (TESTING.md §66). The project route no longer shows *Project not found* for a failed, refused or unconfirmed read; a write-outcome helper (confirmed / failed / uncertain) is applied to Client Invoices, Client Receipts and Supplier Payments; 58 older write sites remain. **L3 Stage 1 — CLOSED:** uptime check on `app.constrap.com` and alert policies `15559930914799323534` (uptime) and `9683374685335961795` (Final Account failure) exist and are enabled, DC46 policies A, B, C preserved (VERIFIED read-only, 21 November 2026); **alert delivery NOT tested**. Restoration verification SUCCESSFUL (REPORTED): 20 November backup into `restore-verify-20261120-2329`, unauthenticated 403, 44 collection groups / 211 documents and the sample hash matched, temporary database removed, only `(default)` remains with delete protection enabled (VERIFIED); deletion time and mechanism not established; not every document's contents compared. *The remainder of this cell was written before Stage 1's production actions:* **L3 — Production Reliability — IN PROGRESS.** The read-only assessment was delivered and approved (Lead Architect: GO for Stage 1, 21 November 2026). **Stage 1 — PREPARED on `chore/l3-recovery-monitoring` (uncommitted): files and documentation only.** A Firestore restoration verification procedure with a read-only count script (`ops/recovery/`); an uptime check on `app.constrap.com` with its alert policy, and an alert on `approveFinalAccount` server failures (`ops/monitoring/`, files only); an operations runbook (`ops/RUNBOOK.md`). **Nothing was created, changed or deleted in production; no restore was run; no alert exists beyond DC46 policies A, B and C** (DEPLOYMENT.md → *L3 Stage 1*; TESTING.md §65). Stage 2 (application error recovery, Hosting-only) is NOT started and NOT approved. **Status of everything else:** GANTT 1A1, 1A2, 1B and PULSE 1C — LIVE (VERIFIED read-only 20 November 2026). **GANTT core completion (ADR-79; the Lead Architect's G1, G2, G3) — LIVE since 20 November 2026 08:52 UTC and Product Owner accepted** (merged as `9ce433d`, VERIFIED; live bundle SHA-256-identical to a clean build of `main`, VERIFIED 21 November 2026; acceptance REPORTED by the Lead Architect; certain baseline scenarios not exercised in the browser). **L2-A Commercial Report — LIVE and accepted** (REPORTED). **L2-B Final Account (ADR-77) — DEPLOYED; positive approval, revision and export acceptance OUTSTANDING** (TESTING.md §62 F3–F17) — `approveFinalAccount` deployed source is identical to `main` (VERIFIED 21 November 2026) and it received no request in the preceding 14 days; L2-B is NOT accepted. **L2-C Portfolio Report (ADR-78) — DEPLOYED; visual, CSV and PDF acceptance confirmed (REPORTED); access, parity and performance checks OPEN** (TESTING.md §63). **DC46 — CLOSED 18 November 2026** with accepted risks. **Firestore recovery — protection ENABLED; two READY backups VERIFIED 21 November 2026; restoration verification PREPARED, NOT RUN** |
-| **Latest Git checkpoint** | **VERIFIED (27 November 2026):** `main` `c9df38b` (*Merge cutover G: finance switch on, TEST scope*), equal to `origin/main`; preceded by `4c54a45` (F3), `0f623c6` (F1), `9e31bb0` (Phase 1). Azure green on each — REPORTED. *As written before:* **VERIFIED:** branch `main`, HEAD `9ce433d` (*Merge GANTT core completion*; preceded by `8e60eb7`, the feature commit), equal to `origin/main` (`git ls-remote`, 21 November 2026); working tree clean before `chore/l3-recovery-monitoring` was branched from it. Azure CI on `9ce433d` was not read in this revision. Before that: `93db6cc` (*Merge L2-C Portfolio Reporting*; preceded by `4ebdd4e`), `891043a` (*Merge L2-B Final Account reconciliation fixes*; preceded by `24e65c1`, the correction itself), `c4b93e5` (*Merge L2-B Final Account*). Azure CI on `main`: REPORTED green. Preceding commits: `2047a0d` (Final Account), `28e5c9f` (Rules capacity merge), `02e973a`, `2d5787c` (L2-A merge), `84c9fb3` (DC46 closeout), `a2544a1` (worker rollback checkpoint) |
-| **Production** | **REPORTED:** live at `https://app.constrap.com` on Firebase project `constrapp-69b5d`. **VERIFIED read-only, 21 November 2026 NZ (latest reading):** Firestore ruleset `10c7596c…` (232,460 bytes) and Storage ruleset `8b8edc14…` (9,271 bytes) byte-identical to `main` `9ce433d`; the Hosting release of 20 November 2026 08:52 UTC serves `index-Cz4wMhcy.js`, SHA-256-identical to a clean build of `main` — so the live application is `main`, including GANTT core completion; `approveFinalAccount` (revision `-00002-jib`, deployed 19 November 2026 20:48 UTC) runs source identical to `main`; **the eight team callables (`-00004-*`) and the worker (`-00003-ceg`) still run their 17 November 2026 source — the selective deploy was deliberate, and the only difference from `main` is the additive Final Account code**; three alert policies (A, B, C), two channels, no uptime check; 7-day figures: one ERROR log entry (the worker's activation line of 17 November), no callable 5xx, about 13,000 Firestore reads. *Earlier reading, 20 November 2026:* Firestore ruleset `10c7596c…` (released 19 November 2026 04:23 UTC; **232,460 bytes**) byte-identical to `frontend/firestore.rules` on `main`; Hosting release `765058ff63073a4b` (19 November 2026 23:54 UTC) serves `index-Co3P5JIm.js`, the bundle a clean build of `main` `93db6cc` produces — so the live application is `main`, including GANTT 1A1 / 1A2 / 1B, PULSE 1C, L2-B and L2-C. Functions and Storage Rules were not re-read on 20 November. *Earlier reading, kept for the record —* **VERIFIED** read-only, 19 November 2026: Firestore ruleset `05c78d00…` (**229,115 bytes**, created 18 November 2026 21:57 UTC) byte-identical to `main` `28e5c9f`; Storage ruleset `8b8edc14…` (9,271 bytes) byte-identical to `main`; eight callables on `-00004-*`; worker `processfilelinkrevocations-00003-ceg`; latest Hosting release `e38715de08e664b5` (18 November 05:29 UTC — REPORTED as the L2-A release; its files were not compared with `main` in this revision). **L2-B (20 November 2026): the Final Account Rules, the `approveFinalAccount` callable and Hosting are REPORTED deployed; they were not re-read from production in this revision.** The figures before this sentence are the 19 November reading, taken before that release. Earlier verification (17–18 November): concurrency 1, `FILE_LINK_RECONCILE_INTERVAL_HOURS=2`, Scheduler enabled, Policies A, B and C enabled, 1 company, 2 active Company Admins, 2 deactivated test members, 0 active external users |
-| **Deferred Control 46** | **CLOSED — 18 November 2026, with accepted risks; production acceptance approved by the architect** (SECURITY.md item 46; ADR-75 → *DC46 closure record*; TESTING.md §59) |
+**What it is.** Constrap is *the connected commercial operating system for
+construction projects* — one commercial dataset from drawing and quantity
+through budget, commitment, claims, invoices, cash and margin to the final
+account, joined by cost codes. Sources: [PRODUCT.md](../PRODUCT.md),
+[AGENT.md](../AGENT.md) → *Strategic Invariants*.
 
-**Accepted risks (not eliminated — detail in section I):** copied download
-links live until a sweep removes the token (the two-hour reconciliation
-interval is not a strict revocation deadline — completion depends on
-scheduling, worker health and backlog) · console and
-Admin SDK writes bypass Rules · the November token re-creations are
-unattributed · every member reads every drawing revision · monitoring
-shares the worker's cloud project · the Firestore Rules have 12,540 bytes of headroom
-with the Final Account block (REPORTED published).
+**Customers.** Small and mid-sized contractors, builders and quantity
+surveyors; Australian first. Internal users are Company Admin, Project
+Manager and QS / Office; subcontractor and client users have controlled,
+project-assigned read access (M2-A2, ADR-83/84).
 
-**Exact next development action:** architect review and Git integration of
-`docs/m2-a2-stage-b-closeout` (documentation only; no deploy). Then, on its
-own brief: the next smallest milestone proposed in section J
-(*Next, from 24 November 2026*). Real customer external onboarding stays
-BLOCKED until a readiness decision is recorded.
-*As written for the previous revision:* architect review of
-`feature/m2-a2-external-provisioning` (M2-A2 Stage B, ADR-84). Then, each on
-its own authorisation and in this order: commit and merge; **Azure `main`
-GREEN (no production step before it)**; redeploy the three callables
-(DEPLOYMENT.md → *M2-A2 Stage B*, step 3) and verify the other eight
-services kept their revisions; TESTING.md §69 R1–R3; then the production
-acceptance §69 P1–P14 in an isolated test company with two
-Product-Owner-controlled mailboxes — which also completes §68 X1–X6 and §63
-P19–P20. External onboarding is unblocked only by a decision recorded after
-that acceptance.
-*As written for the previous revision:* architect review of
-`docs/m2a2-stage-a-closeout` (documentation only; no deploy). Then, on its
-own brief and approval, **M2-A2 Stage B** — operator provisioning and
-assignment management, the reset of `projectIds` on acceptance and
-deactivation, file-link revocation on unassignment, and the live
-external-role test that completes DC20's acceptance.
-*As written before deployment:* architect review of
-`feature/m2-a2-external-project-isolation` (M2-A2 Stage A, ADR-83). Then,
-each on its own authorisation and in this order: commit and merge; **Azure
-`main` GREEN (no production step before it)**; Stage-1 Firestore Rules and
-Storage Rules; Hosting; the directory backfill (dry run, then `--apply` on a
-separate Product Owner authorisation); FINAL Rules only when every project's
-entry matches; TESTING.md §68 M1–M8. Stage B needs its own brief.
-*As written for the previous revision:* architect review of
-`docs/post-l4-roadmap-alignment` (documentation only). Then, on its own
-brief and approval, the proposed **C1 — Core acceptance closeout**
-(section J). Standing rules unchanged: the trusted backend has TWO approved
-financial callables and no Xero or AI work is authorised.
-*As written for L4:* architect review of
-`feature/l4-boq-budget-transfer` (L4, ADR-81). Then, each on its own
-authorisation and in this order: commit and merge; **Azure `main` GREEN (no
-production deployment before it)**; Rules publish (232,776 bytes); deploy of
-ONLY the new callable (`--only functions:team:transferBoqToBudget`); verify
-it and that no other service changed revision; Hosting; TESTING.md §67
-T1–T16 on a test project. **Emergency rollback:** previous Hosting release +
-`BOQ_BUDGET_TRANSFER_ENABLED=false` on that one function; the L4 Rules and all
-working budget lines are RETAINED (DEPLOYMENT.md → *L4* → *Rollback*).
-**Standing rule changed by L4:** the trusted backend now has TWO approved
-financial callables (ADR-77 `approveFinalAccount`, ADR-81
-`transferBoqToBudget`); CLAUDE.md and AGENT.md say so. No other financial
-logic belongs in Functions.
-*As written for L3 Stage 2:* architect review of
-`fix/l3-application-error-recovery` (L3 Stage 2), then Git integration, one
-Hosting deploy and TESTING.md §66 E1–E10 (each on its own authorisation).
-*As written for Stage 1:* architect review of
-`chore/l3-recovery-monitoring` (L3 Stage 1), then Git integration (Product
-Owner). Then, each on its own authorisation: create the uptime check and the
-two alert policies (DEPLOYMENT.md → *L3 Stage 1*), and run the Firestore
-restoration verification (`ops/recovery/README.md`). Then L3 Stage 2
-(application error recovery, Hosting-only) on its own brief. Open in
-parallel, as product acceptance items outside L3: the remaining L2-C checks
-(TESTING.md §63 — access, parity, performance), the L2-B positive
-acceptance (TESTING.md §62 — approval, revisions, export) and the GANTT
-baseline scenarios not exercised in the browser. After L3: L4, L5 and
-commercial readiness; Constrap IQ / Quant AI, mobile / field and the final
-audit later (Lead Architect's sequencing, 20 November 2026 — unchanged).
-**Next release gate:** none for Stage 1 (no deploy belongs to it).
-**Pre-customer gate:** the Firestore restoration verification — DONE,
-SUCCESSFUL (REPORTED; DEPLOYMENT.md → *Restoration verification record*).
+**Problems it solves.** Replaces disconnected spreadsheets and tools with one
+system of record for commercial control: what is budgeted, committed,
+claimed, certified, invoiced, paid and received; what the project will cost;
+what margin remains; and a defensible final account — every figure derived
+from source documents rather than retyped.
 
-**Awaiting authorisation — none of these is approved yet:**
-
-| Action | State |
-|---|---|
-| Git integration of `chore/l3-recovery-monitoring` (L3 Stage 1) | DONE — merged to `main` as `4bd358a` |
-| Creating the uptime check and the two L3 alert policies in production (DEPLOYMENT.md → *L3 Stage 1* → *Creating the monitoring*) | DONE — created; five policies enabled and one uptime check (VERIFIED read-only, 21 November 2026). Alert delivery TESTED 24 November 2026 UTC (C1-D; temporary policy, Product Owner channel; receipt REPORTED) — *as written:* Alert delivery NOT tested |
-| Running the Firestore restoration verification (`ops/recovery/README.md`) — creates and deletes a temporary database | DONE — SUCCESSFUL (REPORTED by the Lead Architect); temporary database removed, only `(default)` listed (VERIFIED) |
-| L3 Stage 2 — application error recovery (ADR-80, Hosting-only) | DONE — merged as `b7f825f`; LIVE through the L4 Hosting release (`main` `a30699e`; REPORTED, 22 November 2026; bundle VERIFIED 25 November 2026). **E1–E10 run 25 November 2026 — not closed:** E1 and E3–E10 accepted with their evidence limitations, E2 open against tracker D3 #32 (TESTING.md §74.10). *As written before the run:* E1–E10 browser acceptance not recorded. *As written:* IMPLEMENTED on `fix/l3-application-error-recovery` (uncommitted). Awaiting architect review; Git integration and the Hosting deploy NOT AUTHORISED |
-| GANTT core completion (ADR-79) | DONE — merged as `9ce433d`, released 20 November 2026 08:52 UTC (VERIFIED), Product Owner accepted (REPORTED). Certain baseline scenarios not exercised in the browser — a product acceptance check |
-| L2-C Portfolio Report (ADR-78) | DONE — merged as `93db6cc` (VERIFIED) and deployed (live bundle VERIFIED 20 November 2026). Visual, CSV and PDF acceptance confirmed (REPORTED). **OPEN:** the access, parity and performance checks of TESTING.md §63 |
-| `fix/l2b-final-account-reconciliation` (over-allocation readiness requirement; live / draft wording) | DONE — merged as `891043a` (VERIFIED); REPORTED deployed 20 November 2026 |
-| L2-B positive production acceptance — approval, revisions, export (TESTING.md §62 F3–F17) | PENDING. The reconciliation correction's release is REPORTED done (20 November 2026). Written before that release: The team callables and the reconciliation worker must NOT be redeployed. On the test project the user must first correct the receipt over-allocating CI-0012 before a Final Account can be prepared |
-| **Firestore recovery** — the restoration verification (`ops/recovery/README.md`; record in DEPLOYMENT.md → *Firestore recovery protection*) | Protection ENABLED; **two READY backups VERIFIED read-only, 21 November 2026** (`d05840df…` 19 November 16:51 UTC, `f6e32570…` 20 November 17:01 UTC). **Restoration verification SUCCESSFUL (REPORTED; recorded 21 November 2026): 44 collection groups / 211 documents and one sample hash matched; not every document's contents compared.** |
-| Billing administration by the billing account owner (ownership, a second administrator, a budget and its notifications) | NOT DONE — administrator action; a follow-up outside DC46. **Paid billing is REPORTED by the Product Owner (17 November 2026);** that does not complete this item |
-| Other DC46 follow-ups (Storage Data Access audit logs; Rules size reduction; load testing at agreed triggers; drawing-revision visibility policy; faster token revocation) | NOT STARTED, none approved — ROADMAP.md → *DC46 follow-ups* |
-| Minor documentation debt — three source comments still read "Deferred Control 46 — still OPEN" | Not blocking (architect, 18 November 2026); fix with the next code change in those files |
-| International tax compliance | Deferred to a dedicated future milestone (architect decision, 18 November 2026); GST stays the flat Australian 10% |
-
----
-
-## B. Project identity
-
-**Product.** Constrap is the connected commercial operating system for
-construction projects, for small and mid-sized contractors: one commercial
-dataset from preconstruction to final account, joined by the cost-code spine.
-It is opinionated commercial workflow, not a form-first toolkit. Objectives,
-roles and module status: [PRODUCT.md](../PRODUCT.md). Strategic boundaries:
-[AGENT.md](../AGENT.md) → *Strategic Invariants*, [ROADMAP.md](../ROADMAP.md)
-→ *Anti-Goals*.
+**Positioning.** An opinionated commercial workflow for contractors — **not**
+a form-first or HSEQ platform. Generic form builders, HSEQ libraries, payroll,
+fleet and broad integrations before product-market fit are anti-goals
+([ROADMAP.md](../ROADMAP.md) → *Anti-Goals*; PRODUCT.md → *What Constrap Is
+Not*). Field features exist only to feed or evidence a commercial outcome.
 
 **Brand.** Customer-facing name **Constrap** (renamed from "Constrapp" on
 10 November 2026). The old spelling is deliberately kept in internal
-identifiers (Firebase project id, repository directory, storage keys,
-historical records). Never search-and-replace it — [AGENT.md](../AGENT.md) →
-*Brand Name*.
+identifiers — the Firebase project id, package names, storage keys, history.
+Never search-and-replace it (AGENT.md → *Brand Name*). Proprietary module
+names: PULSE™, SHIELD™, GANTT™, Quant™, IQ™.
 
-**Stack (VERIFIED from the repository).**
+**International direction.** Projects already report in their own currency,
+with **no FX** and **Australian GST only** — Constrap is not tax-compliant
+outside Australia, and says so. The Sydney region is retained (international
+infrastructure assessment, 18 November 2026). International tax compliance is
+deferred (Phase 3).
+
+**Commercial status (REPORTED).** Live at `https://app.constrap.com`. One
+production customer company and an isolated acceptance-test company are
+active (DEPLOYMENT.md names them). Company creation and external-member
+provisioning are operator tasks; there is **no** self-serve signup, billing
+or subscription. External customer onboarding stays gated (section O).
+
+---
+
+## B. Commercial lifecycle
+
+```
+Drawing → Quantity → BOQ → Estimate → Tender → Award → Approved Budget
+  → Commitment → Purchase Order → Variation → Progress Claim
+  → Supplier Invoice → Actual Cost → Forecast → Cash Flow
+  → Final Project Margin → Final Account
+```
+
+**The cost-code spine.** Every commercial document line carries a
+`costCodeId` and a `costCodeName` snapshot taken at write time (never
+backfilled). Cost codes are company-wide; they join the BOQ, budget, tenders,
+POs, variations, claims, invoices, credits, forecasts and reports. New
+commercial modules must join through them (ADR-0a, AGENT.md).
+
+**Read-time derivation.** Committed, Claimed, Actual, Invoiced, exposure,
+forecast, margin, receivables, payables and cash figures are **derived when
+read** from the source documents; nothing writes a rollup onto a budget line
+(ADR-3/4; [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md)). A failed or
+loading source shows *Unavailable*, never zero (ADR-41, ADR-44).
+
+**Authoritative sources.**
+
+| Figure | Authoritative source | Notes |
+|---|---|---|
+| Approved Budget | Active approved version's immutable snapshot + its approved adjustments | ADR-70/71; without one the page shows *Working budget (not approved)* |
+| Committed | Sent/closed PO lines + applied supplier variations + committed new-scope lines, net of posted invoicing and approved claims | ADR-55, ADR-62, ADR-63 (one formula) |
+| Claimed / Actual / Invoiced | Approved progress claims; posted supplier invoices (replacing their claim); posted supplier credits reduce Invoiced/Actual | ADR-30, ADR-31, ADR-68 |
+| Forecast Final Cost | Actual + Remaining Committed + authored Uncommitted Cost to Complete (`forecastLines`) | Supplier variation exposure shown separately, never added |
+| Contract revenue | Original Contract Value (commercial baseline) + approved client variations | ADR-20; credit notes never move it |
+| Margin | Forecast revenue − Forecast Final Cost | Unaffected by invoicing or cash |
+| Client receivables | Issued client invoices − credits − retention held + released − receipts | One selector: `lib/clientReceivables.js → receivableContext` |
+| Supplier payables | Posted invoice `payableTotal` + released retention − credits − payments | `lib/supplierPayments.js`, `lib/payments.js` |
+| Cash | Posted receipts (in) and posted payments (out), by transaction date, gross | Not a bank balance |
+| Final Account | An approved revision's stored figures, recomputed by the server at approval | ADR-77; never recalculated afterwards |
+
+**Lifecycle status.**
+
+| Stage | Status |
+|---|---|
+| Drawing, Quant takeoff, BOQ | LIVE (Quant manual 1A–1D; BOQ foundation) |
+| **Estimate** | **NOT BUILT** — Phase 2 step 7 (D1–D3) |
+| Tender, Award, Award → draft PO | LIVE (packages independent of the BOQ) |
+| Approved Budget (versions, adjustments), BOQ → working budget | LIVE (ADR-70/71/81) |
+| PO, Variation, Progress Claim, Supplier Invoice, Credit Note, Retention Release, Supplier Payment | LIVE — lifecycles Rules-enforced; supplier-side cumulative caps **not** authoritative (Phase 2 steps 3–4) |
+| Client Invoice, Receipt, Client Credit Note, Client Retention | LIVE (receipts and client entries posted by trusted callables, ADR-89) |
+| Refunds / credit settlement | **NOT BUILT** — Phase 2 step 5 (D6–D8); an amount owed to a client blocks the Final Account |
+| Forecast, Cash Flow (actual, forecast, chart), Margin | LIVE |
+| Commercial Report, Portfolio | LIVE (Portfolio: some access, parity and performance checks open) |
+| Final Account | LIVE and accepted (C1-A closed 25 November 2026) |
+
+**Remaining commercial gaps** (ADR-92 D10; tracker D4a). In Phase 2:
+retained supplier-invoice credits (G1), authoritative supplier cumulative
+caps (G2), dependency-safe supplier voids (G3), original contract value
+protection (G5), supplier payment over-reconciliation (DC18). Retained for
+Phase 3: client over-invoicing policy (G4), numbering (G6), legal identity
+and printable tax invoice (DC15), forecast-line shape validation.
+
+---
+
+## C. Product modules
+
+Detail: [PRODUCT.md](../PRODUCT.md) (module tiers), [ROADMAP.md](../ROADMAP.md)
+(*Development Order*), and the named ADRs.
+
+| Module | Status | Built | Outstanding / constraints |
+|---|---|---|---|
+| **Core commercial** (cost codes, budgets, POs, variations, claims, supplier invoices, credits, retention, payments, client invoices, receipts, client credits and retention) | LIVE | All lifecycles; read-time figures; Rules-enforced lifecycles; client finance via trusted callables | Phase 2 steps 2–6 move the remaining financial mutations to the backend and close supplier-side caps. PO "send" is a status only — no PDF or email |
+| **Dashboard** (Premium v2) | LIVE (ADR-42/45) | Portfolio counts + one selected project's KPIs and programme panel | §22 role and layout checks 2–3 not run. No portfolio money on the dashboard (by decision) |
+| **Project administration** | LIVE | Create; edit name, status, location, start date, progress; per-project currency (locks once money exists) | No delete (by design) |
+| **Documents & Drawings** | LIVE (ADR-28, ADR-73–75, ADR-83) | Drawing register with immutable revisions; general documents; authenticated downloads; token revocation | Assigned externals read every revision, withdrawn included (D3 #4, policy open). Photos: placeholder |
+| **Procurement** (tender, award, award → PO) | LIVE (ADR-32, ADR-61) | Packages by cost code, manual bids, comparison, award decision, one linked draft PO | BOQ-built packages, invitations, bid levelling, award rescission, split awards: deferred |
+| **Estimating & BOQ** | BOQ LIVE; estimating NOT BUILT | BOQ with rates, Quant link, BOQ → working budget transfer (callable) | Phase 2 step 7: estimate layer, rate components, prelims, contingency, overheads, markup or margin, approved revisions (D1–D3) |
+| **Quant™** | LIVE 1A–1D (ADR-51–54) | Calibrated manual takeoff, BOQ link and explicit apply, deductions, project summary | Quant AI deferred |
+| **PULSE™** | LIVE 1A/1B/1C (ADR-47/49/67) | Nine deterministic health indicators; acknowledgement | No scores, trends, prediction or AI |
+| **SHIELD™** | LIVE foundation + 2A/2B1/2B2 (ADR-50/68/70/71) | Five assurance checks; claim–invoice pairing; approved budget versions; adjustments | Single-actor segregation alert deferred to step 6. Supplier-invoice integrity re-derives `retentionGst` (must become version-aware, step 3). **Never HSEQ** |
+| **GANTT™** | LIVE 1A1/1A2/1B + core completion (ADR-64–66, ADR-79) | Programme chart, finish-to-start dependencies, approved baselines and variance, attention filter, CSV and print | No critical path, auto-reschedule or calendars. Financially inert |
+| **IQ™** | NOT BUILT — DEFERRED | — | AI placeholder rule (AGENT.md) in force |
+| **Reporting & analytics** | LIVE: Commercial Report (L2-A), Portfolio (L2-C, ADR-78) | CSV + print; currency-grouped portfolio, never summed across currencies | Charts, trends, saved history not built |
+| **Cash Flow** | LIVE | Actual; forecast by due date; manual timing lines; visualisation | Date filtering and invoice retiming deferred; retention held and GST/BAS excluded and warned |
+| **Final Account** | LIVE and accepted (ADR-77) | Draft revisions, trusted approval recomputing every figure, immutable revisions, drift comparison, CSV and print | Client signature and subcontract final accounts not built; settlement of amounts owed to clients (step 5); segregation (step 6) |
+| **Company & team** | LIVE (L1, ADR-72; ADR-84) | Invitations, roles, deactivation via callables; operator-provisioned externals with project assignment | Last-admin protection only; no approver-count protection yet |
+| **Customer onboarding** | NOT BUILT | Operator bootstrap scripts | Gated — section O |
+| **Subscription billing & entitlements** | NOT BUILT | — | No scope recorded in the repository |
+| **Mobile & field** | Responsive web only | Touch-ready layouts | PWA, offline and native not started; D3 #32 and #36 are inputs |
+| **External integrations** | NOT BUILT | `externalRefs` fields reserved on documents | Xero assessed, DEFERRED (ADR-82 PROPOSED, not approved) |
+
+---
+
+## D. Technical architecture
+
+**Stack (VERIFIED from the `package.json` files, 27 November 2026).**
 
 | Layer | Technology |
 |---|---|
-| Frontend | React 19, Vite 8, JavaScript (no TypeScript), Tailwind CSS v4, React Router 7, React Context + hooks, Recharts 3 |
-| Data | Firebase client SDK 12 — Auth, Firestore, Cloud Storage — behind `frontend/firestore.rules` and `frontend/storage.rules` |
-| Trusted backend | `frontend/functions/` (codebase `team`, Node.js 22, Admin SDK): eight Callable Functions for team membership only (ADR-72), plus one scheduled worker `processFileLinkRevocations` (ADR-74/75). No financial logic |
-| CI | Azure Pipelines (`azure-pipelines.yml`), on `main` and on PRs to `main`. No deploy stage |
-| Tests | Vitest: unit (`test:unit`), Rules on emulators (`test:rules`), Functions pure (`functions:test`) and on emulators (`test:functions`) |
+| Frontend | React 19.2, Vite 8.0, Tailwind CSS 4.3, React Router 7.18, Recharts 3.8, JavaScript (no TypeScript), Firebase JS SDK 12.15 |
+| Trusted backend | `frontend/functions/` — Gen 2 Cloud Functions, codebase `team`, **Node.js 22** (`firebase.json` → `nodejs22`), firebase-admin 14.5, firebase-functions 7.4 |
+| Data | Firebase Auth (email and password), Cloud Firestore, Cloud Storage |
+| Hosting | Firebase Hosting, deployed by the Product Owner (no CI deploy stage) |
+| CI | Azure Pipelines (`azure-pipelines.yml`) on Node 24.19.0: lint (blocking), unit, Rules emulator, transitional-rules and bundle freshness checks, Functions emulator. No deploy |
+| Tests | Vitest 4.1: `test:unit`, `test:rules`, `functions:test` (pure; also the Functions predeploy), `test:functions` (emulators). firebase-tools 15.34 (needs Java 21+) |
+| Infrastructure | Firebase / GCP project `constrapp-69b5d`; region `australia-southeast1`; emulator project `demo-constrap-test` (tests only; suites start only through the isolating launcher — section I); no `.firebaserc` — every deploy names `--project` |
 
-Architecture detail: [ARCHITECTURE.md](ARCHITECTURE.md). Data model:
-[DATA_MODEL.md](DATA_MODEL.md).
+**Repository structure.** `frontend/` is the whole application:
+`src/pages`, `src/components`, `src/hooks` (all Firestore access), `src/lib`
+(pure domain logic); `functions/` (trusted backend; `src/generated/` holds
+bundles built from `src/lib`); `tests/{unit,rules,functions}`;
+`firestore.rules` (FINAL) and the generated `firestore.transitional.rules` /
+`firestore.m2a2-transitional.rules`; `storage.rules`; `scripts/` (bundle
+builders, transitional generator, capacity tools, dev launchers). `ops/`
+holds monitoring policy files, the recovery procedure and the runbook.
+`docs/` holds this file and the detailed documentation; `docs/Constrapp_v5.jsx`
+and the Word document there are the original prototype artefacts (visual
+reference only, not requirements).
 
-**Repository structure (VERIFIED).**
+**Patterns that must be preserved.**
 
-```
-frontend/            the whole application (Vite root)
-  src/               pages, components, hooks (all Firestore access), lib (pure domain logic)
-  functions/         the trusted backend package (own lockfile, tests, operator scripts)
-  tests/             unit · rules · functions suites
-  firestore.rules    storage.rules    firestore.transitional.rules (generated)
-  firebase.json      Hosting, both rules files, the Functions codebase, emulators
-ops/monitoring/      alert policy files — DC46 A, B, C created in production; L3 uptime check and two L3 policies created 21 November 2026
-ops/recovery/        Firestore restoration verification procedure + read-only count script (verification run once, successful — REPORTED)
-ops/RUNBOOK.md       production operations runbook
-docs/                detailed documentation (this file lives here)
-AGENT.md  CLAUDE.md  PRODUCT.md  ROADMAP.md  README.md  azure-pipelines.yml
-```
+- **Hooks-only Firestore access**; pages never import `firebase/*`.
+- **Keyed-snapshot subscriptions** with derived loading and a failed read
+  shown as unavailable (ADR-41); figures gated on verified sources (ADR-44).
+- **Pure domain modules in `src/lib/`; no formula in the Functions package.**
+  A trusted callable runs a **generated bundle** of the browser's own modules
+  (`scripts/build-*-bundle.mjs`), checked for freshness by unit tests and CI.
+- **Write-outcome helper** (ADR-80): confirmed / failed / *uncertain* — never
+  report success early, never retry automatically.
+- **Transactional numbering** from `companies/{c}/counters/{type}` (ADR-5).
 
-**Infrastructure (identifiers only — no secrets belong in this file).**
+**Trusted backend boundary (ADR-72 → ADR-89 → ADR-90).** Security Rules are
+the trust boundary for client-SDK data. The Functions use the Admin SDK,
+bypass Rules, and authorise every call themselves: switch → authenticated →
+active membership and role (re-read inside the transaction) → company from the
+membership, never from the request. App Check is enforced on every callable.
+**Rule since ADR-89:** a mutation that reads an array or a register, holds a
+cumulative or cross-document invariant, or derives stored financial figures is
+a trusted callable; simple scalar single-document writes stay with Rules;
+drafts and reads stay in the browser.
 
-| Component | Value | Status |
+| Service | Purpose | Status |
 |---|---|---|
-| Firebase / Google Cloud project | `constrapp-69b5d` | VERIFIED in repository documents |
-| Region (Functions, Scheduler) | `australia-southeast1` | VERIFIED in repository documents |
-| Production origin | `https://app.constrap.com` (the `web.app` / `firebaseapp.com` origins also serve) | REPORTED live 11 November 2026 |
-| Hosting | Firebase Hosting, deployed by hand | REPORTED |
-| Callables | `listTeam`, `createInvitation`, `resendInvitation`, `revokeInvitation`, `previewInvitation`, `acceptInvitation`, `changeMemberRole`, `deactivateMember` — App Check enforced | **VERIFIED** by read-only production check, 17–18 November 2026: revisions `-00004-*` (deployed 17 November 2026 20:49 UTC, source of `main` `5fb96da`; functions source unchanged in `0225b03`) |
-| Worker | Cloud Run service `processfilelinkrevocations`, revision `-00003-ceg`, concurrency 1, own service account, `FILE_LINK_RECONCILE_INTERVAL_HOURS=2` | VERIFIED by read-only production check, 18 November 2026 |
-| Scheduler | `firebase-schedule-processFileLinkRevocations-australia-southeast1`, every minute, enabled | VERIFIED by read-only production check, 18 November 2026 |
-| Monitoring | Alert Policies A, B and C; log-based metric `dc46_reconciliation_plan_complete`; email channels `DC46 - Product Owner` and `DC46 - Billing Administrator` (addresses held only in Cloud Monitoring) | VERIFIED by read-only production check, 18 and 21 November 2026 (three policies, all enabled, two channels each). **L3 uptime check and L3 policies `15559930914799323534` and `9683374685335961795` CREATED and enabled — VERIFIED read-only, 21 November 2026; notification delivery NOT tested** (as written). **C1-D, 24 November 2026 UTC:** inventory re-VERIFIED (five policies, two channels unchanged); delivery of opened and resolved emails through the Product Owner channel tested with a temporary policy (receipt REPORTED); the availability policy file aligned with its check-id filter |
-| Invitation email | Resend, from the Functions only; key in Secret Manager | REPORTED |
-| Emulator project | `constrapp-rules-test` (tests only, never a real project) | VERIFIED |
-| `.firebaserc` | None. Every deploy names `--project` explicitly | VERIFIED |
-| General App Check enforcement (Firestore, Storage, Auth) | NOT ENABLED — metrics only | REPORTED |
+| 8 team callables (`listTeam`, `createInvitation`, `resendInvitation`, `revokeInvitation`, `previewInvitation`, `acceptInvitation`, `changeMemberRole`, `deactivateMember`) | Membership only (ADR-72, ADR-84) | LIVE |
+| `processFileLinkRevocations` (scheduled worker, own service account) | Storage download-token removal (ADR-74/75) | LIVE |
+| `approveFinalAccount` | Final Account approval (ADR-77) | LIVE |
+| `transferBoqToBudget` | BOQ → working budget lines (ADR-81) | LIVE |
+| 6 client-finance callables (post/void client credit note, retention release, receipt) | Client finance and per-invoice ledgers (ADR-89) | LIVE |
+| `createVariation`, `updateVariationDraft`, `approveVariation`, `applyVariationCommitment` | Variations (ADR-90 and its checkpoint correction) | **Branch only — IMPLEMENTED, NOT DEPLOYED** |
 
-Build, environment variables and every release procedure:
-[DEPLOYMENT.md](DEPLOYMENT.md).
+Production: 17 services (REPORTED, Phase 1 release record).
 
----
+**Rules capacity.** Platform limits: 262,144 bytes of source, about 250 KB
+compiled, 1,000 expressions per request. Internal budget: 245,000 bytes on
+each of the three files. **Production:** 236,120 bytes (binding transitional
+file 236,800). **Branch:** 222,000 (binding 222,610; 22,390 under budget). Compiled size has never
+been measured. The expression headroom of the remaining near-ceiling paths
+(claims and supplier invoices) was last measured before ADR-90
+(TESTING.md §78.2).
 
-## C. Development responsibilities
+**Development and emulator environment.** Frontend and CI run on Node
+24.19.0; Functions acceptance runs on **Node 22** through
+`npm run test:functions:node22` and `npm run functions:test:node22`, which
+refuse any other major version. Emulators need Java 21+. Both emulator suites
+refuse to start outside loopback hosts and the test project
+(`frontend/tests/_emulatorGuard.js`). The Functions emulator still carries the
+operator's Firebase CLI credentials (D3 #17; section F).
 
-**Product Owner**
-- Owns product decisions.
-- Authorises changes and releases.
-- Executes Git integration and deployment.
-- Confirms production acceptance.
+**Known technical debt and transitional architecture.** Transitional rulesets
+are generated, never hand-edited, and published only in the release stage
+that needs them. 58 older write sites lack the write-outcome helper (D3 #11).
+Cache-only answers are taken as final in some providers (D3 #36). Counters are
+client-writable (DC6). Supplier-side cumulative caps and line contents are
+client-enforced (DC18/24/25/29/36/37 — narrowing in Phase 2). Unpaginated
+register subscriptions and the per-type number counter are known scale
+ceilings (ARCHITECTURE.md → *Capacity and load-test plan*).
 
-**ChatGPT**
-- Lead Software Architect.
-- Senior Software Engineer.
-- Technical Product Architect.
-- Development Supervisor.
-- Reviews Claude reports and approves gates.
-
-**Claude Code**
-- Implementation engineer.
-- Performs repository inspections.
-- Implements approved changes.
-- Runs tests.
-- Reports results.
-- Does not deploy or commit without approval.
-
-These roles are a **working convention**, recorded in
-[AGENT.md](../AGENT.md) → *Collaboration Protocol* — not a technical fact
-verified in Git. In practice: Claude Code does not commit, push, merge, deploy, publish rules,
-or change Firebase, Google Cloud, IAM or billing unless a brief explicitly
-authorises that step. It may be given **read-only** production inspection.
+Detail: [ARCHITECTURE.md](ARCHITECTURE.md), [DEPLOYMENT.md](DEPLOYMENT.md),
+[ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md).
 
 ---
 
-## D. Implementation protocol
+## E. Data architecture and financial integrity
 
-This section describes how work flows. It does **not** replace
-[AGENT.md](../AGENT.md), [CLAUDE.md](../CLAUDE.md) or
-[ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md), which stay binding and
-unchanged.
+**Tenancy.** Every document except `users/{uid}` lives under
+`companies/{companyId}/…`, project data under `…/projects/{projectId}/…`.
+`users/{uid}` is the one authoritative, client-read-only membership document
+(`companyId`, `role`, `status`; `projectIds` for external roles). Rules `get()`
+it and compare `companyId` with the path. Deactivation clears `companyId` and
+`role`, so the next request fails. Detail: [DATA_MODEL.md](DATA_MODEL.md),
+[SECURITY.md](SECURITY.md).
 
-1. **Architectural assessment before coding.** The architect issues a
-   read-only inspection brief. Claude Code reads code and documents, changes
-   nothing, and returns a numbered report. The brief ends *stop for architect
-   review*.
-2. **Explicit stage authorisation.** Implementation starts only on an explicit
-   approval message. Each stage of a multi-stage item (and each production
-   step) is authorised separately; approval of one never extends to the next.
-3. **Briefs.** The architect writes a detailed, copyable plain-text brief: objective,
-   numbered tasks, strict constraints, a *MANDATORY REPORT* list, and a stop
-   instruction. The Product Owner pastes it into Claude Code.
-4. **Claude model and session (convention).** Choose the Claude model for the
-   task's complexity from the models available at the time — no specific
-   model is a requirement. Where practical, keep one Claude session through
-   assessment, implementation, corrections and release verification; start a
-   fresh session at a completed milestone boundary. Give model and session
-   instructions to the Product Owner **outside** the implementation prompt.
-   A fresh Claude session starts from [CLAUDE.md](../CLAUDE.md) and has no
-   earlier conversation, so the first brief of a session must carry full
-   context.
-5. **Branches.** Branch from `main`: `feature/`, `fix/`, `chore/`, `docs/`,
-   and in practice also `ops/` and `refactor/`, lowercase kebab-case ([AGENT.md](../AGENT.md) → *Git Workflow*). Conventional
-   Commit messages. One logical change per commit.
-6. **Implementation report.** Every task ends with the report the brief asks
-   for: branch and HEAD, files changed, tests run with counts, rules size
-   where relevant, security statement in the honesty protocol
-   ([ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md) §7), unverified
-   facts, **whether this handover needs updating**, and GO / NO-GO.
-7. **Test and review gates.** Lint (0 errors / 0 warnings), unit, Rules
-   emulator, Functions pure and emulator suites, transitional-rules check and
-   build, as applicable ([ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md)
-   §4, §5, §8). The architect reviews the report and the diff before anything
-   is committed.
-8. **Commit, merge, Azure CI.** After architect approval the Product Owner
-   commits, merges to `main` (history shows merge commits, *Merge …*) and
-   confirms Azure CI is green on the merge. **CI green is not a deployment.**
-9. **Production deployment approval.** A separate, explicit authorisation.
-   The Product Owner runs the documented release order for that item from
-   [DEPLOYMENT.md](DEPLOYMENT.md) — Rules-first, Hosting-first, Functions-first
-   or multi-stage, as that item's section states. Firestore and Storage rules
-   are published deliberately, never as a side effect.
-10. **Production acceptance.** The Product Owner runs the acceptance steps in
-    [TESTING.md](TESTING.md). Where the backend leaves evidence (request logs,
-    worker logs, audit events), acceptance is confirmed against it — a
-    reported pass with no backend trace is not recorded as accepted.
-11. **Documentation closeout.** A docs-only branch corrects every status line
-    to what actually happened (DEPLOYMENT, SECURITY, ROADMAP, the ADR, TESTING),
-    and this handover is updated. Only then is the milestone closed.
+**Integrity rules that apply everywhere.**
 
----
+- Forward-only lifecycles; financial records are never deleted (void or
+  cancel by status). Issued, posted and approved documents are immutable.
+- Names snapshotted at write time, never backfilled.
+- Ex-GST canonical amounts; flat Australian 10% GST; per-project currency,
+  no FX.
+- Paired cross-document writes are verified with `getAfter()` (ADR-61,
+  ADR-68) or — since ADR-89 — performed in one server transaction.
+- Approved records (budget versions, adjustments, baselines, Final Account
+  revisions) are never recalculated; corrections are new records.
 
-## E. Architectural invariants
+**Calculation versioning (ADR-86, ADR-91).** Receivable side: exact integer
+cents since Phase 1. Payable side: `calcVersion` on a document — absent or 1
+is the legacy `roundMoney(x × 0.1)` (one cent low on some half-cent
+boundaries, and not sign-symmetric); 2 is exact, half away from zero; any
+other value is refused. It is written once by the backend; a document is
+always recalculated under its own version; a derived document takes its GST as
+an integer share of the source's stored figure and records `sourceCalcVersion`
+(the rule is fixed; implementation comes with steps 3–4). **Implemented so
+far: variations only, on the branch.**
 
-Summaries only. The linked source is authoritative.
+**Ledgers and aggregates.** One `clientInvoiceLedgers/{invoiceId}` per client
+invoice (credited, retention credited and released, received cents; `seq`),
+written only by callables, with invariants I1–I4 (ADR-87/88/89). A missing
+ledger reads as zero only once the project's receipt-baseline marker exists.
+The approved-budget pointer carries the adjustment ledger (ADR-71).
+**Supplier-invoice ledgers with a lazy historical baseline are APPROVED in
+principle (D10), not built.** Per-PO or per-line aggregates for cumulative
+claiming are to be assessed in step 3 (D11).
 
-| Invariant | Rule | Source |
+**Idempotency and concurrency.** Callables are idempotent by document state:
+a repeat by the same caller answers `alreadyApplied` with no second write or
+audit event. Creates are idempotent by a client-chosen document id (ADR-90).
+Contention is confined to one document (an invoice ledger, a variation);
+contention on every attempt is a typed *busy* refusal; any other unexpected
+failure is reported as *uncertain*. Company-wide number counters are the known
+shared contention point.
+
+**Corrections and voids.** Voids are invariant-based, not strict reverse order
+(ADR-89 void policy): a void that would break a ledger invariant is refused
+and names the entry in the way; a client retention-release void is refused
+while receipts rely on it. A client invoice cannot be voided while credits or
+releases are posted (ADR-87 D6). **D8 extends this to any receipt allocation,
+including legacy ones — APPROVED, not built.**
+
+**Protections by document (production unless marked).**
+
+| Document | Protected by | Notable limits |
 |---|---|---|
-| **Multi-tenant isolation** | Every document except `users/{uid}` lives under `companies/{companyId}/…`. Rules read `users/{uid}` and compare `companyId` to the path. The membership document is client-read-only | [ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md) §1; [SECURITY.md](SECURITY.md) → *Authentication & Membership* |
-| **Where security is enforced** | Firestore and Storage Security Rules are the trust boundary for all client-SDK data. The team-management Functions bypass rules and authorise every call themselves. Client-side role and lifecycle checks are UX only. Never call a client-only control "enforced" | [SECURITY.md](SECURITY.md); [ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md) §6–§7 |
-| **Trusted backend is narrow** | **From ADR-89 (LIVE 27 November 2026):** complex commercial mutations belong in the trusted backend; financial callables live today are `approveFinalAccount`, `transferBoqToBudget` and the six client-finance callables (post / void client receipt, credit note, retention release). Each re-derives its figures and writes one audit event. *As written before:* `frontend/functions/` does team membership and download-token clean-up, plus ONE financial operation: the ADR-77 `approveFinalAccount` callable (deployed; production acceptance pending), which recomputes and finalises a Final Account revision. No other financial write, general API or new trigger without a new ADR | [ARCHITECTURE.md](ARCHITECTURE.md) → *Client-SDK Data Access + One Narrow Trusted Backend*; ADR-72, ADR-74, ADR-77 |
-| **Rules capacity** | The Firestore ruleset must stay under the approved 245,000-byte budget (hard limit 262,144). **Live since 26 November 2026: 236,120 bytes (`0e228bd0…`); binding transitional file 236,800 — 8,200 of headroom; compiled size not exposed by the platform.** *As written before:* `main`: 232,460 bytes (12,540 of headroom), REPORTED published. The reconciliation correction changes no Rules | [SECURITY.md](SECURITY.md) → *Ruleset source-size limit*; ADR-60, ADR-69, ADR-76 |
-| **Financial correctness** | Committed, Claimed, Actual, Invoiced, forecast, margin and cash figures are derived at read time. Nothing writes a financial rollup onto a Budget Line. All money through `roundMoney`; canonical amounts ex-GST. A failed or loading source shows *Unavailable*, never zero | [AGENT.md](../AGENT.md) → *Financial Invariants*; [FINANCIAL_WORKFLOWS.md](FINANCIAL_WORKFLOWS.md); ADR-41, ADR-44, ADR-55 |
-| **Approved Budget** | An immutable approved version plus approved adjustments; never a silent fallback to working lines | ADR-70, ADR-71 |
-| **Per-project currency** | One currency per project; a label, never a conversion. No FX. Format only through `formatCurrency`. GST stays a flat Australian 10% — currency is not tax | [AGENT.md](../AGENT.md) → *Financial Invariants*; ADR-21 |
-| **Commercial lifecycle integration** | New commercial modules join the lifecycle through the cost-code spine (`costCodeId` + `costCodeName` snapshot). Field features must state their commercial input or output | [AGENT.md](../AGENT.md) → *Strategic Invariants* |
-| **Data integrity** | Forward-only lifecycles; financial records are never deleted; transactional document numbering; names snapshotted at write time and never backfilled; paired writes verified in rules with `getAfter()` where a cross-document invariant matters | [ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md) §1, §3; ADR-57 to ADR-59, ADR-61, ADR-68 |
-| **Code structure** | Hooks-only Firestore access; pure domain logic in `frontend/src/lib/`; no new dependency without instruction | [ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md) §1, §3 |
-| **Error handling** | Hooks expose their error state; pages gate every figure on its verified sources; messages are friendly and leak nothing | ADR-41, ADR-44 |
-| **Production safety** | Nothing reaches production without a named authorisation. Release order per item is documented and followed. No secret in the frontend bundle or in Git. Proposed work is never described as live | [DEPLOYMENT.md](DEPLOYMENT.md); [SECURITY.md](SECURITY.md) → *Secrets & the Vite bundle* |
-
-All decision records: [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) (ADR-0a to
-ADR-80).
+| Budget lines, approved versions, adjustments | Rules; immutable snapshots; pointer pairing | Drift acknowledgement is client-side (DC44/45) |
+| Purchase Orders | Rules lifecycle (ADR-57) | Cancel policy client-side (DC35); line contents unverified (DC34) |
+| **Variations** | Rules lifecycle (ADR-59); **branch: create, approve and apply by callables (ADR-90)** | Draft line contents (DC37, narrowed on the branch) |
+| Progress claims | Rules lifecycle (ADR-58); claim–invoice pairing (ADR-68) | One open claim per PO and cumulative claiming client-side (DC3/36) — step 3 |
+| Supplier invoices | Rules lifecycle (ADR-40); posted is terminal | Line and PO over-invoicing client-side (DC29); approve and post not transacted — step 3 |
+| Supplier credits, releases, payments | Rules lifecycle and per-document caps | **Cumulative caps client-side (DC24/25/18); voids unguarded (G3); retained invoices cannot be credited (G1)** — step 4 |
+| Client invoices | Rules lifecycle; void blocked while credits or releases are posted | Over-invoicing warned only (DC14, Phase 3) |
+| Client receipts, credits, retention | Trusted callables + ledger (ADR-89) | No refund or re-allocation (step 5) |
+| Forecast lines | Role-only Rules | No shape validation (Phase 3 finding) |
+| Commercial baseline | Rules shape; legacy original budget frozen | **Original Contract Value freely editable (G5) — step 6** |
+| Final Account | Trusted approval; immutable revisions | Self-approval permitted and recorded |
 
 ---
 
-## F. Completed milestones
+## F. Security architecture
 
-Production status below is **REPORTED** — taken from the repository's release
-records, most of them "confirmed by the Product Owner". Dates are as recorded.
+- **Tenant isolation:** the company comes from `users/{uid}` in Rules and in
+  callables; no callable accepts a company id.
+- **Project-level access:** external roles (`client`, `subcontractor`) read
+  only their assigned projects' drawings and project documents (ADR-83/84);
+  the project document itself is internal-only; externals see an
+  external-safe directory entry.
+- **Roles:** financial roles are `company_admin`, `project_manager`, `qs`;
+  approvers of budget versions, adjustments, baselines and the Final Account
+  are `company_admin` and `project_manager`. `super_admin` is operator-only and
+  has no Rules powers.
+- **Revocation:** deactivation and role changes take effect on the next
+  request; callables re-read membership inside their transaction.
+- **Firestore Rules strategy:** access, drafts and immutability — *not
+  arithmetic* (ENGINEERING_STANDARDS.md §9). Every Rules change is measured
+  against the byte budget; transitional rulesets are generated.
+- **Storage:** scoped paths, role gates, content-type and size checks;
+  authenticated SDK reads only (ADR-73); legacy download tokens removed by the
+  worker after membership changes and every two hours (ADR-74/75; DC46 CLOSED
+  with accepted risks).
+- **Trusted Functions:** App Check enforced; instance caps; typed errors that
+  leak nothing; one audit event per committed financial operation
+  (`companies/{c}/auditEvents`, Admin SDK only).
+- **Financial authority migration:** client finance (ADR-89) live; variations
+  (ADR-90) on the branch; claims, supplier invoices and supplier settlement in
+  steps 3–4.
+- **Approval segregation:** **not enforced anywhere today** (DC4). D4/D5 are
+  approved for step 6 (optional company policy, default off, two-approver
+  precondition, revocation never blocked).
+- **IAM and service accounts:** callables run as the default runtime account;
+  the worker has its own service account invocable only by Scheduler. No key
+  files. Secrets in Secret Manager (`EMAIL_API_KEY`); nothing secret is
+  `VITE_`-prefixed.
+- **App Check:** enforced on every callable; **general enforcement on
+  Firestore, Storage and Auth is NOT enabled** (metrics only).
+- **Emulator credential isolation:** PARTIAL — the project and host guard is
+  verified; the Functions emulator still holds the operator's CLI login
+  (D3 #17 OPEN).
 
-| Module | What is live | ADRs | Status |
+**Requirements that must never be weakened:** tenant isolation; Rules refusing
+every client path to a backend-only mutation; callables authorising themselves
+and deriving every stored figure; immutability of issued, posted and approved
+records; no secret in the bundle or in Git; no production action without a
+named authorisation; the honesty protocol (ENGINEERING_STANDARDS.md §7 — never
+call a client-only control enforced).
+
+Open findings: section O; [SECURITY.md](SECURITY.md) → *Deferred Controls*.
+
+---
+
+## G. Architectural decision index
+
+All decisions: [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) (ADR-0a to
+ADR-92). Those that most constrain future engineering:
+
+| ADR | Subject | Decision and continuing constraint | Status |
 |---|---|---|---|
-| **Commercial workflow** | Cost Codes, Budgets, Purchase Orders, Progress Claims, Supplier Invoices, Variations, Forecast, Margin, Client Invoices, Client Receipts, Supplier Payments, Credit Notes, Retention Release, Cash Flow, BOQ, Tenders, Contacts, Documents & Drawings, RFIs, Company Country & Currency | See ROADMAP.md → *Completed Foundations* | LIVE (foundations) |
-| **Commercial Finance Phase 1** | Client credit notes, client retention and releases, the per-invoice ledger, trusted receipt posting with an exact historical baseline, exact receivable-side GST, company activation | ADR-85 to ADR-89 | **LIVE and CLOSED within its accepted scope, 27 November 2026** (TESTING.md §82); both companies activated |
-| Commercial integrity releases | M1 forecast integrity; M2-A read containment; M2-B1/B2/B3 PO, claim and variation lifecycle rules; M3-A award → draft PO; M3-B1 variation commitment; M3-B2 new-scope claims | ADR-55 to ADR-63 | LIVE (from 27 October 2026) |
-| **Premium Dashboard** | Dashboard v2 on derived figures only | ADR-42, ADR-45 | **DEPLOYED — VERIFIED read-only, 25 November 2026** (live bundle SHA-256-identical to `main`); figures and switching PASSED in production against independent expectations (TESTING.md §74.5) — tested financial calculations accepted by the Lead Architect (§74.10); roles and layout checks (§22 checks 2 and 3) not run — open; release date not recorded. *As written:* Merged and recorded as implemented; **production release not recorded** — see the verification list below |
-| **PULSE** | 1A six commercial indicators; 1B acknowledgement; 1C three schedule indicators | ADR-47, ADR-49, ADR-67 | LIVE |
-| **SHIELD** | Foundation (five assurance checks); 2A claim-to-invoice pairing; 2B1 Approved Budget Versions; 2B2 Budget Adjustments | ADR-50, ADR-68, ADR-70, ADR-71 | LIVE |
-| **Quant** | 1A manual measurement; 1B BOQ link and explicit apply; 1C editing and summary; 1D deductions | ADR-51 to ADR-54 | LIVE (October 2026) |
-| **GANTT** | 1A1 programme tab; 1A2 dependencies; 1B approved baselines and variance | ADR-64 to ADR-66 | LIVE — DEPLOYED, VERIFIED read-only 20 November 2026 (ADR-79 → *Production evidence*) |
-| **GANTT core completion** (G1, G2, G3) | Schedule attention filter; programme CSV and print; last-change visibility | ADR-79 | **LIVE since 20 November 2026 08:52 UTC — Product Owner accepted** (live bundle VERIFIED 21 November 2026; acceptance REPORTED) |
-| **L1 Team Management** | Invitations, acceptance, role changes, deactivation through the trusted backend; Constrap brand and custom domain | ADR-72 | LIVE and accepted, 11 November 2026 |
-| **DC46-A** | Authenticated Storage reads; the app mints no download URL | ADR-73 | LIVE, 11 November 2026 |
-| **DC46-B** | Scheduled worker removes legacy download tokens after a membership change | ADR-74 | LIVE and accepted, 12 November 2026 |
-| **DC46-C Stage 1** | Updated worker (fair scheduling, recovery rules, concurrency 1) and periodic reconciliation | ADR-75 | Worker DEPLOYED 13 November; ACCEPTED 16 November 2026. **Periodic reconciliation ACTIVE at a 2-hour interval since 17 November 2026 19:16 UTC**; three periodic sweeps observed, all complete |
-| **DC46-C callable deployment** | The eight team callables redeployed from `main` `44446a0`, callables only (revisions `-00003-*`, since replaced by `-00004-*` on 17 November 2026), so they write the ADR-75 request priority. The worker was not redeployed | ADR-75 (implementation status) | DEPLOYED and ACCEPTED 16 November 2026; verified read-only. **Deactivation regression through the new revisions PASSED 16 November 2026** (TESTING.md §55) |
-| **DC46-C monitoring** | Alert Policies A, B and C and two email notification channels on the worker. Detection only — not a control and not an external monitor | ADR-75 (implementation status) | A and B CREATED 16 November, C 17 November 2026; verified read-only; test delivery REPORTED by both recipients; no failure condition has fired on a real failure |
-| **DC46-C Stages 2 and 3** | No client can change a document from `project` to `internal`; a Company Admin can remove a subcontractor or client | ADR-75 | LIVE 17 November 2026 (`main` `5fb96da`; callables `-00004-*`); production-accepted 18 November 2026 |
-| **DC46 external document access** | Non-internal roles read only `project` + `active` documents (Firestore and Storage Rules, hook, page) | ADR-75 | LIVE 17 November 2026 22:15 UTC (`main` `0225b03`); production-accepted 18 November 2026 |
-| **DC46 closure** | Final external-member acceptance on a disposable subcontractor; documentation closeout | ADR-75 → *DC46 closure record*; TESTING.md §59 | **Deferred Control 46 CLOSED 18 November 2026 with accepted risks** |
-| **L2-A Commercial Report** | Read-only project report on the Reports tab; CSV and print | No ADR | LIVE and production-accepted — REPORTED by the Lead Architect, 19 November 2026 |
-| **L2-B Stage A** | Firestore Rules capacity recovery 3: leading-whitespace re-indent, 242,163 → 229,115 bytes | ADR-76 | LIVE 18 November 2026 21:57 UTC; live ruleset VERIFIED byte-identical to `main`, 19 November 2026 |
-| **M2-A2 External Project Isolation** | Stage A: external-safe project directory; reads of drawings, revisions, project documents and files scoped to assigned projects; project document internal-only. Stage B: operator-provisioned `client` / `subcontractor` invitations carrying `projectIds`; audited assignment changes with urgent file-link revocation on removal; assignment reset on acceptance and deactivation | ADR-83, ADR-84 | **LIVE and CLOSED** — Stage A 23 November 2026; Stage B live 23 November, production-accepted 24 November 2026 (TESTING.md §68, §69); **DC20 CLOSED**. Customer onboarding separately gated |
-| **L4 BOQ → working budget transfer** | *Transfer to budget* on the BOQ tab through the trusted `transferBoqToBudget` callable; WORKING lines only; acceptance UX correction | ADR-81 | **LIVE and production-accepted, 22 November 2026** (REPORTED by the Lead Architect); browser gaps T9, T14, the Quant step of T16 and a real disconnection — emulator coverage retained (TESTING.md §67) |
+| 0a, 3, 4 | Cost-code spine; read-time derivation | Every line carries a cost code; no rollups on budget lines | LIVE |
+| 5, 11, 12 | Numbering; forward-only lifecycles; no deletion | Counter in the same transaction; status changes only | LIVE |
+| 20, 21 | Revenue; per-project currency | The contract sum is revenue; currency is a label, no FX | LIVE |
+| 40, 57–59 | Rules-enforced lifecycles (invoices, POs, claims, variations) | Stamps are the caller at server time; revision +1 | LIVE |
+| 41, 44, 80 | Subscription and error standards | Unavailable, never zero; uncertain, never "saved" | LIVE |
+| 55, 62, 63 | One Remaining Committed formula; variation commitment; new scope | Recognised once; the PO is never edited | LIVE |
+| 60, 69, 76, 85 | Rules capacity recoveries | Byte-identical or proven-equivalent rewrites only | LIVE |
+| 68 | Claim–invoice pairing | One active claim-sourced invoice per approved claim | LIVE |
+| 70, 71 | Approved Budget versions and adjustments | Immutable snapshot; adjustments bound to a version | LIVE |
+| 72 | Trusted backend for team management | Membership in `users/{uid}`; callables authorise themselves | LIVE |
+| 73–75 | DC46 download-token revocation | Authenticated reads; worker removes tokens | LIVE (DC46 closed) |
+| 77 | Final Account approval callable | The server recomputes; revisions immutable | LIVE |
+| 78 | Portfolio | Grouped by currency; never summed across currencies | LIVE |
+| 81 | BOQ → working budget callable | Working lines only; never an approved version | LIVE |
+| 82 | Xero | One-way export design | **PROPOSED, not approved; deferred** |
+| 83, 84 | External project isolation | Assigned projects only; operator provisioning | LIVE |
+| 86 | Money precision | Exact receivables; payable side left for a versioned change | LIVE |
+| 87, 88 | Client credit notes; client retention | Per-invoice ledger; proportional retention credit | LIVE |
+| 89 | Trusted transaction boundary; ten permanent principles | Complex mutations are callables; Rules are for access | LIVE |
+| **90** | Trusted variation processing | Create, approve and apply by callables; Rules keep draft, submit, reject, withdraw | **IMPLEMENTED, NOT DEPLOYED** |
+| **91** | Version-aware supplier calculation | `calcVersion`; recalculate under the document's own version; derived documents share stored figures | **Foundation IMPLEMENTED (variations); remainder APPROVED** |
+| **92** | Phase 2 programme decisions D1–D11 | Below | **APPROVED (REPORTED, 27 November 2026)** |
 
-**Planned, partial or not built — do not present as complete:**
+**Phase 2 decisions D1–D11 (ADR-92, as directed by the Lead Architect — read
+the ADR for the full wording; do not reinterpret):**
+
+| | Decision |
+|---|---|
+| D1 | Estimate layer over the BOQ with immutable approved revisions; optional rate components reconciling to the unit rate; prelims, contingency, overheads (classified, no double count), markup or margin, sell price; revisions reconstructable without one unbounded document |
+| D2 | Explicit basis `markup_on_cost` / `margin_on_sell` in basis points; exact sell price; a margin of 100% or more is invalid |
+| D3 | The ADR-81 transfer stays, ungated; show live vs approved estimate; the budget is cost; sell price only as a reviewed contract-value prefill |
+| D4 | Optional company-level segregation, default off; an independent approver (not the creator, last material editor or preparer); the exact revision; no administrator bypass; authoritative enforcement |
+| D5 | Two eligible approvers to enable; revocation never blocked; fewer than two → approvals fail closed, never silently disabled; operator-controlled, audited policy changes |
+| D6 | `clientRefunds` and `clientReceiptApplications` as separate facts with the full invariant list; Final Account protection extended, not weakened |
+| D7 | Settlement within one company, project, client and currency; no client wallet |
+| D8 | Invoice void refused while any allocation or dependency remains, legacy included |
+| D9 | ADR-91: sign-symmetric half-away-from-zero; no retrospective recalculation; version-aware SHIELD and drift checks; server-validated provenance |
+| D10 | In Phase 2: G1, G2, G3, G5, DC18; supplier ledgers with a lazy baseline (local only). Phase 3: G4, G6, DC15, forecast-line shape |
+| D11 | Migrate the complete authority boundary (variations; claims and invoices as one unit; supplier settlement); assess real bounds; prefer bounded aggregates; measure the Rules recovery |
+
+---
+
+## H. Development history and completed milestones
+
+Production status is REPORTED from release records unless marked VERIFIED.
+Detail: [ROADMAP.md](../ROADMAP.md) → *Completed Foundations* and *Strategic
+Development Sequence*; DEPLOYMENT.md release records; the archive.
+
+| Milestone | Status |
+|---|---|
+| Commercial foundations (cost codes → cash flow, BOQ, tenders, contacts, documents, RFIs, currency) | LIVE |
+| Commercial integrity M1–M3 (forecast integrity, read containment, PO, claim and variation lifecycle Rules, award → PO, variation commitment, new scope) | LIVE from 27 October 2026 |
+| PULSE 1A–1C; SHIELD foundation, 2A, 2B1, 2B2; Quant 1A–1D; GANTT 1A1–1B and core completion | LIVE (October – 20 November 2026) |
+| L1 team management and the Constrap brand | LIVE and accepted, 11 November 2026 |
+| DC46 A/B/C (download tokens) | LIVE; **DC46 CLOSED 18 November 2026** with accepted risks |
+| Firestore recovery protection | ENABLED 18 November 2026; restoration verification SUCCESSFUL (REPORTED) |
+| L2-A Commercial Report; L2-B Final Account; L2-C Portfolio | LIVE; Final Account accepted (C1-A, 25 November); Portfolio partially accepted |
+| L3 reliability (monitoring, error recovery) | CLOSED; D3 #32 fixed and production-verified 26 November 2026 |
+| L4 BOQ → budget transfer | LIVE and accepted, 22 November 2026 |
+| M2-A2 external project isolation, Stages A and B | LIVE; CLOSED 24 November 2026 |
+| C1 core acceptance closeout (A–D) | CLOSED 24–25 November 2026 |
+| **Commercial Finance Phase 1** (ADR-85–89) | **LIVE and CLOSED 27 November 2026**; merged `9e31bb0` → `c9df38b`; closeout docs merged `dfe3618` (VERIFIED in Git) |
+| **Phase 2 steps 0–2** (ADR-90–92) | **IMPLEMENTED locally — not accepted, not committed, not deployed** |
+
+Architectural transitions: client-SDK only → narrow trusted backend (ADR-72)
+→ individual financial callables (ADR-77, 81) → the trusted transaction
+boundary as the rule for complex mutations (ADR-89) → migration of existing
+Rules-validated paths (ADR-90, Phase 2).
+
+---
+
+## I. Current development checkpoint
 
 | Item | State |
 |---|---|
-| DC46 follow-ups (billing administration, Storage audit logs, Rules size, load testing at triggers, drawing visibility, faster revocation) | NOT STARTED, none approved — ROADMAP.md → *DC46 follow-ups* |
-| DC46-C Stage 4 measurement at volume | DEFERRED to a threshold-triggered follow-up (about 500 companies, about 50,000 objects in one company, or routine deferral/overdue lines) |
-| Availability monitoring | An uptime check on `app.constrap.com` and its alert policy EXIST (L3 Stage 1; VERIFIED read-only, 21 November 2026; the email path TESTED with a temporary policy on 24 November 2026 UTC, C1-D; the policy itself has never fired). It lives inside the production project; a monitor independent of the project is not built and not in L3 |
-| GST boundary hotfix (`fix/gst-boundary-pins`) | **DEPLOYED, Rules and Hosting — VERIFIED read-only, 25 November 2026** (TESTING.md §74.1); calculations verified independently (§74.4) — calculation compatibility accepted by the Lead Architect (§74.10); manual acceptance steps 1–3 of §44 not run in production — outstanding, retained for the relevant financial implementation milestone; precision concern tracker D3 #35; release dates not recorded. *As written:* Merged; production state unconfirmed — see the verification list below |
-| Estimating | Not built (the BOQ → working budget transfer is LIVE — ADR-81; approval stays with SHIELD) |
-| Commercial reports | L2-A project Commercial Report LIVE and production-accepted (REPORTED, 19 November 2026). **L2-C Portfolio Report DEPLOYED** (ADR-78) — visual and export acceptance PASSED (REPORTED, 20 November 2026); security, parity and performance checks OPEN. Programme CSV / print: LIVE (ADR-79). Not built: charts, trends, portfolio cash-flow forecast, programme indicators on the portfolio, saved report history |
-| Final Account | **L2-B DEPLOYED — PRODUCTION ACCEPTANCE PENDING** (ADR-77): revisions, trusted approval, immutable snapshot, drift comparison, CSV / print. The reconciliation correction is REPORTED deployed (20 November 2026); positive approval acceptance pending. Not built: client signature or certificate, client retention, subcontract final accounts, creator ≠ approver segregation |
-| Constrap IQ; Quant AI; any AI capability | Not built; DEFERRED (Product Owner, 22 November 2026); placeholder rule applies |
-| Accounting integrations | Not built. Xero ASSESSED — IMPLEMENTATION DEFERRED (ADR-82, PROPOSED, not approved; the product-market-fit gate is not lifted) |
-| Billing and subscriptions; self-serve company signup; client portal | Not built (company creation and external-member provisioning are operator tasks) |
-| International tax and currency | Australian GST only; no BSD currency; international tax compliance deferred (18 November 2026) |
-| Photos; mobile / PWA packaging | Placeholder / not built |
-| General App Check enforcement | Not enabled |
-
-**Resolved as to deployment, 25 November 2026 (TESTING.md §74.1):** both items
-below are in production — the live rulesets and bundle are identical to
-`main`, which contains them. No release record exists for either, so their
-release dates stay unknown. The unexecuted manual checks are listed in the
-tracker (C4 → *Evidence*).
-
-*As written before 25 November 2026:* **Left for verification — production state not established by any release
-record:**
-
-- **GST boundary hotfix.** VERIFIED merged (`ea2eea8`).
-  [DEPLOYMENT.md](DEPLOYMENT.md) still reads *NOT YET DEPLOYED* and now carries
-  a verification note. Later releases of rulesets that contain it are
-  recorded live, but that is an inference, not a record, and says nothing
-  about its Hosting step. Needs Product Owner confirmation of both steps.
-- **Premium Dashboard v2 (ADR-45).** VERIFIED merged (`ba52821`) and recorded
-  as implemented in [PRODUCT.md](../PRODUCT.md) and [TESTING.md](TESTING.md)
-  §22. No production release or acceptance record exists for it. Needs
-  Product Owner confirmation.
-
-Five stale status lines found on 16 November 2026 were corrected from
-repository evidence on the `docs/constrap-context-continuity` branch (M3-B2 in
-ROADMAP.md; the worker status, test tooling and CI summary in
-ARCHITECTURE.md; the `backend/` statement in AGENT.md; the ADR-75 title).
+| Date | 28 November 2026 (NZDT) |
+| Active phase / workstream | Phase 2 — Commercial Completion; **consolidated implementation checkpoint, steps 3–6 — awaiting the Lead Architect** |
+| Branch / HEAD / tree | `feature/commercial-completion-phase-2` / `dfe3618` / `a3514a50` — created from a clean `main` equal to `origin/main` (VERIFIED) |
+| Working tree | Uncommitted: Phase 2 steps 0–6 code, tests and docs (base `dfe3618`); this handover and its archive |
+| Latest accepted checkpoint | Commercial Finance Phase 1 closeout (`main` `dfe3618`) |
+| Latest implementation checkpoint | Steps 3–6 implemented in one programme (ADR-93 claims and supplier invoices; ADR-94 supplier ledgers, G1–G3, DC18; ADR-95 client refunds and receipt applications, D8; ADR-96 approval segregation and G5). Steps 0–2 closed LOCALLY by the architect (rulings recorded on the ADR-90 / ADR-91 correction). Report delivered 28 November 2026 |
+| Accepted test baseline | 9,596 tests at `dfe3618`: unit 6,085 · Rules 2,632 · Functions pure 256 · Functions emulator 623 (VERIFIED by a local run before any change) |
+| Latest results (branch, local) | See TESTING.md §87.4 for the integrated totals and runtime versions of the checkpoint run (unit, Rules, Functions pure, Functions emulator; lint; build; bundle and transitional checks) |
+| Runtimes | Node 24.19.0 (frontend, Rules suite, CI); Node 22.23.2 (both Functions suites); JDK 26 for the emulators |
+| CI | Not run on the branch (uncommitted). `dfe3618` not verified here |
+| Production | Unchanged by Phase 2; not read in this session |
+| Changed-file scope | TESTING.md §83 and the checkpoint report: `src/lib/{supplierCalc,variationProcessing,variationCalc,variations,variationActions}.js`, `useVariations.jsx`, `ProjectVariations.jsx`, `functions/src/variations/*`, `functions/src/lib/{errors,audit,params}.js`, `functions/src/index.js`, generated bundles, the three rules files, the transitional generator, env files (production switch value `false`), the test guard and runtime gate, tests, docs, comment-only corrections |
+| Authorised scope | All of Phase 2, steps 0–8 (architecturally authorised); the first checkpoint stabilises the foundation before step 3. **No production action is authorised** |
+| Pending Product Owner actions | Review; commit in the dependency-ordered groups of the checkpoint report; no deploy. Earlier: two stale local allowlist entries naming the old emulator project |
+| Pending architect decisions | Accept steps 3–6; confirm the refinements (three callables with operation discriminators; payments / receipts / refunds / applications recorded, not segregated; supplier credits by cost-code and tax-code group; posting re-derives and refuses moved figures; no transitional ruleset for steps 3–6 — a maintenance restriction instead); authorise the read-only production inventories (variations, supplier history, counters, baselines); release grouping; then Step 7 |
+| Known limitations | Nothing deployed. Production history (variations, claims, supplier settlement) not inventoried: the baselines refuse or mark inconsistent what they cannot account for. Compiled Rules size and post-change expression headroom not measured. No per-user rate limiting on the new callables. Rules-held approvals compare creator / last updater only. Refusals on Rules-held approvals show a generic permission message. Browser acceptance is local only and partial (TESTING.md §87.5) |
+| Next recommended action | Lead Architect review of the consolidated checkpoint → authorise Step 7 (CC1 estimating) and the read-only production inventories that gate the release of steps 2–6 |
 
 ---
 
-## G. DC46 final state — CLOSED 18 November 2026
+## J. Phase 2 — Commercial Completion programme
 
-Sources: [SECURITY.md](SECURITY.md) → *Deferred Controls* item 46;
-[PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) → ADR-73, ADR-74, ADR-75
-(*DC46 closure record*); [DEPLOYMENT.md](DEPLOYMENT.md) → *DC46 — production
-closure record*; [TESTING.md](TESTING.md) §52–§59;
-[ops/monitoring/README.md](../ops/monitoring/README.md). Times UTC.
+One consolidated, authorised programme with reviewable checkpoints (ADR-92;
+ROADMAP.md → *Phase 2* progress register). Identifiers: CC1–CC5 are ROADMAP
+Phase 2 items 1–5; **CC6 is the supplier monetary precision work (D3 #35)**;
+CC7 is integrated acceptance.
 
-| Item | State |
-|---|---|
-| ADR-73 (DC46-A) | The app does not deliberately expose token-based download URLs (it never requests one); every read is rules-checked. Firebase Storage uploads can still create download-token metadata, which the reconciliation worker removes. LIVE 11 November 2026 |
-| ADR-74 (DC46-B) | Scheduled worker removes download tokens after a deactivation or an internal-to-external role change; request queued in the membership transaction. LIVE 12 November 2026 |
-| ADR-75 Stage 1 — periodic reconciliation | **ACTIVE at 2 hours since 17 November 2026 19:16** (worker `-00003-ceg`, `main` `2b3ba9a`). VERIFIED: hourly heartbeats; periodic sweeps 17 November 19:18:02 (5 scanned, 0 removed), 22:19:02 (5, 0) and 18 November 00:21:02 (9, 4 removed), all complete, zero failures. Rollback checkpoint for the worker: `a2544a1` (disable policy C) |
-| ADR-75 Stage 2 — visibility lock | LIVE 17 November 2026 20:47 (Rules). VERIFIED in production 18 November: a notes-only edit accepted, `project → internal` refused (403) |
-| ADR-75 Stage 3 — external-member removal | LIVE 17 November 2026 20:49 (callables `-00004-*`, Hosting). VERIFIED in production 18 November: `deactivateMember` 200 on `deactivatemember-00004-kom`; three audit events under one request id; Auth disabled, refresh tokens revoked; urgent sweep complete 20 seconds later (9 scanned, 0 removed, 0 failed); queue 0 |
-| External document access follows status | LIVE 17 November 2026 22:15 (`main` `0225b03`; both rules files and Hosting). VERIFIED in production 18 November with the test subcontractor's own session: active documents 200; superseded, withdrawn and internal 403 for metadata, bytes and queries |
-| ADR-75 Stage 4 | Volume measurement DEFERRED to a threshold-triggered follow-up. Orphan-prefix check done once (one prefix, one company). Closure wording agreed in the closure record |
-| Monitoring | Policies A, B and C enabled, two email channels each. Detection only. No failure condition has fired on a real failure; incident state is not readable through the available API |
-| Test identity | Disposable subcontractor `q1IctaF2YhdRTdaY0GdpdetKc3U2`, operator-provisioned 17 November 22:48, deactivated 18 November 02:11; Auth disabled; membership and audit records kept; its four test documents withdrawn |
-| Not covered by the acceptance | A `client` or `super_admin` identity; a second production tenant; Android Chrome |
-| **Deferred Control 46** | **CLOSED with accepted risks** |
-
-**Wording rules.** "Closed" means the scoped control is live and accepted —
-never that copied links die instantly. Never say the app "creates no
-tokens": it does not deliberately expose token-based download URLs, but
-uploads can create download-token metadata that the worker later removes.
-Never describe the 2-hour interval as immediate revocation, a guarantee or
-a strict revocation deadline — completion depends on scheduling, worker
-health and backlog: a token lives until the next
-successful sweep of its company (about 3 hours plus queue and sweep time
-without a membership change; longer if a sweep is incomplete or the worker
-is stopped). Membership removal is immediate; link revocation is a
-background clean-up. Monitoring is detection only — never a control, an
-external monitor, or proven against a real failure; Policy A must not be
-described as detecting a billing interruption. Never describe the accepted
-risks as eliminated.
+| Step | Scope | Depends on | Key requirements | Status | Production implication |
+|---|---|---|---|---|---|
+| 0 | ADRs, progress register, environment safety | — | Functions acceptance on Node 22; fail-closed emulator guard | **CLOSED (local)** | None |
+| 1 — CC6 | `lib/supplierCalc.js`, `calcVersion` | 0 | Legacy byte-identical; exact and sign-symmetric; independent oracle | **CLOSED (local)** — carried through claims, invoices, credits, releases (ADR-93/94) | Ships with the first document type that uses it |
+| 2 — CC5-A | Trusted variations (ADR-90) | 1 | Complete boundary; no derived input accepted; reviewed revision; Rules −10 KB | **CLOSED (local)** — not deployed | 3 new and 7 rebundled callables, switch, Hosting, FINAL Rules (DEPLOYMENT.md → *Phase 2 step 2*) |
+| 3 — CC5-B | Claims and supplier-invoice pairing: claim create and approve, claim-sourced invoice create, link existing, cancel, post | 1, 2 | One unit; per-PO / per-line aggregates assessed; version-aware SHIELD and drift; measured Rules recovery | **IMPLEMENTED, NOT DEPLOYED** (ADR-93) | Step 2's cutover pattern; may share a release with it |
+| 4 — CC4 | Supplier-invoice ledgers and lazy baseline; retained-invoice credits (G1); cumulative caps (G2); dependency-safe voids (G3); payment protection (DC18) | 3 | The baseline accounts for every historical fact; fail closed; no rewrite; no supplier refund workflow | **IMPLEMENTED, NOT DEPLOYED** (ADR-94) | Baseline initialisation in production needs its own authorisation |
+| 5 — CC3 | `clientRefunds`, `clientReceiptApplications`; Final Account settlement protection; D8 invoice-void protection | ADR-89 base | D6–D8 invariants; a refund is not a negative receipt | **IMPLEMENTED, NOT DEPLOYED** (ADR-95) | Client-finance callables + Rules |
+| 6 — CC2 | Approval segregation (D4/D5); original contract value protection (G5) | 2–5 (approval points become callables) | Policy default off; operator-set; no administrator bypass; revocation never blocked | **IMPLEMENTED, NOT DEPLOYED** (ADR-96) | Company policy flag, operator-set |
+| 7 — CC1 | Estimating (D1–D3) | 6 (segregation of estimate approval) | Bounded, immutable revisions; exact markup and margin | NOT STARTED | New collections and callable |
+| 8 — CC7 | Integrated lifecycle acceptance; cutover design | 1–7 | Independent financial parity; historical fixtures; local browser on emulators | NOT STARTED | Produces the production cutover plan (not authorised) |
 
 ---
 
-## H. Roadmap
+## K. Forward roadmap
 
-**Source of truth:** [ROADMAP.md](../ROADMAP.md) → *Strategic Development
-Sequence*. Read it there; the list below is only the order.
+Programme structure confirmed by the Product Owner and Lead Architect
+(REPORTED, 27 November 2026; recorded in ROADMAP.md → *Consolidated phase
+plan*). The earlier gap — "Phase 4" undefined in the repository — is closed.
 
-1. Complete DC46 security — **DONE** (Deferred Control 46 closed 18 November 2026; section G).
-2. International infrastructure assessment — **DONE** (18 November 2026). Firestore recovery protection ENABLED 18 November 2026; two READY backups VERIFIED 21 November 2026; restoration verification SUCCESSFUL (REPORTED, recorded 21 November 2026).
-3. L2 — Commercial Reports and Final Account — **L2-A LIVE and accepted**; L2-B: Stage A LIVE; **Stage B DEPLOYED — PRODUCTION ACCEPTANCE PENDING** (reconciliation correction REPORTED deployed 20 November 2026; positive approval acceptance pending); **L2-C Portfolio Reporting DEPLOYED** (ADR-78; visual and export acceptance PASSED — REPORTED; security, parity and performance checks OPEN). **GANTT core completion (ADR-79) LIVE and Product Owner accepted** (20 November 2026).
-4. L3 — Production Reliability — **CLOSED** (REPORTED by the Lead Architect, 21 November 2026; Stage 2 merged as `b7f825f` — VERIFIED in Git; its Hosting deploy not independently verified here).
-5. L4 — BOQ-to-Approved-Budget integration — **CLOSED — LIVE and production-accepted, 22 November 2026** (ADR-81; REPORTED by the Lead Architect; browser gaps T9, T14, the Quant step of T16 and a real disconnection, emulator coverage retained). *As written before:* IMPLEMENTED, NOT DEPLOYED.
-6. L5 — Accounting integrations, Xero first — **ASSESSED — IMPLEMENTATION DEFERRED** (22 November 2026; ADR-82 PROPOSED, not approved).
-7. Constrap IQ and AI capabilities — **DEFERRED** (Constrap IQ and Quant AI; 22 November 2026).
-8. Advanced construction modules — NOT STARTED; unscoped future backlog item, no features or priority assigned.
-9. SaaS commercialisation — NOT STARTED.
-10. Mobile and field experience — NOT STARTED.
-11. Final production audit — NOT STARTED.
-
-**This sequence is strategic intent, not an implementation commitment.** It
-authorises nothing and overrides no ADR. Each stage needs its own assessment,
-its own ADR where it introduces a pattern, and a separate implementation
-approval. Stages 2, 4, 8 and 11 have no scope recorded in the repository.
-
-**Approved development order (post-L4) — Product Owner, 22 November 2026.**
-The stage numbers above stay as identifiers. The work still to do runs in
-this order (ROADMAP.md → *Approved development order (post-L4)*):
-
-1. Remaining core functionality and outstanding product acceptance.
-2. Commercial SaaS readiness and international foundations.
-3. Mobile / field experience.
-4. Xero / accounting integration.
-5. Constrap IQ AI.
-6. Quant AI.
-7. Final comprehensive production audit.
-
-Stage 8 (advanced construction modules) stays an unscoped future backlog
-item: no features or priority are assigned to it.
-
-- **L5:** Xero is the preferred first accounting integration, subject to
-  product-market-fit validation and a separately approved integration
-  strategy. Until then accounting integrations remain an anti-goal.
-  **Assessed 22 November 2026, implementation deferred.**
-  - The proposed design is preserved in ADR-82, which is NOT approved.
-  - The gate is not lifted.
-  - No Xero registration, credential or additional Cloud Function is
-    authorised.
-- **Stage 7:** the AI Feature Placeholder Rule in [AGENT.md](../AGENT.md)
-  stays in force until an approved strategy lifts it.
-  - Both modules are kept: **Constrap IQ** (project intelligence,
-    forecasts, risk detection, decision support) and **Quant AI** (drawing
-    interpretation, automated quantity takeoff).
-  - Both are deferred until the core, international and integration
-    foundations are sufficiently mature.
-- The *Anti-Goals* in ROADMAP.md apply to every stage.
-
----
-
-## I. Open risks
-
-| Risk | State | Source |
+| Phase | Status | Content |
 |---|---|---|
-| **Billing continuity** | The project lost billing for about 17 hours on 12–13 November 2026 and the worker did not run. A permanent paid account is **REPORTED** by the Product Owner (17 November 2026); who owns it, a second administrator, a budget and who receives billing notices are all **unconfirmed** — a follow-up outside DC46 | DEPLOYMENT.md → *Billing interruption*, *Billing continuity*; ROADMAP.md → *DC46 follow-ups* |
-| **Monitoring is unproven against a real failure** | *Corrected 25 November 2026 (C1-D):* policy B fired once, on the expected activation overdue line (17 November); A, C and the L3 policies never have. The email path was tested end to end on 24 November with an opened and a resolved notification (Product Owner channel; receipt REPORTED). Gaps retained: `transferBoqToBudget` alert, callable errors without a 5xx, membership-reconciliation and backup monitoring, billing-outage monitoring, independent notification paths (tracker B9). *As written:* Policies A, B and C exist, but none has fired on its real condition; only the email path was exercised, and receipt is reported, not observed. Policy B depends on the worker writing a matching error line. Monitoring and the worker share one project (accepted risk) | DEPLOYMENT.md → *DC46-C monitoring readiness* → *Monitoring release record* |
-| **Reconciliation** | Active at 2 hours since 17 November 2026; three periodic sweeps observed, all complete. The two-hour interval is not a strict revocation deadline: completion depends on scheduling, worker health and backlog, and an incomplete sweep or a stopped worker lengthens it | ADR-75 → *DC46 closure record*; TESTING.md §56, §59 |
-| **Rollback of reconciliation** | Rolling the callables back to the ADR-74 build is unsafe once any periodic request has existed. Policy C must be disabled if the interval is rolled back to `0` | DEPLOYMENT.md → *DC46-C* → *Activation runbook* |
-| **Interval choice** | 1 hour is valid in code but rejected: it collides with the hourly planning period and raises false overdue alerts. A later change of interval must stay at 2 or more | ADR-75 → *Activation readiness*; TESTING.md §56 |
-| **Visibility and status changes** | No client can reduce visibility; a correction needs an operator. A console or Admin SDK edit bypasses Rules and queues no revocation. After a withdrawal, supersession or console change a copied link lives until the next periodic sweep (accepted risk) | SECURITY.md item 46; DEPLOYMENT.md → *Operator procedure — correcting a document's visibility* |
-| **External members** | **Updated 24 November 2026:** provisioning is operator-only through `provision-external-member.mjs` (an invitation the invitee accepts) and assignment changes through `set-member-projects.mjs` (ADR-84, LIVE); external reads are scoped to assigned projects (DC20 CLOSED). Still open: an assigned member reads every revision of an assigned project's drawings, withdrawn ones included; any active member can mint a copied download link (removed by the next sweep); Admin SDK / console writes bypass the scripts' audit and revocation; App Check not enforced; operator-tooling hazards. **Real customer external onboarding BLOCKED** pending a readiness decision. *As written before:* Removal by a Company Admin is live and production-accepted. Provisioning is still an operator task (an Auth account plus `users/{uid}`); there is no script for it. Membership is company-wide — an external member reads every drawing revision in the company, withdrawn ones included (accepted risk) | SECURITY.md → *External Project Isolation — M2-A2 Stage B*; item 46; SECURITY_DATA_TEST_TRACKER.md → *Security risk register* |
-| **Storage-token limitations** | Revocation is not immediate; an active member can still obtain a link by a direct SDK call; token behaviour relied on is undocumented by Firebase; tokens reappeared twice in November from an unattributed cause (none since); scale is unmeasured (largest sweep: nine objects) — load testing is a triggered follow-up | SECURITY.md item 46; ADR-74; ADR-75 |
-| **Monitoring's own limits** | Policy A cannot be relied on for a billing suspension or a deleted service; both policies live in the project they watch. An independent external availability monitor remains future reliability work | DEPLOYMENT.md → *Policy A* limitations |
-| **International region / latency** | All backend resources are in `australia-southeast1`. Assessed 18 November 2026: retained (architect decision). Measured from New Zealand only (Firestore request about 100–115 ms after TLS); no Caribbean, North American or European measurement exists — validate with a pilot customer session. Tax remains Australian GST only; international tax deferred | ROADMAP.md → *Strategic Development Sequence* stage 2; AGENT.md |
-| **Firestore recovery** | PITR (7 days), daily backups (14-day retention) and delete protection ENABLED 18 November 2026. Two READY backups VERIFIED 21 November 2026. **No restore has been tested, so recovery is unproven**; the verification compares counts and one sample hash, not every document. Storage files are outside Firestore backups (7-day soft delete only). No alert watches backup freshness — a weekly manual check | DEPLOYMENT.md → *Firestore recovery protection*; `ops/recovery/README.md`; `ops/RUNBOOK.md` |
-| **Operational visibility** | An availability check and a Final Account failure alert exist since L3 Stage 1, but neither has fired. Notification delivery through the Product Owner channel was TESTED on 24 November 2026 UTC (C1-D; *as written:* notification delivery is NOT tested). Client-side errors reach only the user's browser console — no reporting service, by decision deferred to commercial readiness. All alerting lives inside the project it watches | `ops/monitoring/README.md`; ROADMAP.md stage 4 |
-| **Application error recovery (L3 Stage 2 — LIVE through the L4 Hosting release, ADR-80; TESTING.md §66)** | The project route now distinguishes a failed, refused or cached-only read from *Project not found*, and Client Invoices, Client Receipts and Supplier Payments use the write-outcome helper. **58 older write sites keep the earlier behaviour**: raw SDK error text, and a write made offline leaves the dialog on *Saving…* — user confusion, not a data-integrity risk (single-document, Rules-guarded writes). E1–E10 browser acceptance not recorded. *As written before release:* IMPLEMENTED, NOT DEPLOYED; until deployed, a failed projects read showed *Project not found* | L3 assessment, 21 November 2026 |
-| **False membership notice on a cold load (tracker D3 #32, 25 November 2026)** | With the database unreachable while the page loads, the membership gate states *No active membership*; it recovers by itself when the server answers. Seen on local emulators, not in production with a session. No data or authorisation effect. Relevant to any field or mobile use. **P2 — the next implementation task (Lead Architect, 25 November 2026); the correction must not weaken authorisation and adds no service worker or PWA.** **CLOSED 26 November 2026 — the correction is LIVE (`main` `0bdca38`) and was verified in production (TESTING.md §76).** *As written before the release:* **Correction IMPLEMENTED 25 November 2026 on `fix/membership-resolution-state` (uncommitted; not deployed): only a server-confirmed profile decides membership; a cache-only answer shows *Waiting for the server*. Until it is deployed, production still has the defect** | TESTING.md §74.3, §74.10, §75; tracker D3 #32, B11 |
-| **GST half-cent rounding — financial precision concern (tracker D3 #35, 25 November 2026)** | `roundMoney(x × 0.1)` gives a GST amount one cent below exact decimal half-up on some half-cent boundaries (1,632 amounts per $10,000; never high). The Rules pins admit it — compatibility, not independent mathematical correctness. Deliberate and documented; `roundMoney` was left unchanged by the GST boundary hotfix. Rounding semantics are to be assessed before client credit notes and client retention; nothing changes now | PROJECT_DECISIONS.md → *ADR-40 / ADR-57 Correction: GST Boundary Hotfix* (*Limitations*), ADR-57 decision 4, ADR-10; TESTING.md §74.4, §74.10 |
-| **Rules capacity** | **236,737 of 245,000 bytes — 8,263 bytes of headroom (live ruleset read 25 November 2026 — VERIFIED).** A new collection block of the source size of `supplierCreditNotes` (8,403 bytes) exceeds that source headroom. **Source-file size alone does not establish deployable Rules capacity (Lead Architect, 25 November 2026):** a capacity assessment, then any necessary recovery, precedes client credit-note implementation. *As written:* 232,460 of 245,000 bytes — 12,540 bytes of headroom (REPORTED published 20 November 2026). The 1000-expression ceiling and access-call budget are unchanged by ADR-76 | SECURITY.md → *Ruleset source-size limit*; ADR-76, ADR-77 |
-| **Client-enforced controls** | Several lifecycle, uniqueness and cumulative-cap controls remain client-only | SECURITY.md → *Deferred Controls* |
-| **Final Account (deployed, not accepted)** | No revision has been prepared or approved in production; approval consistency is proven against the EMULATOR only. The reconciliation correction is REPORTED released (20 November 2026), so the callable is REPORTED to refuse an over-allocated client invoice and the live view to label forecast figures as forecasts — not re-read from production in this revision. A draft's figures are unverified until the callable recomputes them; the Admin SDK and console can alter an approved revision; the server calculation must be regenerated when `lib/finalAccount.js` or a module it imports changes; registers stay writable after approval — differences are reported, not prevented | SECURITY.md item 47; ADR-77 |
-| **General App Check enforcement** | Not enabled on Firestore, Storage or Auth | DEPLOYMENT.md → *Deferred: general App Check enforcement* |
+| Foundation and previous acceptance | **CLOSED** within accepted scopes | Security, reliability, reporting, GANTT, monitoring (section H; tracker section B) |
+| Phase 1 — Commercial Finance | **ACCEPTED and LIVE** | ADR-89 client-finance boundary (section H) |
+| Phase 2 — Commercial Completion | **CURRENT** | D1–D11 and the step order of section J — unchanged |
+| Phase 3 — Production and SaaS Readiness | **PENDING** — no implementation authorised; architecture and sequencing subject to a future assessment | Remaining security hardening; deferred onboarding controls; scalability and load testing; company and customer onboarding; subscription billing; feature entitlements; international readiness; supported-jurisdiction tax handling; legal company identity; printable tax invoices; duplicate document numbering (DC6 / G6); client over-invoicing policy (DC14 / G4); production monitoring; recovery and operational readiness; CI/CD optimisation; outstanding customer-readiness reliability and usability findings. **It is the commercial-launch and customer-onboarding readiness gate** |
+| Phase 4 — Product Expansion | **DEFERRED** — nothing authorised | In order: (1) mobile and field experience, (2) Xero accounting integration, (3) Constrap IQ, (4) Quant AI, (5) final comprehensive production audit |
+
+**Direction recorded with the phases.**
+- *Mobile:* assess PWA and offline-first capability before committing to a
+  separate native application.
+- *International:* Australia, the Bahamas and wider markets. Sydney
+  infrastructure is retained pending evidence that justifies migration;
+  latency must be measured from the relevant customer locations. **Currency
+  support is not tax compliance.**
+- *Xero:* assessed and deferred; ADR-82 remains PROPOSED, not approved.
+- *Constrap IQ and Quant AI:* deferred; the AI placeholder rule stays in force.
+- *Security:* essential customer-readiness security is never deferred to
+  Phase 4.
+
+**Not recorded anywhere — do not assume:** pricing, subscription tiers, an
+entitlement model, mobile requirements, AI architecture, launch dates.
+
+**Carried with every phase:** D3 #36, #39, #40, #43; alert coverage for the
+client-finance (and, once deployed, variation) callables; outstanding
+Dashboard and browser acceptance items.
+
+**Other deferred product decisions (unchanged):** tender invitations, bid
+levelling, BOQ-built packages; cash-flow date filtering and retiming; client
+progress claims; revenue recognition; subcontract final accounts; client
+signature; photos; critical path; negative claims; direct PO invoicing of new
+scope; DC46 follow-ups — none approved.
 
 ---
 
-## J. Exact next action
+## L. Engineering and architectural principles
 
-**Done, 16–18 November 2026 (records in DEPLOYMENT.md and TESTING.md
-§54–§59):** monitoring policies A and B; the eight-callable deploy and the
-deactivation regression; activation of periodic reconciliation at 2 hours
-with policy C; Stages 2 and 3; the external document access correction;
-the final external-member acceptance in production; the DC46 documentation
-closeout (this branch).
+Binding sources: [ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md) (§1–§9;
+§9 holds the ten permanent principles of ADR-89) and [AGENT.md](../AGENT.md) →
+*Strategic Invariants*, *Financial Invariants*.
 
-**Done, 18 November 2026:** the DC46 documentation closeout (merged as
-`84c9fb3`); the international infrastructure assessment (read-only,
-architect-approved); the L2-A Commercial Report implementation (branch,
-uncommitted).
-
-**Done, 19–20 November 2026:** L2-B Stage A (ADR-76) live; L2-B Stage B
-(ADR-77) implemented, merged as `c4b93e5` and REPORTED deployed (Rules, the
-one callable, Hosting); a read-only production reconciliation of the test
-project's receivables (one over-allocated invoice, CI-0012, by 500.00 — no
-calculation defect); the reconciliation correction implemented, merged as
-`891043a` and REPORTED deployed, with negative-readiness and reconciliation
-acceptance passed; the L2-C read-only assessment and, after the Lead
-Architect's GO (ADR-78), the L2-C Portfolio Report — merged as `93db6cc`
-and deployed, visual and export acceptance REPORTED passed; the GANTT core
-completion read-only assessment (production state of GANTT 1A1 / 1A2 / 1B
-and PULSE 1C VERIFIED) and, after the Lead Architect's GO (ADR-79), its
-implementation on `feature/gantt-core-completion` (uncommitted).
-
-**Next, from 25 November 2026 (Lead Architect decision on the L3 / GST / Dashboard run — REPORTED). Each step needs explicit authorisation and its own brief.**
-
-0. **Git integration** of `docs/l3-regression-acceptance` (authorised;
-   documentation only; uncommitted until asked). *DONE — `main` `1bc46bc`,
-   VERIFIED in Git, 25 November 2026.*
-1. **D3 #32 membership reliability fix** — P2. Correct the membership-state
-   handling without weakening authorisation. No service worker, no PWA.
-   Correct the E2 procedure (D3 #34) with it.
-   **IMPLEMENTED 25 November 2026 on `fix/membership-resolution-state`
-   (uncommitted) — awaiting architect review, then integration and a
-   Hosting deploy, each on explicit authorisation (TESTING.md §75).**
-2. **L3 E2 corrected acceptance.** L3 stays open until then. *E2-A and E2-B
-   PASS on local emulators; the production run follows the deploy
-   (TESTING.md §75.9). E2-C is a recorded limitation.*
-3. **Client credit-note architecture assessment and ADR** — with the
-   rounding-semantics assessment (D3 #35).
-4. **Firestore Rules capacity assessment and any necessary capacity
-   recovery.** Do not treat source-file size alone as deployable capacity.
-5. **Client credit-note implementation.** The outstanding GST manual checks
-   (§44 steps 1–3) are retained for the relevant financial milestone.
-6. **Client retention.**
-
-Preserved: estimating, approval segregation and the remaining approved
-commercial roadmap; the post-L4 development order; the customer-onboarding
-gate. Still open, not passed: Dashboard §22 checks 2 and 3.
-
-*As written at the run —* **Next, from 25 November 2026 (L3 / GST / Dashboard run). Each step needs explicit authorisation.**
-
-1. **Lead Architect decision on the run** (tracker B10; TESTING.md §74.9):
-   L3 closure with E2 open; acceptance of the GST hotfix and Dashboard v2
-   with their unexecuted checks; priorities of D3 #32–#34.
-2. **Git integration** of `docs/l3-regression-acceptance` (documentation
-   only; uncommitted) once reviewed.
-3. **Proposed: L3 reliability correction** — D3 #32, Hosting-only, with unit
-   tests of the membership gate; then re-run §66 E2 with the corrected
-   procedure (D3 #34).
-4. **Proposed next commercial milestone: client credit notes** — assessment
-   and ADR first; a Firestore Rules capacity recovery before its Rules
-   change (8,263 bytes of headroom today). Status and dependencies of the
-   other commercial gaps: tracker D4a.
-5. **Optional, if wanted:** the GST §44 manual steps on an authorised
-   synthetic fixture (scope in TESTING.md §74.4); Dashboard §22 checks 2
-   and 3.
-6. The post-L4 development order and the customer-onboarding gate are
-   unchanged.
-
-*As written for the C1-A closeout:* **Next, from 25 November 2026 (C1-A closeout). Each step needs explicit authorisation.**
-
-*Done, 24–25 November 2026:* C1-B CLOSED and merged (`2561344`); C1-A
-remaining acceptance run and **C1-A CLOSED** (Lead Architect, 25 November).
-
-*Done, 25 November 2026 (NZDT):* C1-A closeout integrated (`main` `0cf17e6` —
-VERIFIED in Git; Azure green — REPORTED). L4 remaining acceptance and the
-Stage A internal-role regression **run in production** (tracker B7, TESTING.md
-§71) and **CLOSED by the Lead Architect** — L4 with recorded evidence
-limitations, Stage A within its applicable scope.
-
-0. **Now (C1-D closeout):** Git integration of `docs/c1d-monitoring-acceptance`
-   (authorised; C1-D CLOSED by the Lead Architect, 25 November 2026). Then
-   **the next milestone — L3 Stage 2 E1–E10 remaining acceptance.** *As
-   written at the run:* the architect's decision on **C1-D closure** (tracker
-   B9, TESTING.md §73 — recommended GO), then Git integration of
-   `docs/c1d-monitoring-acceptance` (uncommitted: docs, plus the aligned
-   availability policy file and its test). Next milestone proposed: **L3
-   Stage 2 E1–E10**. *Done:* `docs/c1c-gantt-acceptance` integrated
-   (`main` `caf6ecf`). *As written for the C1-C closeout revision:*
-   **Now (C1-C closeout):** Git integration of `docs/c1c-gantt-acceptance`
-   (documentation only, uncommitted; authorised). Then **the next milestone —
-   C1-D — monitoring and alert delivery** (needs its own brief and an
-   authorised synthetic trigger), then L3 Stage 2 E1–E10. C1-C functional
-   acceptance is CLOSED; its carried-forward checks and D3 #30–#31 (P3) stay
-   tracked. *As written at the run:* the architect's decision on **C1-C closure**
-   (tracker B8, TESTING.md §72 — recommended GO with the recorded limits),
-   then Git integration of `docs/c1c-gantt-acceptance` (documentation only,
-   uncommitted) and the triage of D3 #30–#31. Recommended next milestone:
-   **C1-D — monitoring alert-delivery test** (an authorised synthetic
-   trigger), then L3 Stage 2 E1–E10. *Done:* `docs/l4-stage-a-acceptance`
-   integrated (`main` `8b8c3e5`). *As written for the previous revision:*
-   Git integration of `docs/l4-stage-a-acceptance` (documentation
-   only, uncommitted). Then **the next milestone — C1-C GANTT production
-   acceptance** (item 3; needs its own brief, a programme on a test project
-   and, for role checks, a fresh invitation). The **P2 external-role UI
-   correction bundle** (D3 #27–#29, with #5 and #6) is a separate Hosting-only
-   change when scheduled. Items 1 and 2 below are kept as written and are
-   complete.
-1. **Git integration of `docs/c1a-final-account-acceptance`** (documentation
-   only; authorised by the closure decision, not yet committed).
-2. **Next milestone — L4 remaining acceptance and M2-A2 Stage A
-   internal-role regression** (Lead Architect, 25 November 2026): L4 T9, T14
-   and the Quant step of T16 (TESTING.md §67); Stage A M3–M5, M7, M8 (§68).
-   T14 needs an active external session (operator re-provisioning + Product
-   Owner sign-in); that same session carries the **F16 restricted-notice
-   check** from C1-A and the §61 W4 check. The retained TEST Company Admin,
-   Project Manager and QS serve the internal items (tracker C4 → *What the
-   retained test identities can serve*).
-3. **Other remaining C1 items** (tracker C4): C1-C GANTT baseline scenarios;
-   C1-D alert-delivery test; L3 Stage 2 E1–E10; §61 W2–W3.
-4. **Deferred UX and reporting correction bundle** (one Hosting-only change
-   when scheduled): D3 #9, #19, #21 and, from C1-A, #22–#26; #20 needs a
-   reproduction first.
-5. **Policy gap, not a defect:** creator ≠ approver segregation on Final
-   Account is not implemented (self-approval is permitted and labelled) — for
-   a future approval-segregation implementation.
-
-*As written for the C1-B revision (earlier on 24 November):*
-
-**Next, from 24 November 2026 (C1-B revision). Each step needs explicit authorisation.**
-
-1. **Architect review of `docs/c1b-portfolio-acceptance`** (documentation
-   only) and the **C1-B closure decision** — recommended GO with P15 local
-   only and the measurement limits recorded (tracker B5, C4).
-2. **Decide the final state of the PM and QS test identities** (retain
-   active for C1-A role checks, or deactivate from the Team page).
-3. **Next C1 item: C1-A Final Account role checks** (F5, F6, F15, F16, PM
-   approval) — they can reuse the retained PM / QS identities; F14 native
-   print / PDF; retest R5.
-4. **Deferred UX corrections** (one Hosting-only bundle when scheduled): D3
-   #9 subtotal count wording, #19 Reports-tab working-budget label, #21
-   offline status line; #20 needs a reproduction first.
-
-*As written earlier on 24 November (before the C1-B revision):*
-
-**Next, from 24 November 2026. Each step needs explicit authorisation.**
-
-*Done, 23–24 November 2026:* M2-A2 Stage B merged (`bd9021c`) and its three
-callables deployed; production acceptance PASSED in the isolated test
-company; Stage A, Stage B and Deferred Control 20 CLOSED (Lead Architect).
-
-1. **Architect review and Git integration** of
-   `docs/m2-a2-stage-b-closeout` (documentation only, no deploy).
-2. **Operator tooling safety — IMPLEMENTED, PENDING INTEGRATION (24
-   November 2026, `feature/operator-tooling-safety`, uncommitted, awaiting
-   architect review)** — `bootstrap-company.mjs` is dry-run by default and
-   never prints its link (`--apply` + `--no-link` / `--link-file`; explicit
-   `--rotate`); the four older scripts set `process.exitCode` and terminate
-   the Firestore client after a refused transaction. Scripts and their tests
-   only; no Rules, Functions, Hosting, deployment or production write.
-   Architect corrections applied the same day: provisioning uses the shared
-   link-file helper (D3 #16), `npm run test:team` readiness and Vite host
-   fixed and run end-to-end, cleanup failures reported explicitly.
-   TESTING.md §70; DEPLOYMENT.md → *Operator tooling safety*.
-3. **Then C1 — Core acceptance closeout** (still PROPOSED), with the
-   remaining items indexed in
-   [SECURITY_DATA_TEST_TRACKER.md](SECURITY_DATA_TEST_TRACKER.md) → *C*:
-   C1-A Final Account role checks and native print / PDF; C1-B Portfolio
-   P18, parity and M1–M5 (P19–P20 DONE); C1-C GANTT baseline scenarios;
-   C1-D alert-delivery test; L3 E1–E10; L4 T9, T14, Quant step of T16;
-   Stage A internal M-items; W2–W4; GST hotfix and Premium Dashboard v2
-   production evidence.
-4. **A readiness decision for real customer external onboarding** — after
-   the residual risks in SECURITY.md → *External Project Isolation — M2-A2
-   Stage B* are accepted or reduced.
-5. **The post-L4 development order is unchanged** (ROADMAP.md →
-   *Approved development order (post-L4)*).
-
-*As written from 22 November 2026:* **Next, from 22 November 2026. Each step needs explicit authorisation.**
-
-1. **Architect review and Git integration** of
-   `docs/post-l4-roadmap-alignment`. It is documentation only and has no
-   deploy.
-2. **Proposed next milestone: C1 — Core acceptance closeout (PROPOSED — not
-   approved; priority 1 of the post-L4 order).** Finish accepting what is
-   already in production before new functionality is built on it. It is
-   mostly manual acceptance on test data; any defect found gets its own
-   fix brief.
-   - **L2-B Final Account positive path** — TESTING.md §62 F3–F17, with
-     backend evidence for F9. It is the last commercial stage, it is
-     deployed, and no revision has been approved in production.
-   - **L2-C Portfolio** — TESTING.md §63 P4, P19–P20 and M1–M5 (access,
-     parity, performance).
-   - **GANTT baselines** — the scenarios not exercised in the browser.
-   - **Production confirmation** — Product Owner confirmation of the GST
-     boundary hotfix and Premium Dashboard v2 (section F → *Left for
-     verification*).
-   - **Alerting** — a notification-delivery test of the L3 alert policies.
-   - **Optionally**, the L4 browser gaps T9 and T14, if a restricted-role
-     test login is authorised.
-   - **Out of C1:** new functionality, Rules, Functions and data
-     migrations.
-3. **Candidates after C1 — not ordered, not approved.** Each needs its own
-   assessment.
-   - **Remaining core functionality:**
-     - client credit notes (the client-invoice `credit_note` type is
-       reserved);
-     - client retention;
-     - estimating (ROADMAP.md item 4c);
-     - creator ≠ approver segregation on Final Account;
-     - the 58 older write sites without the L3 write-outcome helper.
-   - **Commercial launch dependencies:**
-     - self-serve company onboarding (company creation and
-       external-member provisioning are operator tasks);
-     - company legal identity on client invoices (legal name and tax
-       number are not captured);
-     - billing and subscriptions;
-     - billing-account administration (DC46 follow-up);
-     - client-side error reporting;
-     - general App Check enforcement;
-     - international tax and currency (Australian GST only; no BSD).
-   - **Future enhancements:**
-     - Photos;
-     - direct PO invoicing of new-scope work;
-     - negative claims;
-     - subcontract final accounts.
-
-*As written before 22 November 2026:* **Next. Each step needs explicit authorisation.**
-
-*Done, 20–21 November 2026:* GANTT core completion merged as `9ce433d`,
-released Hosting-only and Product Owner accepted; the L3 read-only
-assessment; L3 Stage 1 merged as `4bd358a`, its monitoring created and its
-restoration verification run successfully (steps 1–3 below are DONE and
-kept as written).
-
-1. **Architect review and Git integration** of
-   `chore/l3-recovery-monitoring` (L3 Stage 1), then refresh this file's
-   checkpoint line. No deploy belongs to it.
-2. **Create the L3 monitoring** — the uptime check, then the two policies
-   (DEPLOYMENT.md → *L3 Stage 1* → *Creating the monitoring*; TESTING.md
-   §65 O1–O4).
-3. **Run the Firestore restoration verification** —
-   `ops/recovery/README.md`; TESTING.md §65 V1–V6. It creates and deletes
-   a temporary database and never touches `(default)`.
-4. **L3 Stage 2** — application error recovery (ADR-80): IMPLEMENTED on
-   `fix/l3-application-error-recovery`; architect review, then merge, one
-   Hosting deploy and TESTING.md §66 E1–E10.
-5. **Product acceptance outside L3** — L2-B positive approval (TESTING.md
-   §62 F3–F17, with backend evidence for F9; L2-B is not accepted until
-   then); the remaining L2-C checks (TESTING.md §63: P4, P19–P20, M1–M5);
-   the GANTT baseline scenarios not exercised in the browser.
-6. **Billing administration** — owner, a backup administrator, a budget and
-   its notifications (DEPLOYMENT.md → *Billing continuity*). Still open.
-
-Not in L3 by assessment: an availability monitor outside the production
-project, a client error-reporting service, a CI deploy stage and general
-App Check enforcement.
-
-After each production step: record what happened in DEPLOYMENT.md, then
-update this handover.
+- Build a production-grade commercial application: one connected system of
+  record, no competing financial models, authoritative calculations reused.
+- Preserve historical financial records; never rewrite issued, posted or
+  approved documents; recalculate a document under its own version.
+- Enforce important invariants on trusted boundaries; Rules are for access.
+- Strict multi-tenant isolation.
+- Bounded reads and transactions; refuse by name above a limit, never
+  truncate; design for realistic volumes and concurrency; avoid hotspots.
+- Backward compatibility: additive fields; an absent field reads as its default.
+- Incremental evolution; no wholesale rebuilds; an unavoidable major
+  migration is an exceptional decision needing explicit approval.
+- Do not overengineer; pay only for justified infrastructure; prefer
+  components that idle at zero.
+- Never weaken security or testing to go faster; never call a client-only
+  control enforced.
+- Use the existing architecture unless an evidence-backed change is needed.
+- Keep development tied to actual commercial requirements; a field feature
+  must state its commercial input or output.
 
 ---
 
-## K. Moving to a new ChatGPT conversation
+## M. Governance and collaboration protocol
 
-### Before leaving the old conversation
+Recorded in [AGENT.md](../AGENT.md) → *Collaboration Protocol* (working
+conventions, changed by Product Owner decision).
 
-1. **Update this handover first.** Ask Claude Code (documentation-only brief)
-   to refresh section A, the *Last updated* line and anything that changed,
-   following [AGENT.md](../AGENT.md) → *Development Continuity*. Have it
-   reviewed like any other document.
-2. Note anything agreed in conversation that is not yet in the repository.
-   If it matters, it goes into a document before the switch.
+| Role | Responsibilities |
+|---|---|
+| **ChatGPT** | Lead Software Architect; Senior Software Engineer; Technical Product Lead; reviewer of architecture, implementation, security and financial integrity; roadmap and release oversight; writes briefs and approves gates |
+| **Claude Code** | Repository inspection; technical assessment; implementation; testing; documentation; evidence-based reporting. Does not commit, push, merge, deploy, publish Rules or change cloud configuration unless a brief explicitly authorises that step |
+| **Product Owner** | Business decisions; material scope approval; product acceptance; commits, pushes and merges; production deployment |
 
-### Starting the new conversation
+**Working practices.**
+- Inspection before significant new implementation; architecture approval
+  before material scope expansion; ChatGPT reviews Claude's recommendations
+  independently.
+- **Programme authorisation (from Phase 2):** a consolidated programme can be
+  authorised once. Routine implementation then proceeds without per-step
+  approval, through meaningful integration checkpoints, stopping only at the
+  programme's stop conditions (ADR-92).
+- Focused tests during implementation; integrated suites at dependency
+  checkpoints; full acceptance before a major release.
+- Consequential deviations are escalated explicitly. No unauthorised
+  production operation, ever.
+- **Model choice (Product Owner practice):** Opus for routine work; Fable for
+  complex architecture, security, financial integrity, concurrency and
+  difficult debugging. Fresh sessions for new workstreams where appropriate;
+  one session through implementation, review and corrections.
+- Every report gives dependency-ordered commit, merge and deployment guidance
+  and says whether this handover needs updating.
 
-3. **Upload `docs/CHATGPT_HANDOVER.md`** to the new conversation. Add
-   `AGENT.md` and `ROADMAP.md` if the session will plan new work.
-4. **Paste the standard continuation prompt:**
+---
+
+
+**Standing collaboration conventions (established by the Lead Architect, 28 November 2026 — REPORTED).**
+- **Consolidated authorisation.** Several workstreams may be authorised together and implemented as one programme, in dependency order, without a separate report or approval per workstream.
+- **Autonomy within approved scope.** Routine technical decisions, refactoring where justified, approved lifecycle paths, tests, ordinary failure diagnosis, in-scope defect correction, isolated browser acceptance and documentation proceed without asking.
+- **Meaningful checkpoints.** Work stops only at an agreed integration checkpoint or a genuine escalation condition: unresolved material financial policy, consequential architectural conflict, unresolved security invariant, incompatible historical data, substantial migration, new infrastructure, significant scope expansion, an unresolved engineering blocker, or a required Product Owner action.
+- **Consolidated, evidence-based reports** — one per checkpoint, with evidence classes (automated, emulator, browser, production) kept distinct.
+- **No repeated approval for routine authorised development.**
+- **Production release approval is always separate**: the Product Owner executes every Git integration and production command; Claude prepares numbered terminal blocks (preflight, explicit staging, dependency-ordered commits, push, main verification, merge, main push — with fail-fast checks of branch, baseline and staged files) and never runs them; Azure CI gates precede any production deployment.
+## N. Release and operational governance
+
+- **Branches:** from `main` — `feature/`, `fix/`, `chore/`, `docs/`, `ops/`,
+  `refactor/`; Conventional Commits; the Product Owner commits and merges
+  (merge commits on `main`).
+- **CI:** Azure on `main` and on PRs: lint (blocking), build, unit, Rules,
+  transitional and bundle freshness checks, Functions emulator. **CI green is
+  not a deployment.**
+- **Local acceptance:** emulators and synthetic fixtures only; evidence
+  classes kept separate (unit, Rules emulator, Functions emulator, local
+  browser, production, reasoned but not run).
+- **Firebase deployment:** by the Product Owner with an explicit `--project`;
+  targeted Functions deploys need `functions:team:<name>`; each release's
+  order is in DEPLOYMENT.md (Rules-first, Functions-first or multi-stage).
+- **Trusted-backend cutover pattern (Phase 1, ADR-90):** callables deployed
+  with the switch off → switch on (a two-line change: the env value and its
+  release-safety test pin) → Hosting → acceptance → FINAL Rules. Transitional
+  rulesets only when an older bundle must keep writing a shape the FINAL Rules
+  refuse.
+- **Verification:** confirm the served Hosting bundle before browser checks
+  (`index.html` is cached for up to an hour); acceptance is confirmed against
+  backend evidence (logs, audit events), never a report alone.
+- **Recovery:** fix forward once financial records exist; switches are the
+  brake; deactivating a company is a brake, not a data rollback; never
+  restore previous Rules after an authority has moved to the backend.
+- **Production testing limits:** the acceptance company and new records only;
+  no test transactions in the customer company; no account reactivation.
+
+Current deployment dependencies (not authorised): ADR-90 needs three new and
+seven rebundled callables, the switch, Hosting, then FINAL Rules; whether it
+ships alone or with step 3 is open.
+
+---
+
+## O. Open risks and decisions
+
+| Id | Item | Impact | Status | Phase | Next action |
+|---|---|---|---|---|---|
+| — | Phase 2 steps 0–2 acceptance | Gate to step 3 | Awaiting architect | 2 | Review the checkpoint report and TESTING.md §83 |
+| D3 #37 | Near-ceiling Rules paths | Rules capacity | Variations resolved on the branch; claims and invoices open | 2 (step 3) | Step 3; re-measure headroom |
+| D3 #35 | Payable-side GST precision | One-cent differences | Foundation on the branch; supplier formulas unchanged | 2 (steps 3–4) | Apply ADR-91 per document type |
+| D3 #17 | Emulator holds the operator's CLI credentials | Test-to-production risk (mitigated by the project and host guard) | OPEN | 2 | Decide the `demo-` project rename (about 60 references) |
+| DC4 | Approval segregation | Self-approval everywhere | Not enforced; D4/D5 approved | 2 (step 6) | Step 6 |
+| G1 / G2 / G3 / DC18 | Credits on retained supplier invoices; cumulative caps; voids; payment over-reconciliation | Financial correctness | Client-enforced or unavailable | 2 (step 4) | Supplier ledgers |
+| G5 | Original Contract Value freely editable | Anchors margin and the Final Account | Open | 2 (step 6) | Controlled revision process |
+| — | Refunds and credit settlement | Customer onboarding blocker; Final Account blocked by owed amounts | Not built | 2 (step 5) | D6–D8 |
+| DC6 / G6 | Counters client-writable | Duplicate numbers possible | Open | 3 | Numbering remediation |
+| DC14 / G4 | Client over-invoicing warned only | Billing control | Open | 3 | Policy decision |
+| DC15 | No legal identity or printable tax invoice | Not a Tax Invoice | Open | 3 | — |
+| D3 #36 | Cache-only answers taken as final | Reliability | P2, open | Every phase | Before onboarding |
+| D3 #39 | App Check refusal mis-described on older callables | UX | Open | Every phase | — |
+| D3 #11 | 58 write sites without the write-outcome helper | UX on failure | P3 | — | Opportunistic |
+| D3 #4 | Externals read withdrawn drawing revisions | Information exposure | Policy open (P1) | — | Architect policy |
+| D3 #27–#29, #5–#8 | External-role UI corrections | UX | P2 bundle, open | — | Hosting-only bundle when scheduled |
+| D3 #12 | Stale "DC46 still OPEN" comment | Docs | **One remains**, `frontend/src/hooks/useStorageUpload.jsx:99` (tracker says three) | — | Next change to that file |
+| — | Compiled Rules size never measured | Release risk | Unmeasured | 2 | Measure at a release |
+| — | Billing continuity (owner, second administrator, budget alerts) | The worker stopped for about 17 hours in November | Not done | — | Billing administrator |
+| — | General App Check on Firestore, Storage, Auth | Abuse surface | Not enabled | 3 | — |
+| — | Monitoring proven only by a synthetic test; no alerts for the client-finance or variation callables | Detection | Partial | Every phase | Alert coverage |
+| — | Firestore restore beyond the verification sample; Storage files outside backups | Recovery | Partially proven | 3 (DR) | — |
+| — | Load and cost unmeasured | Scale | Designed, not measured | 3 | Load test |
+| — | External customer onboarding | Commercial launch | Gated | 3 | Readiness decision after refunds, D3 #36 and the residual risks |
+| — | Phase 3 / Phase 4 boundaries | Planning | **RESOLVED 27 November 2026 (REPORTED):** defined in section K and ROADMAP.md. Still open: Phase 3's internal sequencing and architecture (future assessment); no pricing, tier or entitlement model exists | Product Owner / Lead Architect |
+
+Full registers: [SECURITY_DATA_TEST_TRACKER.md](SECURITY_DATA_TEST_TRACKER.md)
+→ *D1*, *D3*, *D4a*; [SECURITY.md](SECURITY.md) → *Deferred Controls*.
+
+---
+
+## P. Immediate continuation instructions
+
+**State (28 November 2026):** Phase 2 is complete on the branch, uncommitted
+and undeployed: steps 0–8 plus the final release-readiness batch (ADR-98 —
+controlled company activation `commercialCompletionEnabled`; D3 #46 resolved
+with Rules-maintained `lastMaterialEditBy` on POs and tender packages; D3 #47
+refund-void policy; the baseline's final digest inside the completion
+transaction; monitoring definitions in `ops/monitoring/phase2/`; read-only
+inventory tool `ops/recovery/phase2-inventory.mjs`; the controlled-activation
+cutover in DEPLOYMENT.md → *Phase 2 — the complete cutover*). Evidence:
+TESTING.md §88–§89; tracker D3 #44–#54.
+
+**ChatGPT, next:** the architect gave a CONDITIONAL GO for Git integration
+with a targeted correction, now done (ADR-98 Decision 9; TESTING.md §89.8;
+tracker D3 #52–#55): claim submit and variation submit / reject / withdraw are
+Rules-gated on company activation; D3 #53, #54, #52 and the estimating drift
+policy are recorded as decided. Confirm GO; then authorise stage A (read-only
+inventories, DEPLOYMENT.md → *Phase 2 — the complete cutover* → Stage A) as a
+separate step.
+
+**Claude is authorised to implement:** nothing further in Phase 2 until the
+report is accepted. Phase 3 and Phase 4 remain out of scope.
+
+**Product Owner, next:** after acceptance, run the ONE consolidated Git
+terminal block from the report (it verifies the manifest, the runtimes, every
+suite, the staged tree hash BEFORE committing, every kill switch, then
+commits, pushes, merges to main and pushes main). Then wait for Azure main CI.
+No deployment and no production read follows without separate authorisation.
+
+**Outside authorised scope:** any production write, deployment, Rules
+publish, flag change or account change; production baseline initialisation;
+commits, pushes and merges; Phase 3 and Phase 4 work (load testing,
+international tax, SaaS billing, onboarding, mobile and offline, Xero, IQ,
+Quant AI); new infrastructure or dependencies without a stated need.
+
+**Settled (do not reopen without a genuine contradiction):** everything in
+section G — in particular ADR-89's boundary rule, D1–D11, ADR-90's boundary
+and ADR-91's versioning.
+
+**Open:** section O and the checkpoint decisions above.
+
+**Product Owner, next:** review the final Phase 2 report; when satisfied,
+run its ONE consolidated Git terminal block (preflight, staging from the
+manifest, commits, feature push, main verification, merge, main push) — the
+earlier steps 3–6 blocks are withdrawn (one branch
+commit series, push, verification, merge to main). Steps 0–6 ship together as
+one integration: their files interleave, so they are committed as layered
+groups, not one group per step. No deployment — every new switch stays off in
+production (`.env.constrapp-69b5d`).
+
+**Read for detail:** [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) ADR-89 to
+ADR-92; [ARCHITECTURE.md](ARCHITECTURE.md) → *Trusted transaction boundary*;
+[SECURITY.md](SECURITY.md) → *Variations — trusted backend (ADR-90)*;
+[DATA_MODEL.md](DATA_MODEL.md) → *variations*; [TESTING.md](TESTING.md) §82
+(Phase 1), §83 (Phase 2 checkpoint), §84 (its corrections), §85 and §87 (steps 3–6, incl. §87.5 browser acceptance); [DEPLOYMENT.md](DEPLOYMENT.md) →
+*Phase 2 step 2*; [SECURITY_DATA_TEST_TRACKER.md](SECURITY_DATA_TEST_TRACKER.md)
+→ B18, B19, D3, D4a.
+
+### Starting a new ChatGPT conversation
+
+1. Before leaving the old conversation, have this file refreshed (a
+   documentation-only brief) and move anything agreed only in conversation
+   into a repository document.
+2. Upload this file (add `AGENT.md` and `ROADMAP.md` when planning) and paste:
 
 ```
-You are resuming the Constrap development programme.
+You are resuming the Constrap development programme as Lead Software
+Architect, Senior Software Engineer and Technical Product Lead.
 
-The attached CHATGPT_HANDOVER.md is the operational handover. It is a
-point-in-time snapshot, not proof of the current production state.
-
-Your roles: Lead Software Architect, Senior Software Engineer, Technical
-Product Architect and Development Supervisor. I am the Product Owner: I
-own product decisions, authorise changes and releases, run Git and
-deployment, and confirm production acceptance. Claude Code is the
-implementation engineer and works only from your briefs; it does not
-commit or deploy without approval.
+The attached CHATGPT_HANDOVER.md is the consolidated handover. It is a
+point-in-time snapshot of the repository, not proof of the current Git or
+production state. Claude Code is the implementation engineer; I am the
+Product Owner and control commits, merges and deployments.
 
 Before giving any direction:
-1. Read the handover in full and follow its section K.
-2. State the current milestone, the Git checkpoint it records, and the
-   exact next action.
-3. List every action still awaiting authorisation. Treat none as approved.
-4. Ask me for the current Git state and for anything done in production
-   since the handover's last-updated date.
-5. Do not re-propose or restart completed milestones.
-6. Do not treat merged code or passing CI as deployed.
+1. Read the handover in full.
+2. State the current phase, the checkpoint (section I) and the exact next
+   action (section P).
+3. List the open decisions (sections I and O). Treat no production action
+   as approved.
+4. Ask me for the current `git status`, `git log --oneline -5` and anything
+   done in production since the handover's Last updated date.
+5. Do not reopen settled decisions (section G) or restart completed work
+   (section H). Do not treat merged code or passing CI as deployed.
 
 Then wait for my confirmation before issuing a brief.
 ```
 
-### What the new session must do
-
-1. **Restore roles and protocol** — sections C and D. Briefs are detailed,
-   copyable plain text with a mandatory report and a stop instruction.
-2. **Read the relevant authoritative documents** — at minimum
-   [AGENT.md](../AGENT.md), [ENGINEERING_STANDARDS.md](ENGINEERING_STANDARDS.md)
-   and [ROADMAP.md](../ROADMAP.md); then the named sections of
-   [DEPLOYMENT.md](DEPLOYMENT.md), [SECURITY.md](SECURITY.md),
-   [PROJECT_DECISIONS.md](PROJECT_DECISIONS.md) and [TESTING.md](TESTING.md)
-   for the area in hand. These files are large — ask for the section, not
-   the file.
-3. **Identify the current verified checkpoint.** Ask the Product Owner for
-   `git branch --show-current`, `git rev-parse HEAD`, `git status` and
-   `git log --oneline -5`, and compare with section A. If they differ, this
-   file is stale: establish what changed before proceeding.
-4. **Review the current milestone and status** — sections A and G — and ask
-   whether anything was done in production since the *Last updated* date.
-5. **Confirm the next action** with the Product Owner — section J.
-6. **Preserve outstanding approval gates.** Everything listed as awaiting
-   authorisation in section A is still unapproved. A new conversation
-   inherits no approval.
-7. **Preserve architectural decisions.** Section E and the ADRs stand.
-   Changing one needs a new ADR, not a new conversation.
-8. **Do not assume deployment from implementation or CI alone.** A feature is
-   live only when a release record says so, and accepted only when
-   acceptance evidence is recorded.
-9. **Do not repeat completed work.** Section F lists what is done. Do not
-   re-propose, re-design or re-implement it.
+3. In the new conversation, compare the Git state with section I. If it
+   differs, establish what changed before directing work.
 
 ---
 
-## Maintenance rules
+## Maintenance protocol
 
-The binding protocol is [AGENT.md](../AGENT.md) → *Development Continuity —
-ChatGPT Handover*. In short, update this file:
+Binding rule: [AGENT.md](../AGENT.md) → *Development Continuity — ChatGPT
+Handover*. In short:
 
-- at major milestone closeout;
-- after a significant architecture decision;
-- after every production deployment;
-- when roadmap priorities change;
-- before moving to a new ChatGPT conversation.
-
-When updating: change *Last updated* and the Git checkpoint; keep every claim
-under one of VERIFIED / REPORTED / PROPOSED / BLOCKED / NOT STARTED; do not
-promote REPORTED to VERIFIED without saying what was checked; move an item to
-"live" only when its release record exists, never because tests or CI passed;
-never let planned work read as complete. Keep it short — link to the source
-instead of copying it.
-
-Never include credentials, access tokens, personal account details, email
-addresses, private customer records or sensitive operational secrets.
+- **Update at meaningful checkpoints:** an approved architectural decision,
+  a completed workstream, an integration acceptance, a significant security
+  finding or resolution, a material financial policy decision, a roadmap
+  change, a production release, an infrastructure or deployment change, a
+  session handover, or a change to the next authorised action. Not after
+  every minor code change.
+- **Targeted updates:** the header table, section I, the affected rows of
+  sections C, G, H, J and O, and section P. Do not rewrite the whole file.
+- **Pending until proven:** a commit, merge, CI result or deployment the
+  Product Owner controls stays *pending* until evidence confirms it; reconcile
+  it at the next checkpoint.
+- **Superseded text:** when a status changes, replace it here; if the old
+  wording has historical value, move it to
+  [CHATGPT_HANDOVER_HISTORY.md](CHATGPT_HANDOVER_HISTORY.md) rather than
+  growing this file with *as written* paragraphs.
+- **Never include** credentials, tokens, keys, sensitive environment values,
+  personal account details or customer records.

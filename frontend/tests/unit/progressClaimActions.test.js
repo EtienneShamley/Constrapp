@@ -1,8 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import {
-  runUpdateClaimDraft, runTransitionClaim, draftUpdate, transitionUpdate, normaliseApprovedAmounts,
   storedRevision, nextRevision, ClaimWriteError, CLAIM_WRITE_ERROR, CLAIM_WRITE_ERROR_MESSAGES, claimWriteErrorKind,
+  runTransitionClaim as runSubmitClaim, submitUpdate,
 } from '../../src/lib/progressClaimActions'
+// The historical client write shapes (ADR-58 / ADR-63), kept as a fixture since ADR-93.
+import {
+  runUpdateClaimDraft, runTransitionClaim, draftUpdate, transitionUpdate, normaliseApprovedAmounts,
+} from '../fixtures/legacyClientWrites'
 import { CLAIM_STATUS, CLAIM_TRANSITION_STAMPS, CLAIM_TRANSITIONS, claimTotals } from '../../src/lib/progressClaims'
 
 // ── Guarded claim writes — pure contract over a FAKE transaction (ADR-58) ────
@@ -208,7 +212,32 @@ describe('runUpdateClaimDraft — checks, stale detection and the write', () => 
   })
 })
 
-describe('runTransitionClaim — checks, stale detection and the write', () => {
+describe('the PRODUCTION submit runner (ADR-93: the one remaining client write on a claim)', () => {
+  it('writes exactly the six submit keys from the reviewed copy', async () => {
+    expect(submitUpdate(claim(), 'u_qs', NOW)).toEqual({ status: 'submitted', submittedAt: NOW, submittedBy: 'u_qs', revision: 2, updatedAt: NOW, updatedBy: 'u_qs' })
+    const { runTransaction, writes } = fakeDb({ c1: claim() })
+    await runSubmitClaim(base({ runTransaction, seen: claim(), nextStatus: CLAIM_STATUS.SUBMITTED }))
+    expect(writes).toEqual([{ ref: 'c1', data: { status: 'submitted', submittedAt: NOW, submittedBy: 'u_qs', revision: 2, updatedAt: NOW, updatedBy: 'u_qs' } }])
+  })
+
+  it('refuses every other move BEFORE any read — approve, reject and the rest go to the backend', async () => {
+    const { runTransaction, writes } = fakeDb({ c1: claim({ status: 'submitted' }) })
+    for (const nextStatus of [CLAIM_STATUS.APPROVED, CLAIM_STATUS.REJECTED, CLAIM_STATUS.UNDER_REVIEW, CLAIM_STATUS.INVOICED, CLAIM_STATUS.DRAFT]) {
+      const err = await expectKind(runSubmitClaim(base({ runTransaction, seen: claim({ status: 'submitted' }), nextStatus })), CLAIM_WRITE_ERROR.INVALID)
+      expect(err.message).toMatch(/made by the server/)
+    }
+    await expectKind(runSubmitClaim(base({ runTransaction, uid: null, seen: claim(), nextStatus: CLAIM_STATUS.SUBMITTED })), CLAIM_WRITE_ERROR.PERMISSION)
+    expect(writes).toEqual([])
+  })
+
+  it('a stale copy is refused as STALE with nothing written', async () => {
+    const { runTransaction, writes } = fakeDb({ c1: claim({ revision: 2 }) })
+    await expectKind(runSubmitClaim(base({ runTransaction, seen: claim(), nextStatus: CLAIM_STATUS.SUBMITTED })), CLAIM_WRITE_ERROR.STALE)
+    expect(writes).toEqual([])
+  })
+})
+
+describe('runTransitionClaim (LEGACY fixture) — checks, stale detection and the write', () => {
   it('no uid → PERMISSION; no seen id → MISSING; illegal move / reserved target / bad amounts → INVALID; nothing read or written', async () => {
     const { runTransaction, writes } = fakeDb({ c1: claim() })
     await expectKind(runTransitionClaim(base({ runTransaction, uid: null, seen: claim(), nextStatus: CLAIM_STATUS.SUBMITTED })), CLAIM_WRITE_ERROR.PERMISSION)

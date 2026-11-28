@@ -1,0 +1,43 @@
+{
+  "displayName": "Phase 2 financial callables: repeated timeouts or Firestore transport failures",
+  "combiner": "OR",
+  "enabled": true,
+  "severity": "ERROR",
+  "userLabels": {
+    "programme": "phase2",
+    "component": "financial-callables",
+    "policy": "infrastructure-repeated"
+  },
+  "conditions": [
+    {
+      "displayName": "More than 2 timeouts or DEADLINE_EXCEEDED / UNAVAILABLE / RESOURCE_EXHAUSTED failures from one service in 15 minutes",
+      "conditionThreshold": {
+        "filter": "metric.type=\"logging.googleapis.com/user/phase2_infrastructure_failures\" AND resource.type=\"cloud_run_revision\" AND resource.labels.location=\"australia-southeast1\"",
+        "aggregations": [
+          {
+            "alignmentPeriod": "900s",
+            "perSeriesAligner": "ALIGN_DELTA",
+            "crossSeriesReducer": "REDUCE_SUM",
+            "groupByFields": [
+              "resource.labels.service_name"
+            ]
+          }
+        ],
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 2,
+        "duration": "0s",
+        "trigger": {
+          "count": 1
+        }
+      }
+    }
+  ],
+  "alertStrategy": {
+    "autoClose": "3600s"
+  },
+  "documentation": {
+    "mimeType": "text/markdown",
+    "subject": "Phase 2: repeated timeouts or Firestore transport failures",
+    "content": "## What this means\n\nOne service lost more than two requests in fifteen minutes to its time limit (HTTP 504) or to a Firestore `DEADLINE_EXCEEDED`, `UNAVAILABLE` or `RESOURCE_EXHAUSTED` error. Each such request ended with an uncertain outcome for the user (the operation is one transaction: all or nothing).\n\n## Check, in this order\n\n1. https://status.cloud.google.com/ for Firestore or Cloud Run in `australia-southeast1`.\n2. Billing: `gcloud billing projects describe constrapp-69b5d` must show `billingEnabled: true`.\n3. The service's requests (read only): latency near the time limit (variations and contract value 60 s, the others 120 s) means work too large for one call — a first baseline over a large history, a payment over 100 invoices, a 5,000-item estimate build. Note the project from the user.\n4. Many concurrent requests from one `uid` (policy *request surge*): misuse or a client loop.\n\nDo not raise a time limit, memory or instance count without approval: it is a call-options change and a redeploy. A first baseline that cannot finish inside the time limit stays refused for that project (its lease expires and the next request starts again): report it.\n\nNever paste a log entry, an amount, a customer name or a token into a ticket or chat: give the service, the time, the project and document ids, and the code.\n\nRunbook: `ops/monitoring/phase2/README.md`. Cutover and recovery: `docs/DEPLOYMENT.md`, section *Phase 2 — the complete cutover*."
+  }
+}

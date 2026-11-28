@@ -1194,10 +1194,53 @@ baseline, variations, POs, claims, or supplier invoices. Every figure is derived
 in `lib/clientReceipts.js` over `lib/payments.js`. The six budget figures,
 Forecast Final Cost, and every margin figure are **completely unchanged**.
 
+### Client refunds and receipt applications (ADR-95, Phase 2 step 5 — IMPLEMENTED, NOT DEPLOYED)
+
+Two separate facts, recorded only through trusted callables (switch
+`CLIENT_SETTLEMENT_ENABLED`, production OFF; company activation
+`clientFinanceEnabled`):
+
+- **Refund** (CRF-####) — money ACTUALLY returned to the client outside
+  Constrap, never a negative receipt. It settles either the **unallocated
+  balance of one posted receipt** or an **invoice's overpayment** (what it holds
+  beyond what is now receivable — the "Owed to client" figure). Limited to the
+  money available; reference, date, method and reason required.
+- **Receipt application** (CRA-####) — a posted receipt's unallocated money
+  applied to an issued invoice of the **same client, currency and project**,
+  never more than the invoice still owes (an application never creates an
+  overpayment). Not cash.
+- **No transfer of an overpayment to another invoice**: refund it, then record a
+  new receipt. No wallet, no cross-project, no cross-currency settlement.
+- **Voiding** a refund or an application corrects an erroneous record — it is not
+  money coming back. A receipt with applications or refunds cannot be voided
+  until they are corrected. If the client really sends the money back, that is
+  a NEW receipt, never a void. **Who (ADR-98, D3 #47):** recording a refund that
+  was actually paid stays single-person; voiding a POSTED refund, with the
+  company's approval segregation enabled, needs an independent authorised
+  member — not the person who recorded it.
+- **Company activation (ADR-98):** refunds, applications, the void of an issued
+  invoice — and every other Phase 2 financial operation — act only for a company
+  the operator has activated (`commercialCompletionEnabled`); until then those
+  registers are read-only. Receipts, client credit notes and retention releases
+  (Phase 1) are unaffected.
+- **Settlement invariant (S1):** once anything was refunded out of an invoice, the
+  money it holds (received − refunded) never falls below what is receivable on
+  it. A credit-note void, a retention release, a receipt void or an application
+  correction that would break it is refused.
+- **Figures:** net cash received = posted receipts − posted refunds; an
+  application moves money from unallocated to allocated; refunds change no
+  revenue, cost or profit; credit notes are not cash.
+- **Issued invoice void (D8):** only the backend (`voidClientInvoice`), refused
+  while ANY money is recorded against the invoice — receipts (including those
+  posted before ADR-89), applications, refunds, credits, releases. A draft
+  invoice is voided in the browser as before.
+- **Final Account:** blocked by unallocated receipt money (apply or refund it),
+  by an overpaid invoice (refund it), and by any refund or application its
+  records do not support.
+
 ### Deferred (Client Receipts)
 
-Refunds and reversal records (`docType: 'refund'` reserved — a credit after
-receipt shows an amount owed to the client; no refund is recorded) · bank reconciliation and bank feeds · accounting integrations ·
+Reversal records (a client repayment is a new receipt) · bank reconciliation and bank feeds · accounting integrations ·
 attachments · printable remittance · email · automatic allocation policies ·
 financial periods and period locking. (**Supplier Payments have since shipped** —
 see below; the **Actual Cash Flow foundation** now consumes posted receipts —
@@ -1764,6 +1807,49 @@ forecast, or margin figure changes** — a release moves cash, not cost.
 dates · contract-level retention % / caps · first-half / second-half semantics as
 a first-class concept · retention credit notes · retention-paid attribution ·
 final-account linkage · release-due-date cash-flow timing.
+
+## Supplier settlement after Phase 2 step 4 (ADR-94 — IMPLEMENTED, NOT DEPLOYED)
+
+- **Credit on a retained invoice (G1).** A credit takes the same fraction of the
+  retention still held as of the amount still billed: e.g. invoice 10,000.00 +
+  GST 1,000.00, retention 500.00 + 50.00 — a credit of 2,000.00 carries GST
+  200.00 (a share of the invoice's stored GST, never a fresh 10%) and a retained
+  part of 100.00 + 10.00; payable falls by 2,090.00, retention held by 110.00.
+- **Release GST** is a share of the invoice's STORED retention GST; any split
+  reconciles exactly to it (retention 40.15 stored with GST 4.01 releases 4.01 in
+  total, never 4.02).
+- **Payments** cannot be allocated beyond what remains payable; cash paid beyond
+  that is the payment's unallocated amount. A credit after payment can leave an
+  invoice over-settled (money recoverable from the supplier) — shown, never
+  auto-refunded.
+- **Voids** correct records; a release void that payments depend on is refused
+  until those payments are voided.
+- **Original contract value** changes only through an approved correction
+  (ADR-96); approved client variations remain the record of scope and price
+  changes after award; current contract sum = original + approved client
+  variations, as before.
+
+## Estimating (ADR-97 — IMPLEMENTED, NOT DEPLOYED)
+
+All figures ex-GST, whole cents, computed by `lib/estimating.js` (the trusted callable runs the same module, generated).
+
+| Figure | Definition |
+|---|---|
+| Line cost | the BOQ item's stored amount (= quantity × rate to the cent, ADR-32) |
+| Direct cost | Σ line costs on cost codes not classified otherwise |
+| Preliminaries | Σ line costs on cost codes classified `preliminaries` |
+| Construction cost | direct + preliminaries |
+| Overheads | `cost_coded`: Σ line costs classified `overhead` · `percentage`: round-half-up(construction × bps ÷ 10,000) · `none`: 0 |
+| Contingency | the same three modes, on the same base (construction cost) |
+| Cost total | construction + overheads + contingency |
+| Selling price | `markup_on_cost`: cost + round-half-up(cost × bps ÷ 10,000) · `margin_on_sell`: round-half-up(cost × 10,000 ÷ (10,000 − bps)), bps < 10,000 |
+| Gross profit | selling price − cost total |
+| Achieved markup / margin (display) | gross profit ÷ cost total / gross profit ÷ selling price, in basis points |
+| Component totals | per line, the line cost split across its breakdown by cumulative shares (last non-zero component takes the remainder); Σ components + unanalysed = Σ line costs |
+
+Worked: 10 × 117.75 + 3 × 333.33 (direct) + 5,000.00 (preliminaries) = 7,177.49; overheads 7.5% = 538.31; contingency 5% = 358.87; cost 8,074.67; 20% margin → 10,093.34 (gross profit 2,018.67). Cost 100,000.00: 20% markup → 120,000.00; 20% margin → 125,000.00.
+
+**Handover.** The BOQ-to-budget transfer (ADR-81) carries the BOQ's cost-coded line costs (Σ = `boqTotalCents`) into WORKING budget lines; never the selling price and never a percentage allowance. It may be recorded against the current approved estimate only while the live BOQ still matches it. The selling price may prefill the contract value for review; estimate approval approves no budget and sets no contract value.
 
 ## The Six Budget Figures — Exact Definitions
 

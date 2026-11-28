@@ -6,6 +6,9 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   test: {
     include: ['tests/rules/**/*.test.js'],
+    // Fails closed unless the emulator hosts and a non-production project id
+    // are in the environment (tests/_emulatorGuard.js; tracker D3 #17).
+    globalSetup: ['tests/_emulatorGuard.rules.js'],
     environment: 'node',
     // Emulator round-trips are slower than unit tests.
     testTimeout: 20000,

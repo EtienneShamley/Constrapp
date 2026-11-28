@@ -360,7 +360,8 @@ describe('the trusted backend surface', () => {
   const index = read('functions/src/index.js')
 
   it('the callable source is split by responsibility', () => {
-    expect(files).toEqual(['agreement.js', 'baseline.js', 'blocking.js', 'contracts.js', 'handlers.js', 'persistence.js', 'receipts.js', 'transactions.js'])
+    // Phase 2 step 5 adds settlement.js (refunds, receipt applications, the trusted invoice void).
+    expect(files).toEqual(['agreement.js', 'baseline.js', 'blocking.js', 'contracts.js', 'handlers.js', 'persistence.js', 'receipts.js', 'settlement.js', 'transactions.js'])
   })
 
   it('NO arithmetic of its own: every figure comes from the generated bundle', () => {
@@ -373,7 +374,7 @@ describe('the trusted backend surface', () => {
       expect(sums, f).toEqual([])
     }
     expect(stripComments(read(`${DIR}/transactions.js`))).toContain('attempts += 1')
-    for (const f of ['agreement.js', 'baseline.js', 'blocking.js', 'handlers.js', 'persistence.js', 'receipts.js', 'transactions.js']) {
+    for (const f of ['agreement.js', 'baseline.js', 'blocking.js', 'contracts.js', 'handlers.js', 'persistence.js', 'receipts.js', 'settlement.js', 'transactions.js']) {
       expect(read(`${DIR}/${f}`), f).toContain("import * as calc from '../generated/clientFinanceCalc.js'")
     }
     // The domain modules themselves are never imported from the frontend tree.

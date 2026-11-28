@@ -37,14 +37,15 @@ import { readFileSync } from 'node:fs'
 // against the Rules and Functions sources by
 // frontend/tests/unit/recoveryEvidence.test.js.
 export const COLLECTION_GROUPS = [
-  'activities', 'approvedBudget', 'auditEvents', 'boqItems', 'budgetAdjustments', 'budgetApprovalSnapshots',
+  'activities', 'approvalPolicy', 'approvedBudget', 'auditEvents', 'boqItems', 'budgetAdjustments', 'budgetApprovalSnapshots',
   'budgetApprovals', 'budgetLines', 'cashFlowLines', 'clientCreditNotes', 'clientFinanceState',
-  'clientInvoiceLedgers', 'clientInvoices', 'clientReceipts', 'clientRetentionReleases',
-  'commercial', 'companies', 'contacts', 'costCodes', 'counters', 'devOutbox', 'documents',
-  'drawings', 'fileLinkRevocationQueue', 'finalAccounts', 'forecastLines', 'invitations',
-  'members', 'programmeBaselineSnapshots', 'programmeBaselines', 'progressClaims', 'projectDirectory',
+  'clientInvoiceLedgers', 'clientInvoices', 'clientReceiptApplications', 'clientReceiptLedgers', 'clientReceipts',
+  'clientRefunds', 'clientRetentionReleases',
+  'commercial', 'companies', 'contacts', 'contractValueRevisions', 'costCodes', 'counters', 'devOutbox', 'documents',
+  'drawings', 'estimateItemInputs', 'estimateState', 'estimates', 'fileLinkRevocationQueue', 'finalAccounts', 'forecastLines', 'invitations', 'lines',
+  'members', 'poClaimLedgers', 'programmeBaselineSnapshots', 'programmeBaselines', 'progressClaims', 'projectDirectory',
   'projects', 'pulseAcknowledgements', 'purchaseOrders', 'rateLimits', 'retentionReleases', 'revisions',
-  'rfis', 'supplierCreditNotes', 'supplierInvoices', 'supplierPayments', 'system',
+  'rfis', 'supplierCreditNotes', 'supplierFinanceState', 'supplierInvoiceLedgers', 'supplierInvoices', 'supplierPayments', 'system',
   'takeoffMeasurements', 'takeoffPages', 'tenderBids', 'tenderPackages', 'users', 'variations',
 ]
 

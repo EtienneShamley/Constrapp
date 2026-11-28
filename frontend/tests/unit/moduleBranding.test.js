@@ -99,7 +99,9 @@ describe('navigation — PULSE tab, no unbuilt module surfaces', () => {
     expect(PROJECT_TABS.filter(t => t.mark).map(t => t.to)).toEqual(['pulse', 'shield', 'quant', 'timeline'])
     expect(PROJECT_TABS.filter(t => t.to === 'timeline' || t.to === 'gantt')).toHaveLength(1)
     // L2-A: Reports (no mark) joined after Commercial (17 → 18 tabs).
-    expect(PROJECT_TABS).toHaveLength(18)
+    // ADR-97: Estimate (no mark) joined directly after BOQ, the register it prices (18 → 19 tabs).
+    expect(PROJECT_TABS).toHaveLength(19)
+    expect(PROJECT_TABS[PROJECT_TABS.findIndex(t => t.to === 'boq') + 1]).toEqual({ to: 'estimate', label: 'Estimate' })
   })
 
   it('no IQ project tab, and no sidebar module entry for any module', () => {

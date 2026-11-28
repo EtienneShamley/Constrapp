@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  runUpdateVariationDraft, runTransitionVariation, draftUpdate, transitionUpdate, todayIso,
+  runUpdateVariationDraft, runTransitionVariation, transitionUpdate, todayIso,
   storedRevision, nextRevision, VariationWriteError, VARIATION_WRITE_ERROR, VARIATION_WRITE_ERROR_MESSAGES, variationWriteErrorKind,
 } from '../../src/lib/variationActions'
 import {
@@ -74,63 +74,6 @@ describe('revision arithmetic and today', () => {
   })
 })
 
-describe('draftUpdate — the exact draft-edit write', () => {
-  it('contains ONLY the draft-editable fields, the derived submitted header, revision + 1 and the audit stamps (notes omitted when undefined)', () => {
-    const payload = draftUpdate(variation(), edit, 'u_qs', NOW)
-    expect(Object.keys(payload).sort()).toEqual(
-      ['title', 'description', 'reason', 'clientRef', 'supplierRef', 'identifiedDate', 'responseDueDate', 'effectiveDate',
-        'lineItems', 'submittedSubtotal', 'submittedGst', 'submittedTotal', 'revision', 'updatedAt', 'updatedBy'].sort()
-    )
-    expect(payload).toMatchObject({
-      title: 'Additional steel (revised)', description: 'More', reason: 'site_condition',
-      clientRef: null, supplierRef: 'Q-9',
-      identifiedDate: '2026-10-01', responseDueDate: '', effectiveDate: '2026-11-01',
-      submittedSubtotal: 1500, submittedGst: 150, submittedTotal: 1650,
-      revision: 2, updatedAt: NOW, updatedBy: 'u_qs',
-    })
-    for (const k of ['status', 'poId', 'variationNumber', 'variationType', 'approvedSubtotal', 'assessmentNotes', 'submittedAt', 'submittedDate', 'createdBy', 'originRfiId', 'notes']) {
-      expect(k in payload).toBe(false)
-    }
-  })
-
-  it('forces the approved side of every line null and re-derives the header from the SIGNED lines', () => {
-    const payload = draftUpdate(variation(), { ...edit, lineItems: [line({ submittedAmount: 1000, submittedGst: 100, approvedAmount: 5, approvedGst: 1 }), line({ submittedAmount: -1500, submittedGst: -150, approvedAmount: 2 })] }, 'u_qs', NOW)
-    expect(payload.lineItems.map(l => [l.approvedAmount, l.approvedGst])).toEqual([[null, null], [null, null]])
-    expect(payload).toMatchObject({ submittedSubtotal: -500, submittedGst: -50, submittedTotal: -550 })
-  })
-
-  it('the external reference lands on the SERVER copy’s type — a client draft keeps clientRef and nulls supplierRef', () => {
-    const payload = draftUpdate(variation({ variationType: VARIATION_TYPE.CLIENT }), { ...edit, clientRef: ' VO-12 ' }, 'u_qs', NOW)
-    expect(payload).toMatchObject({ clientRef: 'VO-12', supplierRef: null })
-  })
-
-  it('writes notes only when given (trimmed) and the originating-RFI triple only when passed (null unlinks)', () => {
-    const withNotes = draftUpdate(variation(), { ...edit, notes: '  n  ' }, 'u_qs', NOW)
-    expect(withNotes.notes).toBe('n')
-    const unlink = draftUpdate(variation(), { ...edit, originRfi: null }, 'u_qs', NOW)
-    expect(unlink).toMatchObject({ originRfiId: null, originRfiNumber: null, originRfiTitle: null })
-    const rfi = { id: 'r1', rfiNumber: 'RFI-0001', title: 'Steel', status: 'open' }
-    expect(draftUpdate(variation(), { ...edit, originRfi: rfi }, 'u_qs', NOW)).toMatchObject({ originRfiId: 'r1', originRfiNumber: 'RFI-0001', originRfiTitle: 'Steel' })
-  })
-
-  it('refuses a missing title, no lines, more than 200 lines, a line without a cost code and an ineligible RFI — as INVALID with the readable reason', () => {
-    expect(() => draftUpdate(variation(), { ...edit, title: '  ' }, 'u_qs', NOW)).toThrow(/Title is required/)
-    expect(() => draftUpdate(variation(), { ...edit, lineItems: [] }, 'u_qs', NOW)).toThrow(/At least one line item/)
-    expect(() => draftUpdate(variation(), { ...edit, lineItems: Array.from({ length: 201 }, () => line()) }, 'u_qs', NOW)).toThrow(/at most 200/)
-    expect(() => draftUpdate(variation(), { ...edit, lineItems: [line({ costCodeId: '' })] }, 'u_qs', NOW)).toThrow(/Line 1: a cost code is required/)
-    try { draftUpdate(variation(), { ...edit, originRfi: { id: 'r', rfiNumber: 'RFI-0002', title: 't', status: 'draft' } }, 'u_qs', NOW) } catch (e) {
-      expect(e).toBeInstanceOf(VariationWriteError)
-      expect(e.kind).toBe(VARIATION_WRITE_ERROR.INVALID)
-      expect(e.message).toMatch(/Only open, answered or closed RFIs/)
-    }
-  })
-
-  it('a legacy copy with no revision writes revision 1', () => {
-    const { revision: _r, ...legacy } = variation()   // eslint-disable-line no-unused-vars
-    expect(draftUpdate(legacy, edit, 'u_qs', NOW).revision).toBe(1)
-  })
-})
-
 describe('transitionUpdate — the exact transition writes', () => {
   it('submit writes status, the (at, by) pair, the submitted date (today when unset, kept when set), revision + 1 and the audit stamps — nothing else', () => {
     expect(transitionUpdate(variation(), VARIATION_STATUS.SUBMITTED, {}, 'u1', NOW, TODAY))
@@ -190,62 +133,108 @@ describe('transitionUpdate — the exact transition writes', () => {
   })
 })
 
-describe('runUpdateVariationDraft — checks, stale detection and the write', () => {
-  it('no uid → PERMISSION; no seen id → MISSING; a non-draft copy / invalid data → INVALID; nothing read or written', async () => {
-    const { runTransaction, writes } = fakeDb({ v1: variation() })
-    await expectKind(runUpdateVariationDraft(base({ runTransaction, uid: null, seen: variation(), data: edit })), VARIATION_WRITE_ERROR.PERMISSION)
-    await expectKind(runUpdateVariationDraft(base({ runTransaction, seen: {}, data: edit })), VARIATION_WRITE_ERROR.MISSING)
-    await expectKind(runUpdateVariationDraft(base({ runTransaction, seen: variation({ status: 'submitted' }), data: edit })), VARIATION_WRITE_ERROR.INVALID)
-    await expectKind(runUpdateVariationDraft(base({ runTransaction, seen: variation(), data: { ...edit, title: '' } })), VARIATION_WRITE_ERROR.INVALID)
-    expect(writes).toEqual([])
+// ADR-90: a draft edit is processed by the trusted backend. What the server
+// DERIVES and stores is `buildVariationDraftUpdate` (tests/unit/
+// variationProcessing.test.js); what it DECIDES — draft only, the reviewed
+// revision, sources, replays, races — is proven against the real transactions
+// in tests/functions/variations.test.js. This file pins what the BROWSER does:
+// what it sends, what it refuses before calling, and how it reads the answer.
+describe('runUpdateVariationDraft — the call', () => {
+  const seen = variation({ revision: 3 })
+
+  it('sends the REVIEWED revision and ONLY authored content — no GST, no totals, no cost-code name, no status, no stamp, no calculation version', async () => {
+    const { call, calls } = fakeCall({ variationId: 'v1', alreadyApplied: false, calcVersion: 2 })
+    const out = await runUpdateVariationDraft({ call, projectId: 'p1', seen, data: edit, uid: 'u_qs' })
+    expect(out).toEqual({ variationId: 'v1', alreadyApplied: false, calcVersion: 2 })
+    expect(calls).toHaveLength(1)
+    const { name, data } = calls[0]
+    expect(name).toBe(VARIATION_CALLABLE.UPDATE)
+    expect(Object.keys(data).sort()).toEqual([...UPDATE_VARIATION_KEYS].sort())
+    expect(data).toMatchObject({
+      projectId: 'p1', variationId: 'v1', expectedRevision: 3,
+      title: 'Additional steel (revised)', description: 'More', reason: 'site_condition',
+      identifiedDate: '2026-10-01', responseDueDate: '', effectiveDate: '2026-11-01',
+      // The external reference lands on the variation's OWN side; the other is null.
+      supplierRef: 'Q-9', clientRef: null,
+      // `notes` and `originRfi` were not passed: keep what is stored.
+      notes: null, changeOriginRfi: false, originRfiId: null,
+    })
+    // The editor's built line carried a GST and certified values; none of it is sent.
+    expect(data.lines).toEqual([{ poLineIndex: null, costCodeId: 'cc1', description: 'Extra steel', submittedAmount: 1500, taxCode: 'gst' }])
+    expect(updateVariationRequestProblem(data)).toBeNull()
+    expect(JSON.stringify(data)).not.toMatch(/submittedGst|approvedAmount|approvedGst|Subtotal|Total|costCodeName|status|updatedBy|calcVersion|variationNumber/)
   })
 
-  it('writes the draft update built over the SERVER copy (its type and revision)', async () => {
-    const live = variation({ variationType: VARIATION_TYPE.CLIENT, revision: 4 })
-    const { runTransaction, writes } = fakeDb({ v1: live })
-    const out = await runUpdateVariationDraft(base({ runTransaction, seen: live, data: edit }))
-    expect(out).toEqual({ kind: null })
-    expect(writes).toHaveLength(1)
-    expect(writes[0].data).toEqual(draftUpdate(live, edit, 'u_qs', NOW))
-    expect(writes[0].data).toMatchObject({ revision: 5, clientRef: 'IGNORED', supplierRef: null })
+  it('a client draft sends clientRef and nulls supplierRef; notes are sent only when given (trimmed)', async () => {
+    const { call, calls } = fakeCall({ variationId: 'v1', alreadyApplied: false, calcVersion: 2 })
+    await runUpdateVariationDraft({ call, projectId: 'p1', seen: variation({ variationType: VARIATION_TYPE.CLIENT }), data: { ...edit, clientRef: ' CR-7 ', notes: '  keep this  ' }, uid: 'u' })
+    expect(calls[0].data).toMatchObject({ clientRef: 'CR-7', supplierRef: null, notes: 'keep this' })
   })
 
-  it('a server copy at another revision → STALE with nothing written (the other editor’s save stands)', async () => {
-    const { runTransaction, writes } = fakeDb({ v1: variation({ revision: 2, title: 'Theirs' }) })
-    const err = await expectKind(runUpdateVariationDraft(base({ runTransaction, seen: variation(), data: edit })), VARIATION_WRITE_ERROR.STALE)
-    expect(err.message).toMatch(/changed by another user/)
-    expect(err.message).toMatch(/your entries are kept/)
-    expect(writes).toEqual([])
-  })
-
-  it('a server copy no longer draft → STALE naming the new status; a vanished document → MISSING', async () => {
-    const { runTransaction, writes } = fakeDb({ v1: variation({ status: 'submitted' }) })
-    const err = await expectKind(runUpdateVariationDraft(base({ runTransaction, seen: variation(), data: edit })), VARIATION_WRITE_ERROR.STALE)
-    expect(err.message).toMatch(/SV-0007 is now Submitted, not Draft/)
-    const gone = fakeDb({})
-    await expectKind(runUpdateVariationDraft(base({ runTransaction: gone.runTransaction, seen: variation(), data: edit })), VARIATION_WRITE_ERROR.MISSING)
-    expect(writes).toEqual([])
-  })
-
-  it('a legacy copy with no revision is handled: seen and live both read 0, the write carries 1', async () => {
-    const { revision: _r, ...legacy } = variation()   // eslint-disable-line no-unused-vars
-    const { runTransaction, writes } = fakeDb({ v1: legacy })
-    await runUpdateVariationDraft(base({ runTransaction, seen: legacy, data: edit }))
-    expect(writes[0].data.revision).toBe(1)
-  })
-
-  it('maps a thrown Firestore error to its kind and preserves the cause', async () => {
-    for (const [code, kind] of [['permission-denied', 'permission'], ['unavailable', 'offline'], ['deadline-exceeded', 'offline'], ['not-found', 'missing'], ['internal', 'unknown'], [undefined, 'unknown']]) {
-      const runTransaction = async () => { const e = new Error('boom'); e.code = code; throw e }
-      const err = await expectKind(runUpdateVariationDraft(base({ runTransaction, seen: variation(), data: edit })), kind)
-      expect(err.cause?.message).toBe('boom')
-      expect(err.message).toBe(VARIATION_WRITE_ERROR_MESSAGES[kind])
-      expect(variationWriteErrorKind(code)).toBe(kind)
+  it('the originating RFI travels as an explicit change: undefined keeps the stored link, null removes it, an RFI sets it by id only', async () => {
+    const send = async (originRfi) => {
+      const { call, calls } = fakeCall({ variationId: 'v1', alreadyApplied: false, calcVersion: 2 })
+      await runUpdateVariationDraft({ call, projectId: 'p1', seen, data: { ...edit, originRfi }, uid: 'u' })
+      return calls[0].data
     }
+    expect(await send(undefined)).toMatchObject({ changeOriginRfi: false, originRfiId: null })
+    expect(await send(null)).toMatchObject({ changeOriginRfi: true, originRfiId: null })
+    const set = await send({ id: 'rfi9', rfiNumber: 'RFI-0009', title: 'Slab', status: 'answered' })
+    expect(set).toMatchObject({ changeOriginRfi: true, originRfiId: 'rfi9' })
+    expect(JSON.stringify(set)).not.toMatch(/RFI-0009|Slab/)
+  })
+
+  it('a legacy copy with no revision sends revision 0', async () => {
+    const { call, calls } = fakeCall({ variationId: 'v1', alreadyApplied: false, calcVersion: 2 })
+    await runUpdateVariationDraft({ call, projectId: 'p1', seen: variation({ revision: undefined }), data: edit, uid: 'u' })
+    expect(calls[0].data.expectedRevision).toBe(0)
+  })
+
+  it('refuses BEFORE any call: no uid, no id, a non-draft copy, a missing title, no lines, more than 200 lines, a line without a cost code, an ineligible RFI, an out-of-range amount', async () => {
+    const { call, calls } = fakeCall({ variationId: 'v1', alreadyApplied: false, calcVersion: 2 })
+    const run = (over) => runUpdateVariationDraft({ call, projectId: 'p1', seen, data: edit, uid: 'u', ...over })
+    await expectKind(run({ uid: null }), VARIATION_WRITE_ERROR.PERMISSION)
+    await expectKind(run({ seen: {} }), VARIATION_WRITE_ERROR.MISSING)
+    for (const status of ['submitted', 'approved', 'rejected', 'withdrawn']) {
+      expect((await expectKind(run({ seen: variation({ status }) }), VARIATION_WRITE_ERROR.INVALID)).message).toBe('Only draft variations can be edited')
+    }
+    expect((await expectKind(run({ data: { ...edit, title: '   ' } }), VARIATION_WRITE_ERROR.INVALID)).message).toBe('Title is required')
+    await expectKind(run({ data: { ...edit, lineItems: [] } }), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run({ data: { ...edit, lineItems: Array.from({ length: 201 }, () => line()) } }), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run({ data: { ...edit, lineItems: [line({ costCodeId: '' })] } }), VARIATION_WRITE_ERROR.INVALID)
+    expect((await expectKind(run({ data: { ...edit, originRfi: { id: 'r', rfiNumber: 'RFI-1', title: 't', status: 'draft' } } }), VARIATION_WRITE_ERROR.INVALID)).message).toMatch(/open, answered or closed/)
+    await expectKind(run({ data: { ...edit, lineItems: [line({ submittedAmount: 1e15 })] } }), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run({ data: { ...edit, effectiveDate: '1/11/2026' } }), VARIATION_WRITE_ERROR.INVALID)
+    expect(calls).toEqual([])
+  })
+
+  it('the server’s answers: a stale revision and "no longer a draft" are STALE (the editor keeps the entries); a repeat already saved is a RESULT; no answer is UNCERTAIN', async () => {
+    const run = (answer) => runUpdateVariationDraft({ call: fakeCall(answer).call, projectId: 'p1', seen, data: edit, uid: 'u' })
+    expect((await expectKind(run(typed('variation-stale')), VARIATION_WRITE_ERROR.STALE)).message).toBe(VARIATION_WRITE_ERROR_MESSAGES.stale)
+    const notDraft = await expectKind(run(typed('variation-not-draft', 'This variation is no longer a draft, so it can no longer be edited. Nothing was changed. Review the latest version.')), VARIATION_WRITE_ERROR.STALE)
+    expect(notDraft.message).toMatch(/no longer a draft/)
+    await expectKind(run(typed('not-found')), VARIATION_WRITE_ERROR.MISSING)
+    await expectKind(run(typed('variation-forbidden')), VARIATION_WRITE_ERROR.PERMISSION)
+    await expectKind(run(typed('variation-cost-code-invalid')), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run(typed('variation-rfi-invalid')), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run(typed('variation-processing-disabled')), VARIATION_WRITE_ERROR.UNAVAILABLE)
+    await expect(run({ variationId: 'v1', alreadyApplied: true, calcVersion: 2 })).resolves.toMatchObject({ alreadyApplied: true })
+    for (const code of ['deadline-exceeded', 'unavailable', 'internal']) {
+      expect((await expectKind(run(transport(code)), VARIATION_WRITE_ERROR.UNCERTAIN)).message).toMatch(/may or may not have been saved/)
+    }
+    await expectKind(run(transport('permission-denied')), VARIATION_WRITE_ERROR.PERMISSION)
   })
 })
 
 describe('runTransitionVariation — checks, stale detection and the write', () => {
+  it('maps a thrown Firestore error code to its kind (the submit / reject / withdraw transaction)', () => {
+    expect(variationWriteErrorKind('permission-denied')).toBe(VARIATION_WRITE_ERROR.PERMISSION)
+    expect(variationWriteErrorKind('unavailable')).toBe(VARIATION_WRITE_ERROR.OFFLINE)
+    expect(variationWriteErrorKind('deadline-exceeded')).toBe(VARIATION_WRITE_ERROR.OFFLINE)
+    expect(variationWriteErrorKind('not-found')).toBe(VARIATION_WRITE_ERROR.MISSING)
+    expect(variationWriteErrorKind('anything-else')).toBe(VARIATION_WRITE_ERROR.UNKNOWN)
+  })
+
   it('no uid → PERMISSION; no seen id → MISSING; illegal move / reserved target / bad amounts → INVALID; nothing read or written', async () => {
     const { runTransaction, writes } = fakeDb({ v1: variation() })
     await expectKind(runTransitionVariation(base({ runTransaction, uid: null, seen: variation(), nextStatus: VARIATION_STATUS.SUBMITTED })), VARIATION_WRITE_ERROR.PERMISSION)
@@ -269,12 +258,22 @@ describe('runTransitionVariation — checks, stale detection and the write', () 
     expect(w.writes[0].data).toEqual({ status: 'withdrawn', withdrawnAt: NOW, withdrawnBy: 'u_qs', revision: 3, updatedAt: NOW, updatedBy: 'u_qs' })
   })
 
-  it('approve validates the amounts against the SERVER lines and writes the approve update built over the server copy', async () => {
+  // ADR-90: approval is processed by the trusted backend. What it writes is
+  // still `transitionUpdate` (pinned above, and composed by the callable); what
+  // the server decides is proven in tests/functions/variations.test.js.
+  it('ADR-90 — approval is NOT a browser transaction: refused as INVALID before any read, whatever the status and amounts; nothing written', async () => {
     const live = variation({ status: 'submitted', revision: 2 })
     const { runTransaction, writes } = fakeDb({ v1: live })
-    await runTransitionVariation(base({ runTransaction, uid: 'u_pm', seen: live, nextStatus: VARIATION_STATUS.APPROVED, extras: { approvedAmounts: [900, -200], assessmentNotes: 'ok' } }))
-    expect(writes[0].data).toEqual(transitionUpdate(live, VARIATION_STATUS.APPROVED, { approvedAmounts: [900, -200], assessmentNotes: 'ok' }, 'u_pm', NOW, TODAY))
-    expect(writes[0].data.revision).toBe(3)
+    const err = await expectKind(
+      runTransitionVariation(base({ runTransaction, uid: 'u_pm', seen: live, nextStatus: VARIATION_STATUS.APPROVED, extras: { approvedAmounts: [900, -200], assessmentNotes: 'ok' } })),
+      VARIATION_WRITE_ERROR.INVALID,
+    )
+    expect(err.message).toMatch(/approved by the Constrap server/)
+    let reads = 0
+    const counting = async () => { reads += 1 }
+    await expectKind(runTransitionVariation(base({ runTransaction: counting, seen: live, nextStatus: VARIATION_STATUS.APPROVED, extras: { approvedAmounts: [1000, -200] } })), VARIATION_WRITE_ERROR.INVALID)
+    expect(reads).toBe(0)
+    expect(writes).toEqual([])
   })
 
   it('a STALE copy (status moved underneath) → STALE naming the new status; a revision moved → STALE; nothing written', async () => {
@@ -303,13 +302,9 @@ describe('runTransitionVariation — checks, stale detection and the write', () 
 
 // ── M3-B1 (ADR-62): commitment application in the approve write, and the legacy Apply ──
 
-import {
-  runApplyVariationCommitment, applyCommitmentUpdate, commitmentStamps, scopeStamps,
-} from '../../src/lib/variationActions'
+import { applyCommitmentUpdate, commitmentStamps, scopeStamps } from '../../src/lib/variationActions'
 import { VARIATION_COMMITMENT_KEYS, SCOPE_COMMITMENT_KEYS } from '../../src/lib/variations'
 
-const PO_SENT = { id: 'po1', poNumber: 'PO-0001', status: 'sent', lineItems: [{ costCodeId: 'cc1', lineTotal: 100_000 }] }
-const PO_CANCELLED = { ...PO_SENT, status: 'cancelled' }
 const linked = (o = {}) => variation({
   status: VARIATION_STATUS.SUBMITTED, poId: 'po1', poNumber: 'PO-0001',
   lineItems: [line({ poLineIndex: 0 }), line({ costCodeId: 'cc2', submittedAmount: -200, submittedGst: 0, taxCode: TAX_CODE.GST_FREE })],
@@ -350,69 +345,222 @@ describe('transitionUpdate — approve with / without the commitment stamps', ()
   })
 })
 
-describe('runTransitionVariation — the approve-time decision over the SERVER copy of the PO', () => {
-  it('a PO-linked supplier variation whose PO is sent on the server is approved AND applied in one write', async () => {
-    const live = linked()
-    const { runTransaction, writes } = fakeDb({ v1: live, po1: PO_SENT })
-    const out = await runTransitionVariation(base({ runTransaction, poRef: 'po1', seen: live, nextStatus: VARIATION_STATUS.APPROVED, extras: approveExtras }))
-    expect(out).toEqual({ kind: null, commitmentApplied: true })
-    expect(writes).toHaveLength(1)
-    expect(writes[0].data).toMatchObject({ status: 'approved', commitmentAppliedAt: NOW, commitmentAppliedBy: 'u_qs', revision: 2 })
+// ── ADR-90: the three server operations are CALLS ────────────────────────────
+//
+// The decision over the SERVER copy of the variation and its purchase order —
+// sent / closed applies, a cancelled / draft / pending / missing order refuses
+// the approval, manual-mode and client variations carry no stamps, a stale
+// copy is refused, two concurrent applies land once — was proven here against
+// a fake transaction while the browser made those writes. The browser no
+// longer makes them: every one of those cases is now proven against the real
+// transactions in tests/functions/variations.test.js. This file pins what the
+// BROWSER still does: what it sends, what it refuses before calling, and how
+// it reads the server's answer — including an answer it never received.
+
+import {
+  runCreateVariation, runApproveVariation, runApplyVariationCommitment, describeVariationCallFailure,
+  VARIATION_CALLABLE, VARIATION_CALL_TIMEOUT_MS,
+} from '../../src/lib/variationActions'
+import {
+  CREATE_VARIATION_KEYS, CREATE_VARIATION_LINE_KEYS, createVariationRequestProblem,
+  UPDATE_VARIATION_KEYS, updateVariationRequestProblem,
+} from '../../src/lib/variationProcessing'
+
+function fakeCall(answer) {
+  const calls = []
+  const call = async (name, data) => {
+    calls.push({ name, data })
+    if (answer instanceof Error) throw answer
+    return typeof answer === 'function' ? answer(name, data) : answer
+  }
+  return { call, calls }
+}
+const typed = (code, message = 'server message') => Object.assign(new Error(message), { code: 'functions/failed-precondition', details: { code } })
+const transport = (code) => Object.assign(new Error('transport'), { code: `functions/${code}` })
+
+describe('runApproveVariation — the call', () => {
+  const seen = linked({ revision: 4 })
+
+  it('sends identifiers, the REVIEWED revision, the certified amounts as numbers, trimmed notes and the approver’s day — never a GST figure, a total, a status or a stamp', async () => {
+    const { call, calls } = fakeCall({ variationId: 'v1', alreadyApplied: false, commitmentApplied: true })
+    const result = await runApproveVariation({ call, projectId: 'p1', seen, approvedAmounts: ['1000', -200], assessmentNotes: '  as agreed ', uid: 'u_pm', today: TODAY })
+    expect(result).toEqual({ variationId: 'v1', alreadyApplied: false, commitmentApplied: true })
+    expect(calls).toEqual([{
+      name: VARIATION_CALLABLE.APPROVE,
+      data: { projectId: 'p1', variationId: 'v1', expectedRevision: 4, approvedAmounts: [1000, -200], assessmentNotes: 'as agreed', approvedDate: TODAY },
+    }])
+    expect(VARIATION_CALLABLE).toEqual({ CREATE: 'createVariation', UPDATE: 'updateVariationDraft', APPROVE: 'approveVariation', APPLY: 'applyVariationCommitment' })
+    expect(VARIATION_CALL_TIMEOUT_MS).toBeGreaterThan(60000)   // longer than the function may run
   })
 
-  it('a closed PO applies too', async () => {
-    const live = linked()
-    const { runTransaction, writes } = fakeDb({ v1: live, po1: { ...PO_SENT, status: 'closed' } })
-    const out = await runTransitionVariation(base({ runTransaction, poRef: 'po1', seen: live, nextStatus: VARIATION_STATUS.APPROVED, extras: approveExtras }))
-    expect(out.commitmentApplied).toBe(true)
-    expect(writes[0].data.commitmentAppliedBy).toBe('u_qs')
+  it('a blank amount is sent as 0; a legacy copy with no revision sends 0', async () => {
+    const { call, calls } = fakeCall({ variationId: 'v1', alreadyApplied: false, commitmentApplied: false })
+    const legacy = linked({ revision: undefined })
+    await runApproveVariation({ call, projectId: 'p1', seen: legacy, approvedAmounts: ['', null], assessmentNotes: 'nil', uid: 'u', today: TODAY })
+    expect(calls[0].data.approvedAmounts).toEqual([0, 0])
+    expect(calls[0].data.expectedRevision).toBe(0)
   })
 
-  it('Correction A — a cancelled, draft, pending or MISSING PO on the server REFUSES the approval (PO_INVALID) with nothing written and a specific, actionable message', async () => {
-    for (const po of [PO_CANCELLED, { ...PO_SENT, status: 'draft' }, { ...PO_SENT, status: 'pending_approval' }, undefined]) {
-      const live = linked()
-      const docs = { v1: live }
-      if (po) docs.po1 = po
-      const { runTransaction, writes } = fakeDb(docs)
-      const err = await expectKind(runTransitionVariation(base({ runTransaction, poRef: 'po1', seen: live, nextStatus: VARIATION_STATUS.APPROVED, extras: approveExtras })), VARIATION_WRITE_ERROR.PO_INVALID)
-      expect(err.message, String(po?.status)).toMatch(po ? /is (Cancelled|Draft|Pending Approval); a supplier variation can only be approved while its purchase order is sent or closed/ : /could not be found in this project/)
-      expect(err.message).toMatch(/Withdraw or reject/)
-      expect(writes).toHaveLength(0)
+  it('refuses BEFORE any call: no uid, no id, a status that cannot be approved, a count mismatch, a non-number, differing amounts without notes', async () => {
+    const { call, calls } = fakeCall({ variationId: 'v1', alreadyApplied: false, commitmentApplied: false })
+    const run = (over) => runApproveVariation({ call, projectId: 'p1', seen, approvedAmounts: [1000, -200], assessmentNotes: '', uid: 'u', today: TODAY, ...over })
+    await expectKind(run({ uid: null }), VARIATION_WRITE_ERROR.PERMISSION)
+    await expectKind(run({ seen: {} }), VARIATION_WRITE_ERROR.MISSING)
+    await expectKind(run({ seen: linked({ status: 'draft' }) }), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run({ seen: linked({ status: 'approved' }) }), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run({ approvedAmounts: [1000] }), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run({ approvedAmounts: [1000, 'abc'] }), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run({ approvedAmounts: [900, -200] }), VARIATION_WRITE_ERROR.INVALID)          // differs, no notes
+    await expectKind(run({ approvedAmounts: [1e15, -200], assessmentNotes: 'x' }), VARIATION_WRITE_ERROR.INVALID)
+    expect(calls).toEqual([])
+  })
+
+  it('a repeated approve the server already applied is a RESULT, not an error', async () => {
+    const { call } = fakeCall({ variationId: 'v1', alreadyApplied: true, commitmentApplied: true })
+    await expect(runApproveVariation({ call, projectId: 'p1', seen, ...approveExtras, uid: 'u', today: TODAY })).resolves.toEqual({ variationId: 'v1', alreadyApplied: true, commitmentApplied: true })
+  })
+
+  it('typed refusals map to their kind — the purchase-order refusal keeps the server’s specific, actionable message', async () => {
+    const run = (err) => runApproveVariation({ call: fakeCall(err).call, projectId: 'p1', seen, ...approveExtras, uid: 'u', today: TODAY })
+    const po = await expectKind(run(typed('variation-po-invalid', 'PO-0001 is not sent or closed; … Nothing was changed.')), VARIATION_WRITE_ERROR.PO_INVALID)
+    expect(po.message).toBe('PO-0001 is not sent or closed; … Nothing was changed.')
+    await expectKind(run(typed('variation-stale')), VARIATION_WRITE_ERROR.STALE)
+    await expectKind(run(typed('variation-not-submitted')), VARIATION_WRITE_ERROR.STALE)
+    await expectKind(run(typed('variation-forbidden')), VARIATION_WRITE_ERROR.PERMISSION)
+    await expectKind(run(typed('membership-inactive')), VARIATION_WRITE_ERROR.PERMISSION)
+    await expectKind(run(typed('no-membership')), VARIATION_WRITE_ERROR.PERMISSION)
+    await expectKind(run(typed('not-found')), VARIATION_WRITE_ERROR.MISSING)
+    await expectKind(run(typed('variation-figures-inconsistent')), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run(typed('variation-unsupported-record')), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run(typed('variation-amount-out-of-range')), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run(typed('variation-processing-disabled')), VARIATION_WRITE_ERROR.UNAVAILABLE)
+    const busy = await expectKind(run(typed('variation-busy', 'This variation was being changed while the request ran. Nothing was changed. Try again.')), VARIATION_WRITE_ERROR.OFFLINE)
+    expect(busy.message).toMatch(/Nothing was changed/)
+    // The generic stale wording is the browser's own, and keeps the entries.
+    expect((await expectKind(run(typed('variation-stale', 'server text')), VARIATION_WRITE_ERROR.STALE)).message).toBe(VARIATION_WRITE_ERROR_MESSAGES.stale)
+  })
+
+  it('an answer that never arrived is UNCERTAIN — never "nothing was saved"; a transport refusal before the handler is certain', async () => {
+    const run = (err) => runApproveVariation({ call: fakeCall(err).call, projectId: 'p1', seen, ...approveExtras, uid: 'u', today: TODAY })
+    for (const code of ['deadline-exceeded', 'unavailable', 'internal', 'cancelled', 'unknown']) {
+      const err = await expectKind(run(transport(code)), VARIATION_WRITE_ERROR.UNCERTAIN)
+      expect(err.message).toBe(VARIATION_WRITE_ERROR_MESSAGES.uncertain)
+      expect(err.message).toMatch(/may or may not have been saved/)
+      expect(err.message).not.toMatch(/nothing was saved/i)
     }
+    await expectKind(run(new Error('no code at all')), VARIATION_WRITE_ERROR.UNCERTAIN)
+    await expectKind(run(transport('unauthenticated')), VARIATION_WRITE_ERROR.PERMISSION)     // no ID token, or App Check refused
+    await expectKind(run(transport('permission-denied')), VARIATION_WRITE_ERROR.PERMISSION)
+    await expectKind(run(transport('not-found')), VARIATION_WRITE_ERROR.UNAVAILABLE)           // the function is not deployed
+    await expectKind(run(transport('invalid-argument')), VARIATION_WRITE_ERROR.INVALID)
   })
 
-  it('Correction A — a PO-linked supplier approve with NO poRef is refused BEFORE any read (never an unapplied fallback)', async () => {
-    const reads = []
-    const live = linked()
-    const tx = { get: async (ref) => { reads.push(ref); return { exists: () => true, id: ref, data: () => live } }, update: () => {} }
-    await expectKind(runTransitionVariation(base({ runTransaction: async (_d, body) => body(tx), seen: live, nextStatus: VARIATION_STATUS.APPROVED, extras: approveExtras })), VARIATION_WRITE_ERROR.PO_INVALID)
-    expect(reads).toEqual([])
-  })
-
-  it('a stale PO (sent when reviewed, cancelled on the server) is decided on the SERVER copy — refused, nothing written', async () => {
-    const live = linked()
-    const { runTransaction, writes } = fakeDb({ v1: live, po1: PO_CANCELLED })
-    await expectKind(runTransitionVariation(base({ runTransaction, poRef: 'po1', seen: { ...live }, nextStatus: VARIATION_STATUS.APPROVED, extras: approveExtras })), VARIATION_WRITE_ERROR.PO_INVALID)
-    expect(writes).toHaveLength(0)
-  })
-
-  it('manual-mode and client variations keep their lifecycle: approved without reading a PO, without stamps', async () => {
-    for (const live of [linked({ poId: null, poNumber: null }), linked({ variationType: VARIATION_TYPE.CLIENT, poId: null, poNumber: null })]) {
-      const reads = []
-      const tx = { get: async (ref) => { reads.push(ref); return { exists: () => true, id: ref, data: () => live } }, update: () => {} }
-      const out = await runTransitionVariation(base({ runTransaction: async (_d, body) => body(tx), seen: live, nextStatus: VARIATION_STATUS.APPROVED, extras: approveExtras }))
-      expect(reads).toEqual(['v1'])
-      expect(out.commitmentApplied).toBe(false)
+  it('an answer that is not the operation’s own shape is UNCERTAIN; the original error is kept as the cause', async () => {
+    for (const answer of [null, undefined, 'ok', {}, { alreadyApplied: 'no' }]) {
+      await expectKind(runApproveVariation({ call: fakeCall(answer).call, projectId: 'p1', seen, ...approveExtras, uid: 'u', today: TODAY }), VARIATION_WRITE_ERROR.UNCERTAIN)
     }
+    const source = typed('variation-stale')
+    expect(describeVariationCallFailure(source).cause).toBe(source)
+    const own = new VariationWriteError(VARIATION_WRITE_ERROR.INVALID, 'mine')
+    expect(describeVariationCallFailure(own)).toBe(own)
   })
 
-  it('a manual-mode supplier variation with a poRef supplied by mistake reads no PO and applies nothing', async () => {
-    const reads = []
-    const live = linked({ poId: null, poNumber: null })
-    const tx = { get: async (ref) => { reads.push(ref); return { exists: () => true, id: ref, data: () => (ref === 'v1' ? live : PO_SENT) } }, update: () => {} }
-    const out = await runTransitionVariation(base({ runTransaction: async (_d, body) => body(tx), poRef: 'po1', seen: live, nextStatus: VARIATION_STATUS.APPROVED, extras: approveExtras }))
-    expect(reads).toEqual(['v1'])
-    expect(out.commitmentApplied).toBe(false)
+  it('nothing here retries: one call per attempt, whatever the outcome', async () => {
+    const failing = fakeCall(transport('deadline-exceeded'))
+    await expectKind(runApproveVariation({ call: failing.call, projectId: 'p1', seen, ...approveExtras, uid: 'u', today: TODAY }), VARIATION_WRITE_ERROR.UNCERTAIN)
+    expect(failing.calls).toHaveLength(1)
+  })
+})
+
+describe('runCreateVariation — the call', () => {
+  const editorData = (o = {}) => ({
+    variationType: VARIATION_TYPE.SUPPLIER,
+    title: '  Additional steel ', description: ' More ', reason: 'site_condition',
+    clientId: null, clientName: null, clientRef: null,
+    supplierId: 'contactS1', supplierName: ' Steel Co ', supplierRef: ' Q-9 ',
+    poId: null, poNumber: null,
+    identifiedDate: '2026-10-01', submittedDate: '', responseDueDate: '', effectiveDate: '',
+    lineItems: [line({ submittedAmount: 1500.5, submittedGst: 150.05 }), line({ costCodeId: 'cc2', submittedAmount: -200, submittedGst: 0, taxCode: TAX_CODE.GST_FREE })],
+    notes: '',
+    originRfi: null,
+    ...o,
+  })
+
+  it('sends ONLY authored content: no GST, no totals, no number, no currency, no status, no cost-code name, no stamp', async () => {
+    const { call, calls } = fakeCall({ variationId: 'newId', variationNumber: 'SV-0001', alreadyApplied: false })
+    const result = await runCreateVariation({ call, projectId: 'p1', variationId: 'newId', data: editorData(), uid: 'u_qs' })
+    expect(result.variationNumber).toBe('SV-0001')
+    expect(calls).toHaveLength(1)
+    const { name, data } = calls[0]
+    expect(name).toBe(VARIATION_CALLABLE.CREATE)
+    expect(Object.keys(data).sort()).toEqual([...CREATE_VARIATION_KEYS].sort())
+    for (const l of data.lines) expect(Object.keys(l).sort()).toEqual([...CREATE_VARIATION_LINE_KEYS].sort())
+    expect(data).toMatchObject({
+      projectId: 'p1', variationId: 'newId', variationType: 'supplier',
+      title: 'Additional steel', description: 'More', supplierId: 'contactS1', supplierName: 'Steel Co', supplierRef: 'Q-9',
+      clientId: null, clientName: null, clientRef: null, poId: null, originRfiId: null,
+    })
+    expect(data.lines).toEqual([
+      { poLineIndex: null, costCodeId: 'cc1', description: 'Extra steel', submittedAmount: 1500.5, taxCode: 'gst' },
+      { poLineIndex: null, costCodeId: 'cc2', description: 'Extra steel', submittedAmount: -200, taxCode: 'gst_free' },
+    ])
+    expect(createVariationRequestProblem(data)).toBeNull()
+    expect(JSON.stringify(data)).not.toMatch(/submittedGst|Subtotal|Total|costCodeName|currency|status|createdBy|calcVersion|variationNumber|poNumber/)
+  })
+
+  it('a PO-linked variation sends the purchase-order id and NO supplier — the server takes the supplier from the order; a PO line sends its index and no cost code', async () => {
+    const { call, calls } = fakeCall({ variationId: 'x', variationNumber: 'SV-0002', alreadyApplied: false })
+    await runCreateVariation({
+      call, projectId: 'p1', variationId: 'x', uid: 'u',
+      data: editorData({ poId: 'po1', poNumber: 'PO-0001', supplierId: 'forged', supplierName: 'Forged Pty', lineItems: [line({ poLineIndex: 0 }), line({ costCodeId: 'cc9' })] }),
+    })
+    expect(calls[0].data).toMatchObject({ poId: 'po1', supplierId: null, supplierName: null })
+    expect(calls[0].data.lines[0]).toMatchObject({ poLineIndex: 0, costCodeId: null })
+    expect(calls[0].data.lines[1]).toMatchObject({ poLineIndex: null, costCodeId: 'cc9' })
+  })
+
+  it('a client variation sends the client block and nulls the supplier block and the PO; the RFI travels as its id only', async () => {
+    const { call, calls } = fakeCall({ variationId: 'x', variationNumber: 'CV-0001', alreadyApplied: false })
+    await runCreateVariation({
+      call, projectId: 'p1', variationId: 'x', uid: 'u',
+      data: editorData({
+        variationType: VARIATION_TYPE.CLIENT, clientId: 'contactC1', clientName: ' Client Pty ', clientRef: ' CR-1 ',
+        supplierId: 'x', supplierName: 'x', supplierRef: 'x', poId: 'po1',
+        originRfi: { id: 'rfi1', rfiNumber: 'RFI-0001', title: 'Steel', status: 'open' },
+      }),
+    })
+    expect(calls[0].data).toMatchObject({
+      variationType: 'client', clientId: 'contactC1', clientName: 'Client Pty', clientRef: 'CR-1',
+      supplierId: null, supplierName: null, supplierRef: null, poId: null, originRfiId: 'rfi1',
+    })
+    expect(JSON.stringify(calls[0].data)).not.toMatch(/RFI-0001|originRfiTitle|originRfiNumber/)
+  })
+
+  it('refuses BEFORE any call: no uid, no title, no lines, a line without a cost code, an ineligible RFI, an amount beyond the supported range', async () => {
+    const { call, calls } = fakeCall({ variationId: 'x', variationNumber: 'SV-1', alreadyApplied: false })
+    const run = (data, over = {}) => runCreateVariation({ call, projectId: 'p1', variationId: 'x', data, uid: 'u', ...over })
+    await expectKind(run(editorData(), { uid: null }), VARIATION_WRITE_ERROR.PERMISSION)
+    expect((await expectKind(run(editorData({ title: '  ' })), VARIATION_WRITE_ERROR.INVALID)).message).toBe('Title is required')
+    await expectKind(run(editorData({ lineItems: [] })), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run(editorData({ lineItems: [line({ costCodeId: '' })] })), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run(editorData({ originRfi: { id: 'r', rfiNumber: 'RFI-1', title: 't', status: 'draft' } })), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run(editorData({ lineItems: [line({ submittedAmount: 1e15 })] })), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run(editorData({ identifiedDate: '01/10/2026' })), VARIATION_WRITE_ERROR.INVALID)
+    expect(calls).toEqual([])
+  })
+
+  it('a repeat with the SAME id is answered already-created and returned as a result; an id conflict is INVALID with the server’s message', async () => {
+    const again = fakeCall({ variationId: 'x', variationNumber: 'SV-0007', alreadyApplied: true })
+    await expect(runCreateVariation({ call: again.call, projectId: 'p1', variationId: 'x', data: editorData(), uid: 'u' })).resolves.toMatchObject({ alreadyApplied: true, variationNumber: 'SV-0007' })
+    expect(again.calls[0].data.variationId).toBe('x')
+    const conflict = fakeCall(typed('variation-id-conflict', 'A different variation already uses this identifier.'))
+    const err = await expectKind(runCreateVariation({ call: conflict.call, projectId: 'p1', variationId: 'x', data: editorData(), uid: 'u' }), VARIATION_WRITE_ERROR.INVALID)
+    expect(err.message).toMatch(/different variation/)
+    for (const code of ['variation-rfi-invalid', 'variation-cost-code-invalid', 'variation-invalid']) {
+      await expectKind(runCreateVariation({ call: fakeCall(typed(code)).call, projectId: 'p1', variationId: 'x', data: editorData(), uid: 'u' }), VARIATION_WRITE_ERROR.INVALID)
+    }
+    await expectKind(runCreateVariation({ call: fakeCall(typed('variation-po-invalid')).call, projectId: 'p1', variationId: 'x', data: editorData(), uid: 'u' }), VARIATION_WRITE_ERROR.PO_INVALID)
+    await expectKind(runCreateVariation({ call: fakeCall(transport('deadline-exceeded')).call, projectId: 'p1', variationId: 'x', data: editorData(), uid: 'u' }), VARIATION_WRITE_ERROR.UNCERTAIN)
   })
 })
 
@@ -437,15 +585,18 @@ describe('runApplyVariationCommitment — the one-time legacy Apply', () => {
     expect(applyCommitmentUpdate({ revision: 3, scopeCommittedAt: 'earlier', scopeCommittedBy: 'u_x' }, 'u_pm', NOW)).toEqual({
       commitmentAppliedAt: NOW, commitmentAppliedBy: 'u_pm', revision: 4, updatedAt: NOW, updatedBy: 'u_pm',
     })
+    expect(commitmentStamps('u', NOW)).toEqual({ commitmentAppliedAt: NOW, commitmentAppliedBy: 'u' })
+    expect(scopeStamps('u', NOW)).toEqual({ scopeCommittedAt: NOW, scopeCommittedBy: 'u' })
+    expect(Object.keys(commitmentStamps('u', NOW))).toEqual(VARIATION_COMMITMENT_KEYS)
+    expect(Object.keys(scopeStamps('u', NOW))).toEqual(SCOPE_COMMITMENT_KEYS)
   })
 
-  it('refuses BEFORE any read: no uid, no id, no poRef, not approved, manual mode, client, already applied (both pairs, or applied with no positive new scope)', async () => {
+  it('refuses BEFORE any call: no uid, no id, not approved, manual mode, client, already applied (both pairs, or applied with no positive new scope)', async () => {
     const seen = approvedLinked()
-    const { runTransaction, writes } = fakeDb({ v1: seen, po1: PO_SENT })
-    const run = (over) => runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen, ...over }))
+    const { call, calls } = fakeCall({ variationId: 'v1', alreadyApplied: false, byCaller: true, applied: true, scopeCommitted: true })
+    const run = (over) => runApplyVariationCommitment({ call, projectId: 'p1', seen, uid: 'u_pm', ...over })
     await expectKind(run({ uid: null }), VARIATION_WRITE_ERROR.PERMISSION)
     await expectKind(run({ seen: {} }), VARIATION_WRITE_ERROR.MISSING)
-    await expectKind(run({ poRef: null }), VARIATION_WRITE_ERROR.INVALID)
     await expectKind(run({ seen: approvedLinked({ status: 'submitted' }) }), VARIATION_WRITE_ERROR.INVALID)
     await expectKind(run({ seen: approvedLinked({ status: 'rejected' }) }), VARIATION_WRITE_ERROR.INVALID)
     await expectKind(run({ seen: approvedLinked({ poId: null, poNumber: null }) }), VARIATION_WRITE_ERROR.INVALID)
@@ -453,107 +604,56 @@ describe('runApplyVariationCommitment — the one-time legacy Apply', () => {
     await expectKind(run({ seen: approvedLinked({ ...BOTH_PAIRS }) }), VARIATION_WRITE_ERROR.ALREADY_APPLIED)
     // Applied under M3-B1 with existing-line amounts only: there is no new scope to commit.
     await expectKind(run({ seen: approvedLinked({ commitmentAppliedAt: NOW, commitmentAppliedBy: 'u_x' }) }), VARIATION_WRITE_ERROR.ALREADY_APPLIED)
-    expect(writes).toHaveLength(0)
+    expect(calls).toHaveLength(0)
   })
 
-  it('writes BOTH pairs once over the reviewed copy when the server PO is sent or closed (nothing applied before)', async () => {
-    for (const status of ['sent', 'closed']) {
-      const seen = approvedLinked()
-      const { runTransaction, writes } = fakeDb({ v1: seen, po1: { ...PO_SENT, status } })
-      const out = await runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen, uid: 'u_pm' }))
-      expect(out).toEqual({ kind: null, applied: true, scopeCommitted: true })
-      expect(writes).toEqual([{ ref: 'v1', data: { ...BOTH_PAIRS, revision: 3, updatedAt: NOW, updatedBy: 'u_pm' } }])
-    }
+  it('sends the project, the variation and the REVIEWED revision — nothing else — and returns what the server recorded', async () => {
+    const seen = approvedLinked()
+    const { call, calls } = fakeCall({ variationId: 'v1', alreadyApplied: false, byCaller: true, applied: true, scopeCommitted: true })
+    const out = await runApplyVariationCommitment({ call, projectId: 'p1', seen, uid: 'u_pm' })
+    expect(calls).toEqual([{ name: VARIATION_CALLABLE.APPLY, data: { projectId: 'p1', variationId: 'v1', expectedRevision: 2 } }])
+    expect(out).toMatchObject({ applied: true, scopeCommitted: true, alreadyApplied: false })
+    // A legacy document with no revision key sends 0.
+    const legacy = fakeCall({ variationId: 'v1', alreadyApplied: false, byCaller: true, applied: true, scopeCommitted: true })
+    await runApplyVariationCommitment({ call: legacy.call, projectId: 'p1', seen: approvedLinked({ revision: undefined }), uid: 'u' })
+    expect(legacy.calls[0].data.expectedRevision).toBe(0)
   })
 
-  it('ADR-63 — a variation applied under M3-B1 with a positive new-scope line takes the SCOPE pair only ("Commit new scope"); the applied pair is untouched', async () => {
+  it('ADR-63 — a variation applied under M3-B1 with a positive new-scope line is still sent (the server writes the SCOPE pair only)', async () => {
     const seen = approvedLinked({
-      revision: 3, commitmentAppliedAt: 'earlier', commitmentAppliedBy: 'u_x',
-      lineItems: [line({ poLineIndex: 0, approvedAmount: 1000, approvedGst: 100 }), line({ poLineIndex: null, approvedAmount: 4000, approvedGst: 400, costCodeId: 'W' })],
+      commitmentAppliedAt: NOW, commitmentAppliedBy: 'u_x',
+      lineItems: [line({ poLineIndex: 0, approvedAmount: 1000, approvedGst: 100 }), line({ costCodeId: 'cc2', approvedAmount: 250, approvedGst: 25 })],
     })
-    const { runTransaction, writes } = fakeDb({ v1: seen, po1: PO_SENT })
-    const out = await runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen, uid: 'u_pm' }))
-    expect(out).toEqual({ kind: null, applied: false, scopeCommitted: true })
-    expect(writes).toEqual([{ ref: 'v1', data: { scopeCommittedAt: NOW, scopeCommittedBy: 'u_pm', revision: 4, updatedAt: NOW, updatedBy: 'u_pm' } }])
-    // A NEGATIVE new-scope line alone is nothing to commit.
-    const negative = approvedLinked({ commitmentAppliedAt: 'earlier', commitmentAppliedBy: 'u_x', lineItems: [line({ poLineIndex: null, approvedAmount: -3000, approvedGst: -300 })] })
-    const neg = fakeDb({ v1: negative, po1: PO_SENT })
-    await expectKind(runApplyVariationCommitment(base({ runTransaction: neg.runTransaction, poRef: 'po1', seen: negative })), VARIATION_WRITE_ERROR.ALREADY_APPLIED)
-    expect(neg.writes).toHaveLength(0)
+    const { call, calls } = fakeCall({ variationId: 'v1', alreadyApplied: false, byCaller: true, applied: false, scopeCommitted: true })
+    const out = await runApplyVariationCommitment({ call, projectId: 'p1', seen, uid: 'u_pm' })
+    expect(calls).toHaveLength(1)
+    expect(out).toMatchObject({ applied: false, scopeCommitted: true })
   })
 
-  it('a SECOND apply (the server copy already carries both pairs) is refused as ALREADY_APPLIED with nothing written — before the stale check', async () => {
+  it('"already applied" by THIS user (a repeat after an unconfirmed outcome) is a result; by anyone else it is the ALREADY_APPLIED refusal — nothing was changed', async () => {
     const seen = approvedLinked()
-    const { runTransaction, writes } = fakeDb({ v1: { ...seen, ...commitmentStamps('u_other', NOW), ...scopeStamps('u_other', NOW), revision: 3 }, po1: PO_SENT })
-    await expectKind(runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen })), VARIATION_WRITE_ERROR.ALREADY_APPLIED)
-    expect(writes).toHaveLength(0)
+    const mine = fakeCall({ variationId: 'v1', alreadyApplied: true, byCaller: true, applied: false, scopeCommitted: false })
+    await expect(runApplyVariationCommitment({ call: mine.call, projectId: 'p1', seen, uid: 'u_pm' })).resolves.toMatchObject({ alreadyApplied: true })
+    const theirs = fakeCall({ variationId: 'v1', alreadyApplied: true, byCaller: false, applied: false, scopeCommitted: false })
+    const err = await expectKind(runApplyVariationCommitment({ call: theirs.call, projectId: 'p1', seen, uid: 'u_pm' }), VARIATION_WRITE_ERROR.ALREADY_APPLIED)
+    expect(err.message).toBe(VARIATION_WRITE_ERROR_MESSAGES.already_applied)
   })
 
-  it('a server copy that gained ONLY the applied pair underneath (an M3-B1 apply) is STALE for this reviewed copy — the revision moved; nothing written', async () => {
+  it('a STALE copy, a missing document and a purchase order that is not sent or closed are the server’s refusals, mapped to their kinds with the reason', async () => {
     const seen = approvedLinked()
-    const { runTransaction, writes } = fakeDb({ v1: { ...seen, ...commitmentStamps('u_other', NOW), revision: 3 }, po1: PO_SENT })
-    await expectKind(runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen })), VARIATION_WRITE_ERROR.STALE)
-    expect(writes).toHaveLength(0)
+    const run = (err) => runApplyVariationCommitment({ call: fakeCall(err).call, projectId: 'p1', seen, uid: 'u_pm' })
+    await expectKind(run(typed('variation-stale')), VARIATION_WRITE_ERROR.STALE)
+    await expectKind(run(typed('not-found')), VARIATION_WRITE_ERROR.MISSING)
+    const po = await expectKind(run(typed('variation-not-applicable', 'The linked purchase order is not sent or closed, so the variation cannot be applied to its commitment. Nothing was changed.')), VARIATION_WRITE_ERROR.INVALID)
+    expect(po.message).toMatch(/not sent or closed/)
   })
 
-  it('two concurrent applies from the same reviewed copy: the first wins, the second is refused, exactly one write lands', async () => {
+  it('maps transport failures exactly as the other server operations do', async () => {
     const seen = approvedLinked()
-    const docs = { v1: { ...seen }, po1: PO_SENT }
-    const writes = []
-    // A fake Firestore that APPLIES each committed write to the document, so
-    // the second transaction reads the first one's stamps.
-    const runTransaction = async (_db, body) => {
-      const tx = {
-        get: async (ref) => ({ exists: () => docs[ref] !== undefined, id: ref, data: () => docs[ref] }),
-        update: (ref, data) => { writes.push({ ref, data }); docs[ref] = { ...docs[ref], ...data } },
-      }
-      return body(tx)
-    }
-    const first = await runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen, uid: 'u_a' }))
-    const second = await expectKind(runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen, uid: 'u_b' })), VARIATION_WRITE_ERROR.ALREADY_APPLIED)
-    expect(first).toEqual({ kind: null, applied: true, scopeCommitted: true })
-    expect(second.message).toMatch(/already been applied/)
-    expect(writes).toHaveLength(1)
-    expect(docs.v1.commitmentAppliedBy).toBe('u_a')
-    expect(docs.v1.scopeCommittedBy).toBe('u_a')
-  })
-
-  it('a STALE copy (revision moved underneath) and a missing document are refused with nothing written', async () => {
-    const seen = approvedLinked()
-    const moved = fakeDb({ v1: { ...seen, revision: 5 }, po1: PO_SENT })
-    const err = await expectKind(runApplyVariationCommitment(base({ runTransaction: moved.runTransaction, poRef: 'po1', seen })), VARIATION_WRITE_ERROR.STALE)
-    expect(err.message).toMatch(/changed by another user/)
-    expect(moved.writes).toHaveLength(0)
-    const gone = fakeDb({ po1: PO_SENT })
-    await expectKind(runApplyVariationCommitment(base({ runTransaction: gone.runTransaction, poRef: 'po1', seen })), VARIATION_WRITE_ERROR.MISSING)
-  })
-
-  it('a cancelled, draft or missing PO on the SERVER refuses the apply as INVALID, naming the reason', async () => {
-    const seen = approvedLinked()
-    for (const po of [PO_CANCELLED, { ...PO_SENT, status: 'draft' }, undefined]) {
-      const docs = { v1: seen }
-      if (po) docs.po1 = po
-      const { runTransaction, writes } = fakeDb(docs)
-      const err = await expectKind(runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen })), VARIATION_WRITE_ERROR.INVALID)
-      expect(err.message).toMatch(po ? /not sent or closed/ : /could not be found/)
-      expect(writes).toHaveLength(0)
-    }
-  })
-
-  it('a legacy document with no revision key applies at revision 1 and acquires the audit stamps', async () => {
-    const legacy = approvedLinked()
-    delete legacy.revision
-    const { runTransaction, writes } = fakeDb({ v1: legacy, po1: PO_SENT })
-    await runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen: legacy }))
-    expect(writes[0].data.revision).toBe(1)
-  })
-
-  it('maps SDK error codes exactly as the other transactions do', async () => {
-    const seen = approvedLinked()
-    for (const [code, kind] of [['permission-denied', VARIATION_WRITE_ERROR.PERMISSION], ['unavailable', VARIATION_WRITE_ERROR.OFFLINE], ['not-found', VARIATION_WRITE_ERROR.MISSING], ['weird', VARIATION_WRITE_ERROR.UNKNOWN]]) {
-      const runTransaction = async () => { const e = new Error('boom'); e.code = code; throw e }
-      await expectKind(runApplyVariationCommitment(base({ runTransaction, poRef: 'po1', seen })), kind)
-    }
-    expect(VARIATION_WRITE_ERROR_MESSAGES[VARIATION_WRITE_ERROR.ALREADY_APPLIED]).toMatch(/already been applied/)
+    const run = (err) => runApplyVariationCommitment({ call: fakeCall(err).call, projectId: 'p1', seen, uid: 'u_pm' })
+    await expectKind(run(transport('permission-denied')), VARIATION_WRITE_ERROR.PERMISSION)
+    await expectKind(run(transport('unavailable')), VARIATION_WRITE_ERROR.UNCERTAIN)
+    await expectKind(run(transport('deadline-exceeded')), VARIATION_WRITE_ERROR.UNCERTAIN)
+    await expectKind(run(typed('variation-processing-disabled')), VARIATION_WRITE_ERROR.UNAVAILABLE)
   })
 })

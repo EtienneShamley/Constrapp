@@ -747,6 +747,17 @@ siblings of the one invoice (g) verifies — **Deferred Control 43**.
 
 ## Variations — rules-enforced lifecycle (ADR-59, M2-B3 — LIVE since 27 October 2026)
 
+> **ADR-90 (Phase 2 step 2 — IMPLEMENTED, NOT DEPLOYED, 27 November 2026).**
+> In the repository's `firestore.rules`, **creating** a variation, **approving**
+> one and the legacy **Apply / Commit new scope** are no longer client writes:
+> `allow create: if false`, and there is no approve branch and no legacy-apply
+> branch. They are three trusted callables — see *Variations — trusted backend
+> (ADR-90)* below. The read, the draft edit, submit, reject and withdraw are
+> enforced by Rules exactly as this section describes. **Production still runs
+> the ruleset described here in full** (client create, approve and apply
+> included) until the ADR-90 FINAL Rules are published; nothing in this note is
+> live.
+
 **Until ADR-59 the `variations` block enforced tenant, role and the ADR-34
 originating-RFI link and nothing else**, while approved supplier variations
 feed Commitment Exposure, SHIELD check 4 and the M2-B1 PO cancel guard,
@@ -964,6 +975,168 @@ a reload loads the new bundle. Rules-first is claimed safe ONLY because
 against both payloads and `tests/rules/variations.rules.test.js` proves the
 FINAL file denies the unstamped PO-linked approve.
 
+### Variations — trusted backend (ADR-90 and its checkpoint correction — IMPLEMENTED, NOT DEPLOYED)
+
+**Trust boundary.** Four callables in `frontend/functions/src/variations/`
+(Admin SDK — they bypass Security Rules, so each authorises itself):
+`createVariation`, `updateVariationDraft`, `approveVariation`,
+`applyVariationCommitment`.
+
+**Enforced by the server, inside one transaction per request:**
+
+- **Who.** The switch (`VARIATION_PROCESSING_ENABLED`, fail closed) → an
+  authenticated caller → an **active** membership in `company_admin`,
+  `project_manager` or `qs`, read before and again inside the transaction (a
+  membership removed while the request is in flight is ordered against it) →
+  the project under **the caller's own company**. App Check is enforced on all
+  four. No request carries a company id; another tenant's project, purchase
+  order, RFI or cost code is not found.
+- **What a request may carry.** Authored content and identifiers only; any
+  derived figure, number, currency, status, stamp, snapshot or calculation
+  version is an unexpected key and refuses the whole request.
+- **Create and draft edit.** Every stored line is derived by the server from
+  the request: the cost code from the variation's own purchase-order line or
+  the company library (it must exist), GST and the header under calculation
+  version 2. A create takes its number from the type's counter in the same
+  transaction, the currency from the project (with the currency lock) and the
+  supplier from a **sent or closed** purchase order. An edit lands only on a
+  **draft at the revision the editor was opened on**. The originating RFI must
+  be open, answered or closed when it is set or changed.
+- **Approve.** Status `submitted` (or the reserved `under_review`) **at the
+  revision the approver reviewed**. **Nothing stored is trusted:** the
+  submitted side must reconcile under the document's own calculation version
+  — line keys, tax codes, whole-cent amounts, GST, header — and every line's
+  cost code must be its purchase-order line's own or exist in the company
+  library; this applies to legacy variations as well as version-2 ones.
+  Certified lines, their GST and the signed header are derived; cost-code
+  names are taken from the verified sources; notes are required when amounts
+  differ; a PO-linked supplier variation is approved and applied in one write
+  only while its purchase order is sent or closed.
+- **Apply.** Only the missing stamp pair(s); approved, PO-linked supplier
+  variations; purchase order sent or closed; **and the approved side and every
+  cost-code relationship must reconcile** — otherwise the variation is not
+  applied and not changed.
+- **Numbering.** The two variation counters are read and advanced only here,
+  and only when they hold a whole number from 1 to 999,999,999.
+- **Replays and races.** A repeated create (same id, same caller), edit (same
+  caller, same content), approve (same caller, same amounts) or apply is
+  answered without a second write or audit event; concurrent operations on one
+  variation land once.
+- **Audit.** One `auditEvents` document per committed create, approve and
+  apply. A draft edit writes none (it creates no financial fact).
+
+**Enforced by Rules:** the read set; no delete; **no client create and no
+client content write of any kind**; submit, reject and withdraw (stamps,
+actor, server time, `revision` + 1, key allow-lists that admit no content,
+`calcVersion` or commitment key); no client read or write of
+`counters/variationsClient` or `counters/variationsSupplier`.
+
+**NOT enforced — do not describe as enforced.**
+
+- **Approval segregation.** The approver may be the creator, the submitter and
+  the last editor. The audit event records which; nothing is refused (DC4;
+  Phase 2 step 6).
+- **Historical tampering before the cutover.** A legacy variation whose lines
+  were forged in a way that still matches the application's own shape and
+  arithmetic (for example a plausible amount on a real cost code) is
+  indistinguishable from a legitimate one; what the verification guarantees is
+  that the document is internally consistent and its cost codes are real, not
+  who wrote it. A variation counter rolled back before the cutover can still
+  produce a duplicate number (DC6).
+- **Other registers' counters** remain client-writable (DC6 / G6, Phase 3).
+- **Rate limiting.** The four callables are bounded by `maxInstances` and App
+  Check only; there is no per-user rate limit.
+- **Evidence class.** Everything in this subsection is proven on local
+  emulators and in a local browser against them (TESTING.md §83, §84). Nothing
+  is deployed, and production's existing variations have not been inventoried
+  against the verification.
+
+### Supplier finance — trusted backend (ADR-93 / ADR-94 — IMPLEMENTED, NOT DEPLOYED)
+
+**Trust boundary.** `progressClaimOperation`, `supplierInvoiceOperation`,
+`supplierSettlementOperation` (functions/src/supplierFinance/), Admin SDK —
+each authorises itself: switch → authenticated → active company_admin /
+project_manager / qs → the project under the CALLER's company (read inside the
+transaction). App Check enforced.
+
+**Enforced by the server:** every stored figure derived from the request's
+authored content and the records the transaction reads (no derived key
+accepted); one open claim per PO (the per-PO claim ledger — Deferred Control 36
+closed for claims); `previouslyApproved` from that ledger; approval of a claim
+and approval / posting of an invoice verify everything stored under the
+document's own calculation version (forged or legacy-malformed content is
+refused, never certified); claim ↔ invoice pairing on the claim document; the
+supplier cumulative caps on the per-invoice ledger — credits (Deferred Control
+25), retention releases (Deferred Control 24), payment allocations (Deferred
+Control 18) — including credits on retained invoices (G1); dependency-safe voids
+(G3); a one-time historical baseline that never reads absence — or a baseline
+still being built — as zero, established under a run fence, one consistent
+snapshot, a source digest re-verified before completion and a membership
+re-check at completion (ADR-94 Decision 7); corrective voids on an inconsistent
+ledger that may only narrow a breach, never widen or open one, with malformed
+historical entries tracked until voided and everything else failing closed
+(Decision 6); cumulative allocation checks when a stored payment names an
+invoice more than once; idempotent replays; one audit event per financial fact.
+
+**Enforced by Rules:** the reads; the content-free claim SUBMIT; nothing else —
+no client create, edit, approve, post, void or counter write on the five
+supplier registers.
+
+**NOT enforced — do not describe as enforced:** production history is not
+inventoried (the baseline's outcome on production data is unmeasured; its cost
+is measured on the emulator only); an inconsistency with no supported
+corrective void (an invoice that does not reconcile with itself, an entry
+naming a missing invoice) has no in-app remedy — it fails closed; no
+per-user rate limit (App Check and `maxInstances` only); duplicate supplier
+invoice references are warn-only (DC9); over-claiming and over-invoicing a PO
+line are warn-only by product definition (G4 is Phase 3).
+
+### Approval segregation and the original contract value (ADR-96 — IMPLEMENTED, NOT DEPLOYED)
+
+**Policy:** `companies/{c}/approvalPolicy/current`, readable by members, written
+only by the operator tool (audited, a reason required, enabling needs two
+active company_admin / project_manager members). **Enforced** in every trusted
+approval of the ADR-96 matrix (variations, claims, supplier invoice approval,
+supplier and client credit / release posting, Final Account, contract value
+correction) against the creator, the LAST MATERIAL draft editor (a
+backend-written stamp a cosmetic edit cannot move, and no request can carry)
+and the submitter; in the VOID of a posted supplier or client credit note or
+retention release (creator and last material editor excluded; the poster may);
+in the POSTING of a supplier invoice whose approval was not independent; in the
+VOID of a posted client refund (the recorder excluded — D3 #47; recording stays
+single-person); and in the Rules-held approvals: budget versions and budget
+adjustments against their creator (they have no draft edits), purchase-order
+send and tender award against the creator and the Rules-maintained
+`lastMaterialEditBy` (a cosmetic edit cannot move it; an unstamped legacy draft
+fails closed in strict mode — ADR-98, D3 #46 resolved). **Not enforced:** records of
+money that already moved (payments, receipts, refunds, applications, and their
+voids) are single-actor by design — bounded by a ledger, reason and actor
+recorded; whether a refund record should need a second person is an open policy
+question, decided by the architect: recording stays single-person, the void is
+segregated (ADR-98 Decision 6). The policy is company-wide, not per workflow;
+disabled by default. Rules-held refusals reach the user as a permission
+refusal (no page pre-check). A PO send's binding to the reviewed content is the
+browser's transaction comparing the stamp (as `expectedRevision` is for the
+callables) — independence is Rules-enforced, review binding is not.
+
+### Phase 2 company activation (ADR-98 — IMPLEMENTED, NOT DEPLOYED)
+
+**Enforced by the server:** every Phase 2 callable refuses a company without
+`commercialCompletionEnabled === true` — before any baseline, and again inside
+the operation's own transaction (a deactivation and an operation in flight are
+ordered). The global switches stay the brakes above it. **Enforced by Rules:**
+no client writes the field (company update admits four currency keys only).
+**Enforced by Rules as well:** the remaining client lifecycle writes on Phase
+2 registers — claim submit, variation submit / reject / withdraw — require the
+company's `commercialCompletionEnabled == true` (`commercialActive`). **Not
+enforced:** nothing in the browser — the maintenance notice is UX. Activation never
+enables approval segregation.
+
+**Original contract value:** after the baseline's first save, Rules refuse any
+client change to the value and its provenance; a change is a correction
+proposed and approved through `contractValueOperation` (segregated, stale-checked,
+one open proposal, audited, history kept).
+
 ### New-scope commitment and variation-origin lines (ADR-63, M3-B2 — LIVE IN PRODUCTION (confirmed by the Product Owner))
 
 **Three blocks, additive; every M2 / M3-B1 control unchanged.** M3-B2 gives a
@@ -1039,6 +1212,10 @@ ruleset through the normal `firebase.json`. After Stage 3 an un-reloaded M3-B1
 tab is refused — with no write — on exactly two actions (the PO-linked
 variation approve and the claim create); the count pin, the shape pins and the
 invoice guard are active from Stage 1.
+
+### Estimates — trusted backend (ADR-97 — IMPLEMENTED, NOT DEPLOYED)
+
+**Enforced (Rules):** `estimates/**` and `estimateItemInputs` — read by company_admin / project_manager / qs of the company; no client create, update or delete (any role); `estimateState` matches no rule. Proven by `tests/rules/estimates.rules.test.js`. **Enforced (callable `estimateOperation`):** App Check; switch `ESTIMATING_ENABLED` (off in production); authentication before validation; a fixed operation table (unknown refused) with an exact-key contract per operation and no figure in any request; role per operation (approve: company_admin / project_manager only); the caller's membership read inside every transaction and the company taken from it (another tenant's project is not found); revision + content-hash binding on approval; full re-verification of the stored chunks before approval; the build run fence; approval segregation (ADR-96 D4) with the last material editor bound to the content hash; one audit event per build, approval and discard. **The BOQ transfer's optional `estimateId`** is an identifier only, accepted only for an APPROVED revision of the caller's project whose source key equals the live BOQ read in the same transaction. **Not enforced / limits:** the Estimate page's role gating is UX; the reviewed contract-value prefill is client navigation state (the baseline and G5 controls are unchanged and still decide); callable abuse / cost protection is the existing App Check and `maxInstances` only (no per-user rate limit — the open callable-abuse finding applies).
 
 ## Client Invoices — deliberately stricter than every other collection
 
@@ -2999,7 +3176,20 @@ hooks, but any authorized user could bypass them with direct Firestore calls):
     documented as explicitly as the floor.
 
 37. **Variation line, aggregate, sibling and concurrency gaps (ADR-59,
-    M2-B3).** The `variations` block now enforces the lifecycle, the
+    M2-B3).** **NARROWED BY ADR-90 — IMPLEMENTED, NOT DEPLOYED (27 November
+    2026); every item below still describes production until that release.**
+    Once ADR-90 (with its checkpoint correction) is live: a variation is
+    created AND its draft edited only by the backend, which derives every
+    line's cost code, GST and the header; no client can write line contents at
+    all; approval and commitment application re-verify whatever is stored —
+    legacy variations included — and check the reviewed revision inside the
+    transaction. **What remains unenforced after ADR-90:** creator ≠ approver
+    (DC4 — recorded, not refused); duplicate external references (DC9); a
+    variation counter tampered before the cutover, and every other register's
+    counter (DC6); legacy content forged so that it still matches the
+    application's own shape and arithmetic; the stale guard on the browser's
+    own submit, reject and withdraw (rules-assisted, as before). *As written:* The
+    `variations` block now enforces the lifecycle, the
     type-consistent immutable identity, the audit and transition stamps, the
     create-time source-PO / currency / project consistency, the SIGNED
     whole-cent headers on both sides and the +1 revision (see *Variations —
@@ -3969,8 +4159,40 @@ is deferred and [ROADMAP.md](../ROADMAP.md) for when it's planned.
     - **A draft receipt's figures are not validated by Rules beyond its
       existing shape checks**; the server validates the whole document before
       posting.
-    - **Number uniqueness** (DC6), **creator ≠ poster segregation** (DC7 —
-      Phase 2), and that an entry reflects a real agreement with the client.
+    - **Number uniqueness** (DC6), **creator ≠ poster segregation** (DC4 —
+      Phase 2; *corrected 27 November 2026: this line previously cited DC7,
+      which is audit logging*), and that an entry reflects a real agreement
+      with the client.
+
+    **Phase 2 step 5 (ADR-95) — client refunds, receipt applications and the
+    void of an issued invoice. IMPLEMENTED — NOT DEPLOYED; LOCAL / EMULATOR
+    evidence only (TESTING.md §86).**
+    - **Enforced by the backend** (`postClientRefund`, `voidClientRefund`,
+      `postClientReceiptApplication`, `voidClientReceiptApplication`,
+      `voidClientInvoice`; App Check; the caller's active financial-role
+      membership read INSIDE each transaction; the company from that
+      membership): no over-refund (receipt or invoice overpayment), no
+      over-application, no application beyond what the invoice owes, no
+      double record (client-chosen id; same-caller same-content replay),
+      concurrent use of the same money serialised on the ledger each
+      transaction reads and writes, same client / currency / project derived
+      from the documents (D7), receipt void refused while refunds or
+      applications depend on it, the settlement invariant S1 on every invoice
+      ledger movement (credit-note void, release, receipt void, application
+      correction), issued invoice void refused while ANY money is recorded —
+      including receipts posted before ADR-89 (through the receipt baseline,
+      never read as zero) — and one audit event per committed operation.
+    - **Enforced by Rules:** both registers read-only to financial roles and
+      never client-writable; `clientReceiptLedgers` has no Rules block (no
+      client access); the two numbering counters refused to every client; an
+      ISSUED client invoice admits no client update at all (its void is the
+      backend's). *This replaces the earlier Rules-only `ledgerClear()` void of
+      issued invoices, which did not check receipts (D8).*
+    - **Not enforced:** that a refund was really paid (Constrap records, it
+      does not move money); duplicate external refund references (DC9 class);
+      creator ≠ approver for refunds and applications (step 6 decides); a
+      per-user rate limit (only `maxInstances` and App Check). The switch
+      `CLIENT_SETTLEMENT_ENABLED` is OFF in production.
     - **The read-time validity gate** (`clientCreditException`) is defence in
       depth for what this application renders; it protects nothing outside it.
 

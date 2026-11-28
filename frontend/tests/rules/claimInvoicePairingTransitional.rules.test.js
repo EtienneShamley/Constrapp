@@ -10,19 +10,29 @@ import { claimTotals, buildClaimLine } from '../../src/lib/progressClaims'
 // ── SHIELD 2A (ADR-68) — the STAGE-1 TRANSITIONAL ruleset ────────────────────
 //
 // `firestore.transitional.rules` is deployed FIRST, while the pre-2A bundle is
-// still served. It differs from FINAL in the two ADR-68 marked lines only:
-// the claim create's `hasAll` and the approve branch tolerate ABSENT link
-// keys (the old bundle writes none). Everything else — above all the
-// invoice-side PAIRING — is STRICT in Stage 1: an unpaired claim-sourced
-// create is refused from the moment Stage 1 publishes (an old tab must refresh
-// for that one action), a legacy claim fails closed, and cancel is paired.
+// still served. It used to differ from FINAL in the two ADR-68 marked lines:
+// the claim create's `hasAll` and the approve branch tolerated ABSENT link
+// keys (the old bundle wrote none), while the invoice-side PAIRING was STRICT.
+//
+// ⚠️ ADR-93 (Phase 2 step 3, trusted supplier finance). Claims are CREATED,
+// EDITED, APPROVED and REJECTED — and paired with their supplier invoice —
+// ONLY by the trusted backend; supplier invoices admit NO client write. The
+// two ADR-68 transitional lines are RETIRED: the transitional file is
+// regenerated from firestore.rules and its claim / invoice blocks are now
+// IDENTICAL to the FINAL file. Every Stage-1 TOLERANCE this suite used to
+// prove (an old-bundle create or approve with no link keys being ACCEPTED,
+// a paired create / reconcile / cancel+unlink being ACCEPTED) is therefore
+// now a REFUSAL for every financial role with every document unchanged; the
+// denials it proved are kept. The one client claim write left — the
+// content-free SUBMIT — is proven here too. The supported replacements are
+// proven in tests/functions (supplier finance).
 //
 // SAFETY: refuses to run unless FIRESTORE_EMULATOR_HOST is set.
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RULES_PATH = resolve(HERE, '../../firestore.transitional.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A = 'companyA'
 const PROJECT_A = 'projectA'
 const USERS = {
@@ -30,6 +40,7 @@ const USERS = {
   pm:    { uid: 'u_pm',    role: 'project_manager', companyId: COMPANY_A },
   qs:    { uid: 'u_qs',    role: 'qs',              companyId: COMPANY_A },
 }
+const FINANCIAL = [USERS.admin, USERS.pm, USERS.qs]
 const PO = { id: 'poSent', poNumber: 'PO-0001', status: 'sent', supplierId: 'contact1', supplierName: 'BuildCo Pty Ltd' }
 const PO_LINE = { costCodeId: 'cc1', costCodeName: '03-100 — Concrete', description: 'Slab', qty: 1, unit: 'ls', unitPrice: 10000, lineTotal: 10000 }
 const LINK_KEYS = ['supplierInvoiceId', 'supplierInvoiceLinkedAt', 'supplierInvoiceLinkedBy']
@@ -110,12 +121,31 @@ async function readClaim(id) {
   await testEnv.withSecurityRulesDisabled(async (c) => { data = (await getDoc(claimRef(c.firestore(), id))).data() })
   return data
 }
+async function readInv(id) {
+  let data
+  await testEnv.withSecurityRulesDisabled(async (c) => { data = (await getDoc(invRef(c.firestore(), id))).data() })
+  return data
+}
+// What the TRUSTED BACKEND stores, written with rules disabled.
+async function serverWrite(fn) {
+  await testEnv.withSecurityRulesDisabled(async (c) => { await fn(c.firestore()) })
+}
+// ADR-93 — `attempt(user)` is REFUSED for EVERY financial role and none of the
+// named claims / invoices moves (an absent one stays absent).
+async function refusedForAll(attempt, { claims = [], invoices = [] } = {}) {
+  const before = { c: await Promise.all(claims.map(readClaim)), i: await Promise.all(invoices.map(readInv)) }
+  for (const user of FINANCIAL) await assertFails(attempt(user))
+  expect(await Promise.all(claims.map(readClaim))).toEqual(before.c)
+  expect(await Promise.all(invoices.map(readInv))).toEqual(before.i)
+}
 
 beforeAll(async () => {
   if (!process.env.FIRESTORE_EMULATOR_HOST) throw new Error('FIRESTORE_EMULATOR_HOST is not set — run `npm run test:rules`.')
   const [host, port] = process.env.FIRESTORE_EMULATOR_HOST.split(':')
   const rules = readFileSync(RULES_PATH, 'utf8')
-  if (!rules.includes('ADR-68 TRANSITIONAL')) throw new Error('firestore.transitional.rules does not carry the ADR-68 transitional marker')
+  if (!rules.includes('STAGE-1 TRANSITIONAL RULESET')) throw new Error('firestore.transitional.rules is not the Stage-1 transitional ruleset')
+  // ADR-93: the two ADR-68 transitional lines are retired — none may remain.
+  if (rules.includes('ADR-68 TRANSITIONAL')) throw new Error('firestore.transitional.rules still carries an ADR-68 transitional line')
   testEnv = await initializeTestEnvironment({ projectId: PROJECT_ID, firestore: { rules, host, port: Number(port) } })
 })
 afterAll(async () => { if (testEnv) await testEnv.cleanup() })
@@ -124,66 +154,87 @@ beforeEach(async () => {
   await testEnv.withSecurityRulesDisabled(async (c) => {
     const db = c.firestore()
     for (const u of Object.values(USERS)) await setDoc(doc(db, 'users', u.uid), { role: u.role, companyId: u.companyId, name: u.uid })
-    await setDoc(doc(db, 'companies', COMPANY_A), { name: 'Company A', countryCode: 'AU', baseCurrency: 'AUD' })
+    // ADR-98: the claim submit / variation lifecycle Rules require an ACTIVATED company.
+    await setDoc(doc(db, 'companies', COMPANY_A), { name: 'Company A', countryCode: 'AU', baseCurrency: 'AUD', commercialCompletionEnabled: true })
     await setDoc(doc(db, `companies/${COMPANY_A}/projects`, PROJECT_A), { name: 'Project A', currency: 'AUD', currencyLocked: true })
     await setDoc(doc(db, `${base}/purchaseOrders`, PO.id), { ...PO, lineItems: [PO_LINE], subtotal: 10000, gst: 1000, total: 11000, currency: 'AUD', revision: 1 })
   })
 })
 
-describe('STAGE 1 — the pre-2A bundle’s claim writes keep working; the 2A bundle’s work too', () => {
-  it('claim create WITHOUT the link keys (old bundle) and WITH them null (new bundle) are both ACCEPTED; a string or a stamp at create is still refused', async () => {
+describe('STAGE 1 — ADR-93: the claim block is the FINAL one (the ADR-68 tolerances are retired)', () => {
+  it('ADR-93 — a claim create WITHOUT the link keys (old bundle) and WITH them null (new bundle) are both REFUSED for every financial role; a string or a stamp at create is still refused; nothing is stored', async () => {
     const db = ctx(USERS.qs)
-    await assertSucceeds(setDoc(claimRef(db, 'old'), claimCreate(USERS.qs)))
-    await assertSucceeds(setDoc(claimRef(db, 'new'), claimCreate(USERS.qs, { newFormat: true })))
+    await refusedForAll((user) => setDoc(claimRef(ctx(user), 'old'), claimCreate(user)), { claims: ['old'] })
+    await refusedForAll((user) => setDoc(claimRef(ctx(user), 'new'), claimCreate(user, { newFormat: true })), { claims: ['new'] })
     await assertFails(setDoc(claimRef(db, 'forged'), claimCreate(USERS.qs, { newFormat: true, supplierInvoiceId: 'si_x' })))
     await assertFails(setDoc(claimRef(db, 'forged2'), claimCreate(USERS.qs, { supplierInvoiceLinkedBy: USERS.qs.uid })))
-    expect('supplierInvoiceId' in (await readClaim('old'))).toBe(false)
-    expect((await readClaim('new')).supplierInvoiceId).toBeNull()
+    for (const id of ['old', 'new', 'forged', 'forged2']) expect(await readClaim(id)).toBeUndefined()
   })
 
-  it('approve on a legacy claim: the old payload (no keys) is ACCEPTED and leaves the claim LEGACY; the new payload initialises the keys; a string link is refused', async () => {
+  it('ADR-93 — approve on a legacy claim: the old payload (no keys) and the new payload (keys null) are REFUSED for every financial role and the claim stays LEGACY; a string link is refused', async () => {
     await seedClaim('la', 'submitted', { legacy: true })
     await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'la'), approveWrite(USERS.pm, { newFormat: true, supplierInvoiceId: 'si_x' })))
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'la'), approveWrite(USERS.pm)))
+    await refusedForAll((user) => updateDoc(claimRef(ctx(user), 'la'), approveWrite(user)), { claims: ['la'] })
     expect('supplierInvoiceId' in (await readClaim('la'))).toBe(false)
     await seedClaim('lb', 'submitted', { legacy: true })
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'lb'), approveWrite(USERS.pm, { newFormat: true })))
-    expect((await readClaim('lb')).supplierInvoiceId).toBeNull()
+    await refusedForAll((user) => updateDoc(claimRef(ctx(user), 'lb'), approveWrite(user, { newFormat: true })), { claims: ['lb'] })
+    expect('supplierInvoiceId' in (await readClaim('lb'))).toBe(false)
+  })
+
+  it('the one client claim write left — the content-free SUBMIT — passes in Stage 1 as in FINAL, for a legacy and a new-format draft and every financial role', async () => {
+    for (const user of FINANCIAL) {
+      for (const legacy of [true, false]) {
+        const id = `sub-${user.uid}-${legacy}`
+        await seedClaim(id, 'draft', { legacy })
+        await assertSucceeds(updateDoc(claimRef(ctx(user), id), { status: 'submitted', submittedAt: serverTimestamp(), submittedBy: user.uid, revision: 2, ...stamps(user) }))
+        expect(await readClaim(id)).toMatchObject({ status: 'submitted', submittedBy: user.uid, revision: 2, updatedBy: user.uid })
+      }
+    }
   })
 })
 
-describe('STAGE 1 — the invoice-side pairing is STRICT', () => {
-  it('an UNPAIRED claim-sourced create (the old bundle’s write) is REFUSED against a new-format claim; the paired create is accepted', async () => {
+describe('STAGE 1 — ADR-93: the invoice-side pairing is backend-only (no client write)', () => {
+  it('an UNPAIRED claim-sourced create (the old bundle’s write) is REFUSED; ADR-93 — the PAIRED create is REFUSED for every financial role, both documents unchanged; a second one is refused too', async () => {
     await seedClaim('cl', 'approved')
     await assertFails(setDoc(invRef(ctx(USERS.qs), 'si_unpaired'), invoicePayload(USERS.qs, 'cl')))
-    await assertSucceeds(pairedCreate(USERS.qs, 'si_paired', 'cl'))
-    expect((await readClaim('cl')).supplierInvoiceId).toBe('si_paired')
-    // …and a second one is refused: the invariant holds in Stage 1 too.
+    await refusedForAll((user) => pairedCreate(user, 'si_paired', 'cl'), { claims: ['cl'], invoices: ['si_paired'] })
+    expect((await readClaim('cl')).supplierInvoiceId).toBeNull()
+    // the backend pairs it; a second client create is refused (it always was).
+    await serverWrite(async (db) => {
+      await setDoc(invRef(db, 'si_paired'), { ...invoicePayload(USERS.qs, 'cl'), createdAt: Timestamp.now(), updatedAt: Timestamp.now() })
+      await updateDoc(claimRef(db, 'cl'), { supplierInvoiceId: 'si_paired', supplierInvoiceLinkedAt: Timestamp.now(), supplierInvoiceLinkedBy: USERS.qs.uid, revision: 3, updatedAt: Timestamp.now(), updatedBy: USERS.qs.uid })
+    })
     await assertFails(pairedCreate(USERS.pm, 'si_dup', 'cl', 4))
     await assertFails(setDoc(invRef(ctx(USERS.pm), 'si_dup2'), invoicePayload(USERS.pm, 'cl')))
+    expect((await readClaim('cl')).supplierInvoiceId).toBe('si_paired')
   })
 
-  it('a LEGACY approved claim fails closed in Stage 1 as in FINAL; reconciling its existing active invoice works; an absent key is never set to null', async () => {
+  it('a LEGACY approved claim fails closed; ADR-93 — reconciling its existing active invoice is REFUSED for every financial role too; an absent key is never set', async () => {
     await seedClaim('legacy', 'approved', { legacy: true })
     await assertFails(setDoc(invRef(ctx(USERS.qs), 'si_x'), invoicePayload(USERS.qs, 'legacy')))
     await assertFails(pairedCreate(USERS.qs, 'si_y', 'legacy'))
     await assertFails(updateDoc(claimRef(ctx(USERS.admin), 'legacy'), unlinkWrite(USERS.admin, 3)))
-    await testEnv.withSecurityRulesDisabled(async (c) => {
-      await setDoc(invRef(c.firestore(), 'si_old'), { ...invoicePayload(USERS.admin, 'legacy'), status: 'posted', createdAt: Timestamp.now(), updatedAt: Timestamp.now(), approvedAt: Timestamp.now(), approvedBy: 'u_admin', postedAt: Timestamp.now(), postedBy: 'u_admin' })
+    await serverWrite(async (db) => {
+      await setDoc(invRef(db, 'si_old'), { ...invoicePayload(USERS.admin, 'legacy'), status: 'posted', createdAt: Timestamp.now(), updatedAt: Timestamp.now(), approvedAt: Timestamp.now(), approvedBy: 'u_admin', postedAt: Timestamp.now(), postedBy: 'u_admin' })
     })
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.admin), 'legacy'), linkWrite(USERS.admin, 'si_old')))
-    expect((await readClaim('legacy')).supplierInvoiceId).toBe('si_old')
+    await refusedForAll((user) => updateDoc(claimRef(ctx(user), 'legacy'), linkWrite(user, 'si_old')), { claims: ['legacy'], invoices: ['si_old'] })
+    expect('supplierInvoiceId' in (await readClaim('legacy'))).toBe(false)
   })
 
-  it('cancel is paired in Stage 1: a linked draft cancels only together with its unlink', async () => {
-    await seedClaim('cl', 'approved')
-    await assertSucceeds(pairedCreate(USERS.qs, 'si1', 'cl'))
-    const db = ctx(USERS.qs)
-    await assertFails(updateDoc(invRef(db, 'si1'), cancelWrite(USERS.qs)))
-    const batch = writeBatch(db)
-    batch.update(invRef(db, 'si1'), cancelWrite(USERS.qs))
-    batch.update(claimRef(db, 'cl'), unlinkWrite(USERS.qs))
-    await assertSucceeds(batch.commit())
-    expect((await readClaim('cl')).supplierInvoiceId).toBeNull()
+  it('cancel: the unpaired cancel of a linked draft is refused; ADR-93 — the paired cancel + unlink is REFUSED for every financial role, both documents unchanged', async () => {
+    await seedClaim('cl', 'approved', { supplierInvoiceId: 'si1', supplierInvoiceLinkedAt: Timestamp.now(), supplierInvoiceLinkedBy: USERS.qs.uid, revision: 3 })
+    await serverWrite(async (db) => {
+      await setDoc(invRef(db, 'si1'), { ...invoicePayload(USERS.qs, 'cl'), createdAt: Timestamp.now(), updatedAt: Timestamp.now() })
+    })
+    await assertFails(updateDoc(invRef(ctx(USERS.qs), 'si1'), cancelWrite(USERS.qs)))
+    await refusedForAll((user) => {
+      const db = ctx(user)
+      const batch = writeBatch(db)
+      batch.update(invRef(db, 'si1'), cancelWrite(user))
+      batch.update(claimRef(db, 'cl'), unlinkWrite(user))
+      return batch.commit()
+    }, { claims: ['cl'], invoices: ['si1'] })
+    expect((await readClaim('cl')).supplierInvoiceId).toBe('si1')
+    expect((await readInv('si1')).status).toBe('draft')
   })
 })

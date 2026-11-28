@@ -29,7 +29,7 @@ import { PoWriteError } from '../../src/lib/purchaseOrderActions'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RULES_PATH = resolve(HERE, '../../firestore.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A = 'companyA'
 const COMPANY_B = 'companyB'
 const PROJECT_A = 'projectA'
@@ -86,6 +86,8 @@ function raisedPo(user, overrides = {}) {
     externalRefs: {},
     createdAt: serverTimestamp(), createdBy: user.uid,
     updatedAt: serverTimestamp(), updatedBy: user.uid,
+    // D4 material-edit provenance (ADR-96, D3 #46) — required at create.
+    lastMaterialEditBy: user.uid, lastMaterialEditAt: serverTimestamp(),
     sourceTenderPackageId: PKG, sourceTenderBidId: BID, sourceTenderNumber: 'TP-0001',
     ...overrides,
   }
@@ -136,6 +138,7 @@ async function seedAll({ pkgStatus = 'awarded', pkgExtra = {}, bidExtra = {}, co
       awardedBidId: null, awardedBidderName: null, awardNotes: '', cancelReason: '', revision: 1,
       issuedAt: null, issuedBy: null, awardedAt: null, awardedBy: null, cancelledAt: null, cancelledBy: null,
       createdAt: now, createdBy: 'u_admin', updatedAt: now, updatedBy: 'u_admin',
+      lastMaterialEditBy: 'u_admin', lastMaterialEditAt: now,
       ...lifecycle, ...pkgExtra,
     })
     await setDoc(bidRef(db, BID), {
@@ -158,7 +161,7 @@ async function seedPo(id, status, extra = {}) {
       status === 'cancelled' ? { status, cancelledAt: now, cancelledBy: 'u_admin' } :
       status === 'sent'      ? { status, sentAt: now, sentBy: 'u_admin' } :
       { status: 'draft' }
-    await setDoc(poRef(db, id), { ...raisedPo(USERS.admin), createdAt: now, updatedAt: now, ...lifecycle, ...extra })
+    await setDoc(poRef(db, id), { ...raisedPo(USERS.admin), createdAt: now, updatedAt: now, lastMaterialEditAt: now, ...lifecycle, ...extra })
   })
 }
 
@@ -387,6 +390,18 @@ describe('source keys are immutable once created', () => {
     await assertFails(updateDoc(poRef(db, 'po_manual'), { sourceTenderPackageId: PKG, sourceTenderBidId: BID, sourceTenderNumber: 'TP-0001', ...stamps }))
   })
 
+  it('D4 — a raised PO is born stamped by its raiser; with the policy ENABLED the raiser cannot send it, an independent member can', async () => {
+    await seedAll()
+    await assertSucceeds(raiseBatch(USERS.admin))
+    expect(await read(poRef, 'po_new')).toMatchObject({ createdBy: USERS.admin.uid, lastMaterialEditBy: USERS.admin.uid })
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(doc(c.firestore(), `companies/${COMPANY_A}/approvalPolicy/current`), { segregationEnabled: true, updatedAt: Timestamp.now() })
+    })
+    const sendAs = (u) => updateDoc(poRef(ctx(u), 'po_new'), { status: 'sent', sentAt: serverTimestamp(), sentBy: u.uid, updatedAt: serverTimestamp(), updatedBy: u.uid })
+    await assertFails(sendAs(USERS.admin))
+    await assertSucceeds(sendAs(USERS.pm))
+  })
+
   it('send, close and cancel on a raised PO work as stamps-only transitions and keep the source keys', async () => {
     await seedAll()
     await assertSucceeds(raiseBatch(USERS.admin))
@@ -421,6 +436,7 @@ describe('source keys are immutable once created', () => {
       awardedBidId: null, awardedBidderName: null, awardNotes: '', cancelReason: '', revision: 1,
       issuedAt: null, issuedBy: null, awardedAt: null, awardedBy: null, cancelledAt: null, cancelledBy: null,
       createdAt: serverTimestamp(), createdBy: USERS.admin.uid, updatedAt: serverTimestamp(), updatedBy: USERS.admin.uid,
+      lastMaterialEditBy: USERS.admin.uid, lastMaterialEditAt: serverTimestamp(),   // D4 — required at create
       ...extra,
     })
     await assertSucceeds(setDoc(pkgRef(db, 'p_absent'), pkgDoc()))
@@ -487,6 +503,9 @@ describe('one current linked PO per award; re-raise only after cancellation', ()
     await assertFails(raiseBatch(USERS.admin, { link: backlink(USERS.admin, 'po_new', 'PO-0002', { updatedBy: USERS.qs.uid }) }))
     // Smuggled content alongside the link.
     await assertFails(raiseBatch(USERS.admin, { link: backlink(USERS.admin, 'po_new', 'PO-0002', { awardNotes: 'rewritten' }) }))
+    // D4: the back-link cannot write or move the package's material-edit provenance.
+    await assertFails(raiseBatch(USERS.admin, { link: backlink(USERS.admin, 'po_new', 'PO-0002', { lastMaterialEditBy: USERS.admin.uid, lastMaterialEditAt: serverTimestamp() }) }))
+    await assertFails(raiseBatch(USERS.admin, { link: backlink(USERS.admin, 'po_new', 'PO-0002', { lastMaterialEditBy: USERS.qs.uid }) }))
     await assertFails(raiseBatch(USERS.admin, { link: backlink(USERS.admin, 'po_new', 'PO-0002', { status: 'issued' }) }))
   })
 })
@@ -517,7 +536,8 @@ describe('roles, tenancy, legacy and manual compatibility', () => {
 
   it('a legacy PO (no stamps, no source keys) still edits, sends and cancels', async () => {
     await testEnv.withSecurityRulesDisabled(async (c) => {
-      const legacy = without(manualPo(USERS.admin), ['updatedAt', 'updatedBy', 'sentBy', 'closedBy', 'cancelledBy'])
+      // Legacy = pre-ADR-57, so also pre-D4: no material-edit provenance either.
+      const legacy = without(manualPo(USERS.admin), ['updatedAt', 'updatedBy', 'sentBy', 'closedBy', 'cancelledBy', 'lastMaterialEditBy', 'lastMaterialEditAt'])
       await setDoc(poRef(c.firestore(), 'legacy'), { ...legacy, createdAt: Timestamp.now() })
     })
     const db = ctx(USERS.qs)
@@ -536,9 +556,11 @@ describe('roles, tenancy, legacy and manual compatibility', () => {
       awardedBidId: null, awardedBidderName: null, awardNotes: '', cancelReason: '', revision: 1,
       issuedAt: null, issuedBy: null, awardedAt: null, awardedBy: null, cancelledAt: null, cancelledBy: null,
       createdAt: serverTimestamp(), createdBy: USERS.qs.uid, ...s(),
+      lastMaterialEditBy: USERS.qs.uid, lastMaterialEditAt: serverTimestamp(),   // D4 — required at create
     }
     await assertSucceeds(setDoc(pkgRef(db, 'p5'), pkgDoc))
-    await assertSucceeds(updateDoc(pkgRef(db, 'p5'), { name: 'Roofing — Rev A', ...s() }))
+    // D4: a rename is material, so it carries the editor's provenance stamp.
+    await assertSucceeds(updateDoc(pkgRef(db, 'p5'), { name: 'Roofing — Rev A', ...s(), lastMaterialEditBy: USERS.qs.uid, lastMaterialEditAt: serverTimestamp() }))
     await assertSucceeds(updateDoc(pkgRef(db, 'p5'), { status: 'issued', issuedAt: serverTimestamp(), issuedBy: USERS.qs.uid, ...s() }))
     await testEnv.withSecurityRulesDisabled(async (c) => {
       await setDoc(doc(c.firestore(), `companies/${COMPANY_A}/contacts`, SUPPLIER), { displayName: SUPPLIER_NAME, contactTypes: ['supplier'] })

@@ -376,7 +376,7 @@ describe('ADR-75: the reconciliation interval', () => {
     expect(params).toContain('reconcileIntervalRaw: process.env[RECONCILE_INTERVAL_ENV]')
     const dir = fileURLToPath(new URL('../', import.meta.url))
     const files = readdirSync(dir).filter(f => /^\.env\.[a-z0-9-]+$/.test(f) && f !== '.env.local')
-    expect(files).toEqual(expect.arrayContaining(['.env.constrapp-69b5d', '.env.constrapp-rules-test']))
+    expect(files).toEqual(expect.arrayContaining(['.env.constrapp-69b5d', '.env.demo-constrap-test']))
     for (const f of files) {
       const lines = readFileSync(`${dir}${f}`, 'utf8').split('\n').filter(l => l.startsWith('FILE_LINK_RECONCILE_INTERVAL_HOURS='))
       expect(lines, f).toHaveLength(1)

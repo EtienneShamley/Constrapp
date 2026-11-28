@@ -1,5 +1,7 @@
 import { PO_STATUS, GST_RATE, roundMoney, PO_MAX_LINES } from './purchaseOrders'
 import { isVariationOriginLine, indexOrNull, sourceLineIdentityError, variationLineCountOf } from './sourceLine'
+import { CALC_VERSION, roundToCents } from './supplierCalc'
+import { toCents, fromCents, gstOfCents } from './money'
 
 export const CLAIM_STATUS = {
   DRAFT:        'draft',
@@ -124,6 +126,51 @@ export function claimTotals(lineAmounts, retention = 0) {
   const gst      = roundMoney(net * GST_RATE)
   return { subtotal, retention: retained, net, gst, total: roundMoney(net + gst) }
 }
+
+// Claim totals under a claim's OWN calculation version (ADR-91).
+//   LEGACY (absent / 1) — `claimTotals`, unchanged to the byte.
+//   EXACT  (2)          — whole cents: the subtotal is the integer sum of the
+//                          line amounts' cents; retention is clamped to it;
+//                          GST is 10% of the NET cents, half away from zero.
+// Returns null for an exact figure outside the supported range or an unknown
+// version — every caller refuses rather than guess.
+export function claimTotalsFor(lineAmounts, retention = 0, version = CALC_VERSION.LEGACY) {
+  if (version === CALC_VERSION.LEGACY) return claimTotals(lineAmounts, retention)
+  if (version !== CALC_VERSION.EXACT) return null
+  let subtotalCents = 0
+  for (const a of lineAmounts ?? []) {
+    const c = roundToCents(Number(a) || 0)
+    if (c === null) return null
+    subtotalCents += c
+  }
+  const retentionInput = roundToCents(Number(retention) || 0)
+  if (retentionInput === null) return null
+  const retainedCents = Math.min(retentionInput, subtotalCents)
+  const netCents = subtotalCents - retainedCents
+  const gstCents = gstOfCents(netCents)
+  return {
+    subtotal: fromCents(subtotalCents), retention: fromCents(retainedCents), net: fromCents(netCents),
+    gst: fromCents(gstCents), total: fromCents(netCents + gstCents),
+  }
+}
+
+// One claim line's period amount under the claim's version: the cumulative
+// claimed-to-date less the previously approved amount, as the stored
+// two-decimal figure. LEGACY is buildClaimLine's `roundMoney(toDate − prev)`;
+// EXACT rounds each input to whole cents and subtracts integers.
+export function claimedThisPeriodFor(claimedToDate, previouslyApproved, version = CALC_VERSION.LEGACY) {
+  const toDate = Number(claimedToDate) || 0
+  const prev = Number(previouslyApproved) || 0
+  if (version === CALC_VERSION.LEGACY) return roundMoney(toDate - prev)
+  if (version !== CALC_VERSION.EXACT) return null
+  const a = roundToCents(toDate)
+  const b = roundToCents(prev)
+  return a === null || b === null ? null : fromCents(a - b)
+}
+
+// Whole cents of a stored two-decimal figure (exported for the processing
+// modules, so they never re-implement the conversion).
+export const claimCents = (amount) => toCents(Number(amount) || 0)
 
 export const hasOpenClaim = (claims, poId) =>
   claims.some(c => c.poId === poId && CLAIM_OPEN_STATUSES.includes(c.status))

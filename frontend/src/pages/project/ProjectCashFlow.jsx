@@ -21,6 +21,8 @@ import { useForecastLines } from '../../hooks/useForecastLines'
 import { useRetentionReleases } from '../../hooks/useRetentionReleases'
 import { useClientCreditNotes } from '../../hooks/useClientCreditNotes'
 import { useClientRetentionReleases } from '../../hooks/useClientRetentionReleases'
+import { useClientRefunds } from '../../hooks/useClientRefunds'
+import { useClientReceiptApplications } from '../../hooks/useClientReceiptApplications'
 import { receivableContext } from '../../lib/clientReceivables'
 import { releasedByInvoiceId } from '../../lib/retention'
 import {
@@ -119,16 +121,27 @@ export default function ProjectCashFlow() {
   const {
     clientRetentionReleases, clientRetentionReleasesLoading, clientRetentionReleasesError,
   } = useClientRetentionReleases(mid)
+  // Phase 2 step 5: refunds are cash OUT of what was received; applications
+  // move a receipt's unallocated money onto an invoice (not cash).
+  const { clientRefunds, clientRefundsLoading, clientRefundsError } = useClientRefunds(mid)
+  const {
+    clientReceiptApplications, clientReceiptApplicationsLoading, clientReceiptApplicationsError,
+  } = useClientReceiptApplications(mid)
+  const settlement = useMemo(
+    () => ({ refunds: clientRefunds, applications: clientReceiptApplications }),
+    [clientRefunds, clientReceiptApplications],
+  )
 
   const nowMonth = currentMonthKey()
 
   // ── Layer 1: actual cash ───────────────────────────────────────────────────
-  const inRows  = useMemo(() => cashInRows(clientReceipts, { projectId }), [clientReceipts, projectId])
+  // Net of posted refunds (negative rows): cash received = receipts − refunds.
+  const inRows  = useMemo(() => cashInRows(clientReceipts, { projectId, refunds: clientRefunds }), [clientReceipts, projectId, clientRefunds])
   const outRows = useMemo(() => cashOutRows(supplierPayments, { projectId }), [supplierPayments, projectId])
   const cashIn  = useMemo(() => totalActualCashIn(inRows), [inRows])
   const cashOut = useMemo(() => totalActualCashOut(outRows), [outRows])
   const netCash = actualNetCash(cashIn, cashOut)
-  const receiptTotals = useMemo(() => receiptSummary(clientReceipts), [clientReceipts])
+  const receiptTotals = useMemo(() => receiptSummary(clientReceipts, settlement), [clientReceipts, settlement])
   const paymentTotals = useMemo(() => paymentSummary(supplierPayments), [supplierPayments])
 
   // ── Layer 2: open invoice balances by due month ────────────────────────────
@@ -144,10 +157,11 @@ export default function ProjectCashFlow() {
     [clientInvoices, clientCreditNotes, clientRetentionReleases],
   )
   const arRows = useMemo(
-    () => clientInvoiceReconciliationRows(clientInvoices, clientReceipts, receivable.positions),
-    [clientInvoices, clientReceipts, receivable],
+    () => clientInvoiceReconciliationRows(clientInvoices, clientReceipts, receivable.positions, settlement),
+    [clientInvoices, clientReceipts, receivable, settlement],
   )
   const arUnavailable = clientInvoicesError || clientCreditNotesError || clientRetentionReleasesError
+    || clientRefundsError || clientReceiptApplicationsError
   // Client retention HELD — never retentionTotal: released retention is inside
   // each row's `remaining` and already timed by arClass (the ADR-30 rule).
   const clientRetentionHeld = receivable.totals.retentionHeld
@@ -333,16 +347,18 @@ export default function ProjectCashFlow() {
     // Forecast Cash In overstated; no releases yet → released retention absent
     // from AR and client retention held overstated.
     || clientCreditNotesLoading || clientRetentionReleasesLoading
+    || clientRefundsLoading || clientReceiptApplicationsLoading
   ) {
     return <div className="text-[13px] text-brand-muted">Loading cash and forecast records…</div>
   }
   // The cash CORE failing blocks the page — nothing can be shown honestly.
-  if (clientReceiptsError || supplierPaymentsError) {
+  if (clientReceiptsError || supplierPaymentsError || clientRefundsError) {
     return (
       <Card>
         <p className="text-[13px] text-brand-text font-semibold m-0">Cash records could not be loaded</p>
         <p className="text-[12.5px] text-brand-muted m-0 mt-1">
           {clientReceiptsError && 'Client Receipts failed to load, so Cash In cannot be shown. '}
+          {clientRefundsError && 'Client Refunds failed to load, so net Cash In cannot be shown. '}
           {supplierPaymentsError && 'Supplier Payments failed to load, so Cash Out cannot be shown. '}
           No figure on this page is displayed as zero in place of missing data — check your connection
           and access, then reload.
@@ -423,7 +439,7 @@ export default function ProjectCashFlow() {
           {/* ── Summary: actual and forecast ─────────────────────────────── */}
           <Card className="mb-3.5">
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
-              <Metric label="Actual Cash In" value={money(cashIn)} help={`${receiptTotals.postedCount} posted client receipt${receiptTotals.postedCount === 1 ? '' : 's'} · gross, full amounts`} />
+              <Metric label="Actual Cash In" value={money(cashIn)} help={`${receiptTotals.postedCount} posted client receipt${receiptTotals.postedCount === 1 ? '' : 's'}${receiptTotals.refunded > 0 ? ` less ${money(receiptTotals.refunded)} refunded` : ''} · gross, full amounts`} />
               <Metric label="Actual Cash Out" value={money(cashOut)} help={`${paymentTotals.postedCount} posted supplier payment${paymentTotals.postedCount === 1 ? '' : 's'} · gross, full amounts`} />
               <Metric label="Actual Net Cash" value={money(netCash)} help="Cash In − Cash Out" danger={netCash < 0} />
             </div>

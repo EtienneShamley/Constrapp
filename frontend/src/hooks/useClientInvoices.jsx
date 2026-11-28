@@ -3,7 +3,9 @@ import {
   collection, doc, onSnapshot, query, orderBy,
   runTransaction, updateDoc, serverTimestamp,
 } from 'firebase/firestore'
-import { db } from '../lib/firebase'
+import { httpsCallable } from 'firebase/functions'
+import { auth, db, functions } from '../lib/firebase'
+import { runClientInvoiceVoid, CLIENT_FINANCE_CALL_TIMEOUT_MS } from '../lib/clientLedgerActions'
 import { useAuth } from './useAuth'
 import { useCompany } from './useCompany'
 import { useProject } from './useProject'
@@ -271,6 +273,12 @@ export function useClientInvoices(projectId) {
   // is required — by this hook AND by Firestore rules. Financial documents are
   // never deleted (ADR-12); the invoice number is retained, so a voided invoice
   // leaves a visible, intentional gap in the issued sequence.
+  //
+  // Phase 2 step 5 (D8): a DRAFT is voided here under the Rules (it billed
+  // nothing). An ISSUED invoice is voided only by the trusted callable
+  // `voidClientInvoice`, which refuses while its ledger records any money —
+  // receipt allocations (including those posted before the backend took over),
+  // applications, refunds, credit notes or releases.
   const voidClientInvoice = useCallback(async (invoice, voidReason) => {
     if (!companyId || !projectId || !user) throw new Error('Not authenticated')
     if (!canTransition(invoice.status, CI_STATUS.VOID)) {
@@ -279,6 +287,11 @@ export function useClientInvoices(projectId) {
     const reason = (voidReason || '').trim()
     if (!reason) throw new Error('Enter a reason for voiding this invoice')
 
+    if (invoice.status === CI_STATUS.ISSUED) {
+      const call = async (name, data) => (await httpsCallable(functions, name, { timeout: CLIENT_FINANCE_CALL_TIMEOUT_MS })(data)).data
+      await runClientInvoiceVoid({ call, projectId, invoiceId: invoice.id, reason, isSignedIn: () => auth.currentUser != null })
+      return
+    }
     const ref = doc(db, 'companies', companyId, 'projects', projectId, 'clientInvoices', invoice.id)
     await updateDoc(ref, {
       status:     CI_STATUS.VOID,

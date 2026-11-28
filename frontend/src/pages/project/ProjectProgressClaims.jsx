@@ -1,3 +1,6 @@
+import { SupplierFinanceError } from '../../lib/supplierFinanceActions'
+import { useCommercialActivation } from '../../hooks/useCommercialActivation'
+import CommercialMaintenanceNotice from '../../components/CommercialMaintenanceNotice'
 import { useState } from 'react'
 import { useOutletContext, useNavigate } from 'react-router-dom'
 import Card from '../../components/Card'
@@ -395,7 +398,7 @@ function AssessProgressClaimModal({ claim, currencyCode, onClose, onTransition }
       // A guarded refusal (stale copy, invalid amounts, permission — ADR-58)
       // carries its reason; the modal stays open with the certified amounts
       // and notes intact.
-      setError(err instanceof ClaimWriteError && err.message
+      setError((err instanceof ClaimWriteError || err instanceof SupplierFinanceError) && err.message
         ? err.message
         : 'Failed to save. Check your connection and try again.')
       setSaving(false)
@@ -563,6 +566,12 @@ export default function ProjectProgressClaims() {
   const money = (n) => formatCurrency(n, currencyCode)
 
   const { progressClaims, progressClaimsLoading, createProgressClaim, updateProgressClaim, transitionStatus, linkExistingInvoice } = useProgressClaims(projectId)
+  // Phase 2 activation (lib/commercialActivation.js): a company not yet
+  // switched over sees this register READ-ONLY. Claim SUBMIT is still a client
+  // Rules write, but it is withheld too — the whole register is in maintenance.
+  // UX only; the server and the Rules refuse regardless.
+  const activation = useCommercialActivation()
+  const writable = activation.writable
   const { purchaseOrders, purchaseOrdersLoading } = usePurchaseOrders(projectId)
   // Read for the per-line recognition guard (ADR-55): a PO line already
   // invoiced directly cannot be claimed. A failed read leaves the list empty
@@ -597,7 +606,7 @@ export default function ProjectProgressClaims() {
     try {
       await linkExistingInvoice(claim, invoice)
     } catch (err) {
-      setActionError(err instanceof SupplierInvoiceWriteError && err.message
+      setActionError((err instanceof SupplierInvoiceWriteError || err instanceof SupplierFinanceError) && err.message
         ? err.message
         : 'Failed to link the invoice. Check your connection and try again.')
       throw err
@@ -611,7 +620,7 @@ export default function ProjectProgressClaims() {
     } catch (err) {
       // The guarded transaction names the reason (stale copy, illegal move,
       // permission, offline — ADR-58); anything else keeps the generic text.
-      setActionError(err instanceof ClaimWriteError && err.message
+      setActionError((err instanceof ClaimWriteError || err instanceof SupplierFinanceError) && err.message
         ? err.message
         : 'Failed to update status. Check your connection and try again.')
       throw err
@@ -631,7 +640,10 @@ export default function ProjectProgressClaims() {
     if (!live || live.status !== CLAIM_STATUS.DRAFT) {
       throw new Error('This progress claim is no longer Draft. Close the editor and review the latest version.')
     }
-    await updateProgressClaim(live, data)
+    // The revision sent is the one the editor was OPENED on, never the live
+    // one, so a save over another user's later save is refused as stale (the
+    // D3 #41 lesson from variations, applied to claims).
+    await updateProgressClaim({ ...live, revision: editing.revision }, data)
   }
 
   // The open editor tracks the LIVE document, so a status change elsewhere
@@ -655,12 +667,15 @@ export default function ProjectProgressClaims() {
           {noSentPOs && (
             <Btn variant="ghost" sm onClick={goToPOs}>Go to Purchase Orders</Btn>
           )}
-          <Btn sm onClick={() => setEditing('new')} disabled={purchaseOrdersLoading || claimablePOs.length === 0}>
-            + New Progress Claim
-          </Btn>
+          {writable && (
+            <Btn sm onClick={() => setEditing('new')} disabled={purchaseOrdersLoading || claimablePOs.length === 0}>
+              + New Progress Claim
+            </Btn>
+          )}
         </div>
       </div>
 
+      <CommercialMaintenanceNotice activation={activation} />
       {actionError && <p className="text-[12px] text-brand-red mb-3">{actionError}</p>}
 
       <Card padding={false}>
@@ -675,11 +690,11 @@ export default function ProjectProgressClaims() {
             </p>
             {noSentPOs ? (
               <Btn variant="ghost" onClick={goToPOs}>Go to Purchase Orders</Btn>
-            ) : (
+            ) : writable ? (
               <Btn onClick={() => setEditing('new')} disabled={claimablePOs.length === 0}>
                 + Create your first progress claim
               </Btn>
-            )}
+            ) : null}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -709,10 +724,10 @@ export default function ProjectProgressClaims() {
                       <ClaimInvoiceLinkCell claim={claim} supplierInvoices={supplierInvoices} registerSettled={registerSettled} />
                     </td>
                     <td className="px-3.5 py-3">
-                      <RowActions
+                      {writable && <RowActions
                         claim={claim} onTransition={handleTransition} onAssess={setAssessing} onEdit={setEditing}
                         onLinkInvoice={handleLinkInvoice} supplierInvoices={supplierInvoices} registerSettled={registerSettled}
-                      />
+                      />}
                     </td>
                   </tr>
                 ))}
@@ -722,7 +737,7 @@ export default function ProjectProgressClaims() {
         )}
       </Card>
 
-      {editing && (
+      {writable && editing && (
         <ProgressClaimEditorModal
           key={editing === 'new' ? 'new' : editing.id}
           claim={liveEditing}
@@ -737,7 +752,7 @@ export default function ProjectProgressClaims() {
           onSave={editing === 'new' ? createProgressClaim : (data) => handleUpdate(editing.id, data)}
         />
       )}
-      {assessing && (
+      {writable && assessing && (
         <AssessProgressClaimModal
           currencyCode={currencyCode}
           claim={assessing}

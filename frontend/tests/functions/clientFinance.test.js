@@ -58,7 +58,8 @@ const voidRelease = (uid, releaseId, reason = 'Agreed in error') => H.voidClient
 async function fresh({ finance = true, receipts = true } = {}) {
   now = clock('2026-11-26T02:00:00Z')
   hooks = {}
-  H = handlersMod.createClientFinanceHandlers({ db: A.db, now, log: silentLog, config: () => ({ finance, receipts, receiptsAllCompanies: true }), hooks })
+  // Phase 2 step 5: the settlement switch ON too, so every handler is past its gate.
+  H = handlersMod.createClientFinanceHandlers({ db: A.db, now, log: silentLog, config: () => ({ finance, receipts, receiptsAllCompanies: true, settlement: true }), hooks })
 }
 
 // The app's own draft writes, run through the Admin SDK: the Web SDK shapes the

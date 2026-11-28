@@ -8,7 +8,7 @@ import {
   assertFails,
 } from '@firebase/rules-unit-testing'
 import {
-  doc, getDoc, setDoc, updateDoc, deleteDoc, runTransaction, writeBatch, serverTimestamp, Timestamp,
+  doc, getDoc, deleteField, setDoc, updateDoc, deleteDoc, runTransaction, writeBatch, serverTimestamp, Timestamp,
 } from 'firebase/firestore'
 import { poTotals, lineTotal, roundMoney, remainingCommittedByCostCode, committedByCostCode } from '../../src/lib/purchaseOrders'
 import {
@@ -16,9 +16,9 @@ import {
   recognisedClaimsByVariationLine, claimedPendingByCostCode, previouslyApprovedByPoLine, previouslyApprovedByVariationLine,
 } from '../../src/lib/progressClaims'
 import { invoiceTotals, gstForLine, invoicedClaimIds, postedInvoicedByPoLine } from '../../src/lib/supplierInvoices'
-import {
-  runUpdateClaimDraft, runTransitionClaim, ClaimWriteError, CLAIM_WRITE_ERROR,
-} from '../../src/lib/progressClaimActions'
+import { ClaimWriteError, CLAIM_WRITE_ERROR, runTransitionClaim as runSubmitClaim } from '../../src/lib/progressClaimActions'
+// The historical client write shapes (ADR-58 / ADR-63), kept as a fixture since ADR-93.
+import { runUpdateClaimDraft, runTransitionClaim } from '../fixtures/legacyClientWrites'
 
 // ── Progress Claim Security Rules — emulator tests (ADR-58, M2-B2) ──────────
 //
@@ -55,13 +55,35 @@ import {
 // exercised here through the REAL guarded transactions
 // (lib/progressClaimActions.js).
 //
+// ⚠️ ADR-93 (Phase 2 step 3, trusted supplier finance). A claim is CREATED, its
+// draft EDITED, APPROVED and REJECTED — and linked to its supplier invoice —
+// only by the trusted backend (functions/src/supplierFinance/), which derives
+// every figure, holds one open claim per PO and certifies under the claim's own
+// calculation version. The block is now `allow create: if false`, no draft-edit,
+// approve, reject or ADR-68 link / unlink / reconcile branch, and the
+// `progressClaims` counter is backend-only. The ONE client write left is the
+// content-free SUBMIT: draft → submitted, the caller's own submit and audit
+// stamps at server time, revision + 1, nothing else, and only over a stored
+// non-empty line list. Every test below whose subject was a client create, draft
+// edit, approve or reject that used to SUCCEED now proves that exact write is
+// REFUSED for every financial role with nothing stored / the stored document
+// unchanged (`createRefused` / `updateRefused` / `editRefused`). Every denial the
+// suite already asserted is kept unchanged. Where a scenario needs a document the
+// old client write produced, it is written with rules disabled (`serverCreate` /
+// `serverUpdate`, or `{ thenStoreAs }`), standing for what the backend stores.
+// The submit tests are kept as they were and extended (see the
+// 'ADR-93 — SUBMIT' describe block). The old client transactions
+// (lib/progressClaimActions.js): the draft edit, approve and reject now fail as
+// PERMISSION with nothing written; submit and the client-side STALE / INVALID /
+// MISSING guards behave as before.
+//
 // SAFETY: this suite refuses to run unless FIRESTORE_EMULATOR_HOST is set, so
 // it can never reach a production Firebase project.
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RULES_PATH = resolve(HERE, '../../firestore.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A  = 'companyA'   // baseCurrency NZD
 const COMPANY_B  = 'companyB'   // no baseCurrency
 const PROJECT_A  = 'projectA'   // currency AUD (explicit)
@@ -237,6 +259,46 @@ async function readClaim(id) {
   return data
 }
 const readStatus = async (id) => (await readClaim(id))?.status
+async function readClaimAt(id, companyId = COMPANY_A, projectId = PROJECT_A) {
+  let data
+  await testEnv.withSecurityRulesDisabled(async (c) => {
+    const snap = await getDoc(doc(c.firestore(), claimsPath(companyId, projectId), id))
+    data = snap.exists() ? { id: snap.id, ...snap.data() } : undefined
+  })
+  return data
+}
+
+// ADR-93 — what the TRUSTED BACKEND stores, written with rules disabled: the
+// document a client create used to produce, and the update a client draft edit,
+// approve or reject used to make (serverTimestamp sentinels resolve as they did).
+async function serverCreate(id, data, companyId = COMPANY_A, projectId = PROJECT_A) {
+  await testEnv.withSecurityRulesDisabled(async (c) => {
+    await setDoc(doc(c.firestore(), claimsPath(companyId, projectId), id), data)
+  })
+}
+async function serverUpdate(id, data) {
+  await testEnv.withSecurityRulesDisabled(async (c) => {
+    await updateDoc(doc(c.firestore(), claimsPath(), id), data)
+  })
+}
+// ADR-93 — a client create is REFUSED for EVERY financial role (or the given
+// callers), and nothing is stored.
+async function createRefused(id, build, companyId = COMPANY_A, projectId = PROJECT_A, users = FINANCIAL) {
+  for (const user of users) await assertFails(setDoc(claimRef(ctx(user), id, companyId, projectId), build(user)))
+  expect(await readClaimAt(id, companyId, projectId)).toBeUndefined()
+}
+// ADR-93 — a client update (draft edit / approve / reject) is REFUSED for EVERY
+// financial role, and the stored document does not move. With `thenStoreAs`,
+// the same write is then made with rules disabled — standing for what the
+// backend stores — so the rest of a scenario runs over it.
+async function updateRefused(id, build, { thenStoreAs = null } = {}) {
+  const before = await readClaim(id)
+  expect(before).toBeDefined()
+  for (const user of FINANCIAL) await assertFails(updateDoc(claimRef(ctx(user), id), build(user)))
+  expect(await readClaim(id)).toEqual(before)
+  if (thenStoreAs) await serverUpdate(id, build(thenStoreAs))
+}
+const editRefused = updateRefused
 
 async function expectKind(promise, kind) {
   let caught
@@ -271,8 +333,10 @@ beforeEach(async () => {
     for (const u of Object.values(USERS)) {
       await setDoc(doc(db, 'users', u.uid), { role: u.role, companyId: u.companyId, name: u.uid })
     }
-    await setDoc(doc(db, 'companies', COMPANY_A), { name: 'Company A', countryCode: 'NZ', baseCurrency: 'NZD' })
-    await setDoc(doc(db, 'companies', COMPANY_B), { name: 'Company B' })
+    // ADR-98: the claim submit / variation lifecycle Rules require an ACTIVATED company.
+    await setDoc(doc(db, 'companies', COMPANY_A), { name: 'Company A', countryCode: 'NZ', baseCurrency: 'NZD', commercialCompletionEnabled: true })
+    // ADR-98: the claim submit / variation lifecycle Rules require an ACTIVATED company.
+    await setDoc(doc(db, 'companies', COMPANY_B), { name: 'Company B', commercialCompletionEnabled: true })
     await setDoc(doc(db, `companies/${COMPANY_A}/projects`, PROJECT_A),     { name: 'A', currency: 'AUD', currencyLocked: true })
     await setDoc(doc(db, `companies/${COMPANY_A}/projects`, PROJECT_NOCUR), { name: 'No currency' })
     await setDoc(doc(db, `companies/${COMPANY_B}/projects`, PROJECT_B),     { name: 'B' })
@@ -286,10 +350,56 @@ beforeEach(async () => {
 
 // ── Roles, membership & tenant isolation ─────────────────────────────────────
 
+describe('ADR-98 — claim submit: the Phase 2 lifecycle writes need an ACTIVATED company (Rules-enforced)', () => {
+  const setActivation = (value) => testEnv.withSecurityRulesDisabled(async (c) => {
+    const ref = doc(c.firestore(), 'companies', COMPANY_A)
+    if (value === undefined) await updateDoc(ref, { commercialCompletionEnabled: deleteField() })
+    else await updateDoc(ref, { commercialCompletionEnabled: value })
+  })
+  it('marker MISSING, false, or a non-boolean truthy value: the submit is refused for every financial role; the draft is unchanged', async () => {
+    for (const value of [undefined, false, 'true', 1]) {
+      await setActivation(value)
+      for (const user of [USERS.admin, USERS.pm, USERS.qs]) {
+        await seed(`act-${user.uid}`, 'draft')
+        await assertFails(updateDoc(claimRef(ctx(user), `act-${user.uid}`), submitWrite(user)))
+        expect(await readStatus(`act-${user.uid}`)).toBe('draft')
+      }
+    }
+  })
+  it('marker TRUE: the submit succeeds', async () => {
+    await setActivation(true)
+    await seed('act-on', 'draft')
+    await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 'act-on'), submitWrite(USERS.qs)))
+    expect(await readStatus('act-on')).toBe('submitted')
+  })
+  it('DEACTIVATED during use: a tab that loaded the draft while active is refused after deactivation; reads still work', async () => {
+    await setActivation(true)
+    await seed('act-mid', 'draft')
+    const db = ctx(USERS.qs)
+    await assertSucceeds(getDoc(claimRef(db, 'act-mid')))
+    await setActivation(false)
+    await assertFails(updateDoc(claimRef(db, 'act-mid'), submitWrite(USERS.qs)))
+    await assertSucceeds(getDoc(claimRef(db, 'act-mid')))
+    expect(await readStatus('act-mid')).toBe('draft')
+  })
+  it('PHASE 1 is untouched for an INACTIVE company: a forecast line (a Phase 1 client write) still saves', async () => {
+    await setActivation(false)
+    await assertSucceeds(setDoc(doc(ctx(USERS.pm), `companies/${COMPANY_A}/projects/${PROJECT_A}/forecastLines/cc1`), { costCodeId: 'cc1', uncommittedCostToComplete: 0, notes: '' }))
+  })
+  it('another company being active does not activate this one (tenant isolation)', async () => {
+    await setActivation(false)
+    await testEnv.withSecurityRulesDisabled(async (c) => { await updateDoc(doc(c.firestore(), 'companies', COMPANY_B), { commercialCompletionEnabled: true }) })
+    await seed('act-iso', 'draft')
+    await assertFails(updateDoc(claimRef(ctx(USERS.qs), 'act-iso'), submitWrite(USERS.qs)))
+  })
+})
+
 describe('roles, membership and tenant isolation', () => {
-  it('every financial role can create a draft claim', async () => {
+  it('ADR-93 — a client create of a draft claim is REFUSED for every financial role; every financial role reads a backend-created one', async () => {
     for (const user of FINANCIAL) {
-      await assertSucceeds(setDoc(claimRef(ctx(user), `create-${user.uid}`), claimPayload(user)))
+      await createRefused(`create-${user.uid}`, claimPayload)
+      await serverCreate(`create-${user.uid}`, claimPayload(user))
+      await assertSucceeds(getDoc(claimRef(ctx(user), `create-${user.uid}`)))
     }
   })
 
@@ -298,17 +408,18 @@ describe('roles, membership and tenant isolation', () => {
     for (const user of FINANCIAL) await assertSucceeds(getDoc(claimRef(ctx(user), 'read1')))
   })
 
-  it('every financial role can edit a draft, submit, approve and reject', async () => {
+  it('every financial role can SUBMIT; ADR-93 — a draft edit, approve and reject are REFUSED for every financial role', async () => {
     for (const user of FINANCIAL) {
-      await seed(`ed-${user.uid}`, 'draft')
-      await assertSucceeds(updateDoc(claimRef(ctx(user), `ed-${user.uid}`), draftEdit(user)))
       await seed(`su-${user.uid}`, 'draft')
       await assertSucceeds(updateDoc(claimRef(ctx(user), `su-${user.uid}`), submitWrite(user)))
-      await seed(`ap-${user.uid}`, 'submitted')
-      await assertSucceeds(updateDoc(claimRef(ctx(user), `ap-${user.uid}`), approveWrite(user)))
-      await seed(`re-${user.uid}`, 'submitted')
-      await assertSucceeds(updateDoc(claimRef(ctx(user), `re-${user.uid}`), rejectWrite(user)))
+      expect(await readStatus(`su-${user.uid}`)).toBe('submitted')
     }
+    await seed('ed', 'draft')
+    await editRefused('ed', (user) => draftEdit(user))
+    await seed('ap', 'submitted')
+    await updateRefused('ap', (user) => approveWrite(user))
+    await seed('re', 'submitted')
+    await updateRefused('re', (user) => rejectWrite(user))
   })
 
   it('subcontractor and client can neither read nor write', async () => {
@@ -344,8 +455,16 @@ describe('roles, membership and tenant isolation', () => {
     await seed('deny6', 'draft')
     await assertFails(getDoc(claimRef(ctx(USERS.other), 'deny6')))
     await assertFails(setDoc(claimRef(ctx(USERS.other), 'deny7'), claimPayload(USERS.other)))
+    // A well-formed submit (own stamps, server time, revision + 1) that ONLY the
+    // tenant gate stops — the same request succeeds for a Company A member above.
+    const before = await readClaim('deny6')
     await assertFails(updateDoc(claimRef(ctx(USERS.other), 'deny6'), submitWrite(USERS.other)))
+    expect(await readClaim('deny6')).toEqual(before)
     await assertFails(setDoc(claimRef(ctx(USERS.admin), 'crosstenant', COMPANY_B, PROJECT_B), claimPayload(USERS.admin)))
+    // …and a Company A admin cannot submit a draft stored under Company B.
+    await seed('deny8', 'draft', USERS.other, {}, { companyId: COMPANY_B, projectId: PROJECT_B })
+    await assertFails(updateDoc(claimRef(ctx(USERS.admin), 'deny8', COMPANY_B, PROJECT_B), submitWrite(USERS.admin)))
+    expect((await readClaimAt('deny8', COMPANY_B, PROJECT_B)).status).toBe('draft')
   })
 
   it('delete is blocked for every role in every status', async () => {
@@ -361,45 +480,45 @@ describe('roles, membership and tenant isolation', () => {
 
 // ── Valid create ─────────────────────────────────────────────────────────────
 
-describe('valid create', () => {
-  it('accepts the hook payload for each financial role', async () => {
-    for (const user of FINANCIAL) await assertSucceeds(setDoc(claimRef(ctx(user), `c-${user.uid}`), claimPayload(user)))
+describe('formerly valid create — ADR-93: every client create is REFUSED for every financial role', () => {
+  it('ADR-93 — the hook payload is REFUSED for each financial role', async () => {
+    for (const user of FINANCIAL) await createRefused(`c-${user.uid}`, claimPayload)
   })
 
-  it('accepts a legacy pre-Contacts supplier — supplierId null on the PO and the claim', async () => {
+  it('ADR-93 — a legacy pre-Contacts supplier (supplierId null on the PO and the claim) create is REFUSED', async () => {
     await seedPo('poLegacy', 'sent', { supplierId: null })
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'c1'), claimPayload(USERS.qs, { poId: 'poLegacy', supplierId: null })))
+    await createRefused('c1', (user) => claimPayload(user, { poId: 'poLegacy', supplierId: null }))
     await assertFails(setDoc(claimRef(ctx(USERS.qs), 'c2'), claimPayload(USERS.qs, { poId: 'poLegacy', supplierId: 'contact1' })))   // not the PO's
   })
 
-  it('accepts a retention, a five-digit claim number, an empty period and blank refs', async () => {
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'c3'), claimPayload(USERS.qs, { retention: 100 })))
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'c4'), claimPayload(USERS.qs, { claimNumber: 'PC-12345', periodEnding: '', claimRef: '', notes: 'x'.repeat(5000) })))
+  it('ADR-93 — a retention, a five-digit claim number, an empty period and blank refs: every create is REFUSED', async () => {
+    await createRefused('c3', (user) => claimPayload(user, { retention: 100 }))
+    await createRefused('c4', (user) => claimPayload(user, { claimNumber: 'PC-12345', periodEnding: '', claimRef: '', notes: 'x'.repeat(5000) }))
   })
 
-  it('accepts a retention equal to the subtotal (payable zero) and a second line claimed on a later claim (cumulative seed)', async () => {
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'c5'), claimPayload(USERS.qs, { retention: 1000 })))
+  it('ADR-93 — a retention equal to the subtotal and a cumulative second claim: every create is REFUSED', async () => {
+    await createRefused('c5', (user) => claimPayload(user, { retention: 1000 }))
     const later = claimLines([1000, 1200], [1000, 0])   // line 0 fully approved earlier; line 1 claimed now
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'c6'), claimPayload(USERS.qs, { claimNumber: 'PC-0002', lines: later })))
+    await createRefused('c6', (user) => claimPayload(user, { claimNumber: 'PC-0002', lines: later }))
   })
 
-  it('accepts the REAL claimTotals on half-cent GST boundaries where floating point rounds down (net 40.15, 41.05, 80.85)', async () => {
+  it('ADR-93 — the REAL claimTotals on half-cent GST boundaries (net 40.15, 41.05, 80.85, …): every create is REFUSED', async () => {
     for (const [i, net] of [40.15, 41.05, 80.85, 327680.05, 0.05, 1234.45].entries()) {
       const lines = claimLines([net, 0])
       const t = claimTotals(lines.map(li => li.claimedThisPeriod), 0)
-      await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), `b${i}`), claimPayload(USERS.qs, { lines })))
+      await createRefused(`b${i}`, (user) => claimPayload(user, { lines }))
       // and with the retention moving the NET onto the boundary
       const lines2 = claimLines([net + 100, 0])
-      await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), `r${i}`), claimPayload(USERS.qs, { lines: lines2, retention: 100 })))
+      await createRefused(`r${i}`, (user) => claimPayload(user, { lines: lines2, retention: 100 }))
       expect(t.subtotal).toBe(net)
     }
   })
 
-  it('accepts 200 lines when the PO has 200 lines', async () => {
+  it('ADR-93 — 200 lines against a 200-line PO: the create is REFUSED', async () => {
     const lines = Array.from({ length: 200 }, (_, i) => poLine('cc1', 'cc', `L${i}`, 1, 10))
     await seedPo('po200', 'sent', { lines })
     const cl = claimLines(lines.map(() => 10), lines.map(() => 0), lines)
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'c200'), claimPayload(USERS.qs, { poId: 'po200', lines: cl })))
+    await createRefused('c200', (user) => claimPayload(user, { poId: 'po200', lines: cl }))
   })
 })
 
@@ -444,19 +563,19 @@ describe('source purchase order at create (get())', () => {
 // ── Currency ─────────────────────────────────────────────────────────────────
 
 describe('currency and project consistency at create', () => {
-  it("accepts the project's explicit currency and refuses any other well-formed code", async () => {
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'cur1'), claimPayload(USERS.qs, { currency: 'AUD' })))
+  it("ADR-93 — the project's explicit currency is REFUSED like any other well-formed code", async () => {
+    await createRefused('cur1', (user) => claimPayload(user, { currency: 'AUD' }))
     await assertFails(setDoc(claimRef(ctx(USERS.qs), 'cur2'), claimPayload(USERS.qs, { currency: 'NZD' })))
     await assertFails(setDoc(claimRef(ctx(USERS.qs), 'cur3'), claimPayload(USERS.qs, { currency: 'USD' })))
   })
 
-  it("falls back to the company's baseCurrency when the project stores none (lib/currency.js → resolveProjectCurrency)", async () => {
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'cur4', COMPANY_A, PROJECT_NOCUR), claimPayload(USERS.qs, { currency: 'NZD' })))
+  it("ADR-93 — the company's baseCurrency fallback (project stores none) is REFUSED too; the backend resolves the currency", async () => {
+    await createRefused('cur4', (user) => claimPayload(user, { currency: 'NZD' }), COMPANY_A, PROJECT_NOCUR)
     await assertFails(setDoc(claimRef(ctx(USERS.qs), 'cur5', COMPANY_A, PROJECT_NOCUR), claimPayload(USERS.qs, { currency: 'AUD' })))
   })
 
-  it('falls back to AUD when neither the project nor the company stores a currency', async () => {
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.other), 'cur6', COMPANY_B, PROJECT_B), claimPayload(USERS.other, { currency: 'AUD' })))
+  it('ADR-93 — the AUD fallback (neither project nor company stores a currency) is REFUSED for that company\'s own admin', async () => {
+    await createRefused('cur6', (user) => claimPayload(user, { currency: 'AUD' }), COMPANY_B, PROJECT_B, [USERS.other])
     await assertFails(setDoc(claimRef(ctx(USERS.other), 'cur7', COMPANY_B, PROJECT_B), claimPayload(USERS.other, { currency: 'NZD' })))
   })
 
@@ -585,55 +704,55 @@ describe('create money — the claimed header in whole cents', () => {
     await assertFails(setDoc(claimRef(ctx(USERS.qs), 'g3'), claimPayload(USERS.qs, { claimedGst: 0, claimedTotal: 1000 })))
     // GST on the GROSS (the PO formula) is refused when retention is withheld: net 900 → gst 90, not 100.
     await assertFails(setDoc(claimRef(ctx(USERS.qs), 'g4'), claimPayload(USERS.qs, { retention: 100, claimedGst: 100, claimedTotal: 1000 })))
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'g5'), claimPayload(USERS.qs, { retention: 100, claimedGst: 90, claimedTotal: 990 })))
+    await createRefused('g5', (user) => claimPayload(user, { retention: 100, claimedGst: 90, claimedTotal: 990 }))   // ADR-93: the right header is REFUSED too
   })
 
-  it('on a half-cent boundary (net cents ending in 5) BOTH the half-up value and one cent below are accepted; above, or two below, is refused', async () => {
+  it('on a half-cent boundary (net cents ending in 5) — ADR-93: the half-up value and one cent below are REFUSED too; above, or two below, is refused', async () => {
     const lines = claimLines([40.15, 0])
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'hb1'), claimPayload(USERS.qs, { lines, claimedGst: 4.02, claimedTotal: 44.17 })))
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'hb2'), claimPayload(USERS.qs, { lines, claimedGst: 4.01, claimedTotal: 44.16 })))
+    await createRefused('hb1', (user) => claimPayload(user, { lines, claimedGst: 4.02, claimedTotal: 44.17 }))
+    await createRefused('hb2', (user) => claimPayload(user, { lines, claimedGst: 4.01, claimedTotal: 44.16 }))
     await assertFails(setDoc(claimRef(ctx(USERS.qs), 'hb3'), claimPayload(USERS.qs, { lines, claimedGst: 4.03, claimedTotal: 44.18 })))
     await assertFails(setDoc(claimRef(ctx(USERS.qs), 'hb4'), claimPayload(USERS.qs, { lines, claimedGst: 4.00, claimedTotal: 44.15 })))
   })
 
-  it('GST is a flat 10% whatever the currency — an NZD project accepts 10% and refuses 15%', async () => {
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'nz1', COMPANY_A, PROJECT_NOCUR), claimPayload(USERS.qs, { currency: 'NZD' })))
+  it('GST in an NZD project — ADR-93: 10% is REFUSED like 15%', async () => {
+    await createRefused('nz1', (user) => claimPayload(user, { currency: 'NZD' }), COMPANY_A, PROJECT_NOCUR)
     await assertFails(setDoc(claimRef(ctx(USERS.qs), 'nz2', COMPANY_A, PROJECT_NOCUR), claimPayload(USERS.qs, { currency: 'NZD', claimedGst: 150, claimedTotal: 1150 })))
   })
 
-  it('a header that is internally consistent but unrelated to its lines is ACCEPTED (lines are unverifiable — DC36)', async () => {
+  it('ADR-93 — a header internally consistent but unrelated to its lines (formerly ACCEPTED, DC36) is now REFUSED for every financial role', async () => {
     const t2 = claimTotals([5000], 0)
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'un1'), claimPayload(USERS.qs, {
+    await createRefused('un1', (user) => claimPayload(user, {
       claimedSubtotal: t2.subtotal, claimedGst: t2.gst, claimedTotal: t2.total,
-    })))
+    }))
   })
 })
 
 // ── Draft edit ───────────────────────────────────────────────────────────────
 
-describe('draft edit (hooks/useProgressClaims.jsx → updateProgressClaim)', () => {
-  it('accepts the hook payload — content, the re-derived header, revision 2 and the audit stamps', async () => {
+describe('ADR-93 — draft edit (formerly hooks/useProgressClaims.jsx → updateProgressClaim) is REFUSED from every client', () => {
+  it('ADR-93 — the hook payload (content, the re-derived header, revision 2, the audit stamps) is REFUSED for every financial role; the draft does not move', async () => {
     await seed('e1', 'draft')
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 'e1'), draftEdit(USERS.qs)))
+    await editRefused('e1', (user) => draftEdit(user))
     const after = await readClaim('e1')
-    expect(after.revision).toBe(2)
-    expect(after.claimedSubtotal).toBe(2300)
+    expect(after.revision).toBe(1)
+    expect(after.claimedSubtotal).toBe(1000)
     expect(after.status).toBe('draft')
   })
 
-  it('accepts a second edit at revision 3, a retention equal to the subtotal, and emptied refs', async () => {
+  it('ADR-93 — a second edit at revision 3, a retention equal to the subtotal and emptied refs are REFUSED too (over the backend-stored first edit)', async () => {
     await seed('e2', 'draft')
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 'e2'), draftEdit(USERS.qs)))
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 'e2'), draftEdit(USERS.qs, { revision: 3, retention: 2300, claimRef: '', periodEnding: '', notes: '' })))
+    await editRefused('e2', (user) => draftEdit(user), { thenStoreAs: USERS.qs })
+    await editRefused('e2', (user) => draftEdit(user, { revision: 3, retention: 2300, claimRef: '', periodEnding: '', notes: '' }))
   })
 
-  it('a document written before ADR-58 (no updatedAt / updatedBy / *By keys) is editable and acquires the stamps', async () => {
+  it('ADR-93 — a document written before ADR-58 (no updatedAt / updatedBy / *By keys) cannot be edited by a client either, and acquires no stamp', async () => {
     await seed('e3', 'draft', USERS.admin, {}, { legacy: true })
     expect('updatedBy' in (await readClaim('e3'))).toBe(false)
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'e3'), draftEdit(USERS.pm)))
+    await editRefused('e3', (user) => draftEdit(user))
     const after = await readClaim('e3')
-    expect(after.updatedBy).toBe(USERS.pm.uid)
-    expect(after.revision).toBe(2)
+    expect('updatedBy' in after).toBe(false)
+    expect(after.revision).toBe(1)
   })
 
   it('refuses an edit without the audit stamps, with a forged updatedBy, or with a client-clock updatedAt', async () => {
@@ -716,18 +835,19 @@ describe('revision — exactly +1 on every update', () => {
     await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 'rv3'), submitWrite(USERS.qs, { revision: 1 })))
   })
 
-  it('two writers who both reviewed revision 1: the second plain update is refused (it carries 2 over a stored 2)', async () => {
+  it('two writers who both reviewed revision 1: ADR-93 — the first client edit is REFUSED; once the backend has stored it, the second plain update (and a submit carrying 2 over a stored 2) is refused', async () => {
     await seed('rv4', 'draft')
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 'rv4'), draftEdit(USERS.qs)))
+    await editRefused('rv4', (user) => draftEdit(user), { thenStoreAs: USERS.qs })
     await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'rv4'), draftEdit(USERS.pm, { toDate: [1200, 0], retention: 0 })))
     await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'rv4'), submitWrite(USERS.pm)))
-    expect((await readClaim('rv4')).claimedSubtotal).toBe(2300)   // the first edit stands
+    expect((await readClaim('rv4')).claimedSubtotal).toBe(2300)   // the first (backend) edit stands
+    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'rv4'), submitWrite(USERS.pm, { revision: 3 })))   // the fresh submit passes
   })
 })
 
 // ── Legal transitions ────────────────────────────────────────────────────────
 
-describe('legal transitions', () => {
+describe('legal transitions — ADR-93: only SUBMIT stays a client write', () => {
   it('draft → submitted, with the submit stamps', async () => {
     await seed('t1', 'draft')
     await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 't1'), submitWrite(USERS.qs)))
@@ -737,95 +857,85 @@ describe('legal transitions', () => {
     expect(after.revision).toBe(2)
   })
 
-  it('submitted → approved in full, with the certified lines, the approved header and the stamps', async () => {
+  it('ADR-93 — submitted → approved in full (certified lines, approved header, stamps) is REFUSED for every financial role; the claim stays submitted', async () => {
     await seed('t2', 'submitted')
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 't2'), approveWrite(USERS.pm, { assessmentNotes: 'Certified in full' })))
+    await updateRefused('t2', (user) => approveWrite(user, { assessmentNotes: 'Certified in full' }))
     const after = await readClaim('t2')
-    expect(after.status).toBe('approved')
-    expect(after.approvedBy).toBe(USERS.pm.uid)
-    expect(after.approvedSubtotal).toBe(1000)
-    expect(after.approvedGst).toBe(100)
-    expect(after.approvedTotal).toBe(1100)
-    expect(after.lineItems[0].approvedThisPeriod).toBe(1000)
+    expect(after.status).toBe('submitted')
+    expect(after.approvedSubtotal).toBeNull()
     expect(after.claimedSubtotal).toBe(1000)   // untouched
   })
 
-  it('submitted → approved PARTIALLY (certify less than claimed), including zero', async () => {
+  it('ADR-93 — submitted → approved PARTIALLY (certify less than claimed), including zero, is REFUSED for every financial role', async () => {
     await seed('t3', 'submitted')
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 't3'), approveWrite(USERS.pm, { amounts: [600, 0], assessmentNotes: 'Defects on bay 3' })))
-    expect((await readClaim('t3')).approvedSubtotal).toBe(600)
+    await updateRefused('t3', (user) => approveWrite(user, { amounts: [600, 0], assessmentNotes: 'Defects on bay 3' }))
     await seed('t4', 'submitted')
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 't4'), approveWrite(USERS.pm, { amounts: [0, 0] })))
-    expect((await readClaim('t4')).approvedTotal).toBe(0)
+    await updateRefused('t4', (user) => approveWrite(user, { amounts: [0, 0] }))
   })
 
-  it('approval with a stored retention: the retention is clamped to the approved subtotal, never rewritten', async () => {
-    // claimed 1000, retention 300 → certify 200: retained = min(300, 200) = 200, net 0, gst 0, total 0
+  it('ADR-93 — approval with a stored retention (clamped, never rewritten) is REFUSED for every financial role; the retention stands', async () => {
+    // claimed 1000, retention 300 → certify 200 (net 0) and certify 800 (total 550)
     await seed('t5', 'submitted', USERS.admin, { retention: 300, claimedGst: 70, claimedTotal: 770 })
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 't5'), approveWrite(USERS.pm, { amounts: [200, 0], retention: 300 })))
-    const after = await readClaim('t5')
-    expect(after.retention).toBe(300)
-    expect(after.approvedTotal).toBe(0)
-    // and certify 800: retained 300, net 500, gst 50, total 550
+    await updateRefused('t5', (user) => approveWrite(user, { amounts: [200, 0], retention: 300 }))
+    expect((await readClaim('t5')).retention).toBe(300)
     await seed('t6', 'submitted', USERS.admin, { retention: 300, claimedGst: 70, claimedTotal: 770 })
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 't6'), approveWrite(USERS.pm, { amounts: [800, 0], retention: 300 })))
-    expect((await readClaim('t6')).approvedTotal).toBe(550)
+    await updateRefused('t6', (user) => approveWrite(user, { amounts: [800, 0], retention: 300 }))
   })
 
-  it('under_review → approved and → rejected (a reserved status already stored is not stranded)', async () => {
+  it('ADR-93 — under_review → approved and → rejected are REFUSED for every financial role (the reserved status is the backend\'s to move)', async () => {
     await seed('t7', 'under_review')
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 't7'), approveWrite(USERS.pm)))
+    await updateRefused('t7', (user) => approveWrite(user))
     await seed('t8', 'under_review')
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 't8'), rejectWrite(USERS.pm)))
+    await updateRefused('t8', (user) => rejectWrite(user))
   })
 
-  it('draft → rejected (withdrawal, no notes) and submitted → rejected (with notes)', async () => {
+  it('ADR-93 — draft → rejected (withdrawal) and submitted → rejected (with notes) are REFUSED for every financial role', async () => {
     await seed('t9', 'draft')
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 't9'), rejectWrite(USERS.qs)))
+    await updateRefused('t9', (user) => rejectWrite(user))
     await seed('t10', 'submitted')
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 't10'), rejectWrite(USERS.pm, { assessmentNotes: 'Not due yet' })))
-    expect((await readClaim('t10')).assessmentNotes).toBe('Not due yet')
+    await updateRefused('t10', (user) => rejectWrite(user, { assessmentNotes: 'Not due yet' }))
+    expect((await readClaim('t10')).assessmentNotes).toBe('')
   })
 
-  it('the creator may submit AND approve their own claim — self-approval is permitted (separation of duties is not approved)', async () => {
+  it('the creator may submit their own claim; ADR-93 — their client approve is REFUSED (self-approval is the backend\'s decision now)', async () => {
     await seed('t11', 'draft', USERS.qs)
     await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 't11'), submitWrite(USERS.qs)))
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 't11'), approveWrite(USERS.qs, { revision: 3 })))
+    await updateRefused('t11', (user) => approveWrite(user, { revision: 3 }))
   })
 
-  it('a claim written before ADR-58 can be submitted, approved and rejected — the *By stamps are added, nothing else is required of it', async () => {
+  it('a claim written before ADR-58 can still be SUBMITTED (the *By stamps are added, nothing else is required of it); ADR-93 — its approve and reject are REFUSED', async () => {
     await seed('t12', 'draft', USERS.admin, {}, { legacy: true })
     await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 't12'), submitWrite(USERS.qs)))
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 't12'), approveWrite(USERS.pm, { revision: 3 })))
+    await updateRefused('t12', (user) => approveWrite(user, { revision: 3 }))
     const after = await readClaim('t12')
     expect(after.submittedBy).toBe(USERS.qs.uid)
-    expect(after.approvedBy).toBe(USERS.pm.uid)
+    expect(after.updatedBy).toBe(USERS.qs.uid)
+    expect(after.approvedBy).toBeNull()
     await seed('t13', 'submitted', USERS.admin, {}, { legacy: true })
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 't13'), rejectWrite(USERS.pm)))
-    expect((await readClaim('t13')).rejectedBy).toBe(USERS.pm.uid)
+    await updateRefused('t13', (user) => rejectWrite(user))
+    expect('rejectedBy' in (await readClaim('t13'))).toBe(false)
   })
 
-  it('a legacy submitted claim with a NEGATIVE retention (the characterised pre-ADR-58 state) still approves exactly as claimTotals computes it', async () => {
-    // claimed 1000, retention −50 → claimTotals: retained −50, net 1050, gst 105, total 1155
+  it('ADR-93 — a legacy submitted claim with a NEGATIVE retention (the characterised pre-ADR-58 state): the claimTotals approval is REFUSED for every financial role', async () => {
     const ct = claimTotals([1000, 0], -50)
     await seed('t14', 'submitted', USERS.admin, { retention: ct.retention, claimedGst: ct.gst, claimedTotal: ct.total }, { legacy: true })
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 't14'), approveWrite(USERS.pm, { amounts: [1000, 0], retention: -50 })))
-    expect((await readClaim('t14')).approvedTotal).toBe(1155)
-    // and on a negative half-cent boundary: certify 0.05 with retention −40.10 → net −… no: net = 0.05 + 40.10 = 40.15
+    await updateRefused('t14', (user) => approveWrite(user, { amounts: [1000, 0], retention: -50 }))
+    // and on a negative half-cent boundary: certify 0.05 with retention −40.10 → net 40.15
     const ct2 = claimTotals([0.05, 0], -40.1)
     await seed('t15', 'submitted', USERS.admin, { retention: -40.1, claimedGst: ct2.gst, claimedTotal: ct2.total }, { legacy: true })
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 't15'), approveWrite(USERS.pm, { amounts: [0.05, 0], retention: -40.1 })))
+    await updateRefused('t15', (user) => approveWrite(user, { amounts: [0.05, 0], retention: -40.1 }))
   })
 
-  it('a legacy document with NO externalRefs key and NO supplierId key still takes every write', async () => {
+  it('a legacy document with NO externalRefs key and NO supplierId key still SUBMITS; ADR-93 — its draft edit and approve are REFUSED', async () => {
     await testEnv.withSecurityRulesDisabled(async (c) => {
       const { externalRefs: _e, supplierId: _s, submittedBy: _sb, rejectedBy: _rb, updatedAt: _ua, updatedBy: _ub, ...rest } =   // eslint-disable-line no-unused-vars
         { ...claimPayload(USERS.admin), createdAt: Timestamp.now() }
       await setDoc(claimRef(c.firestore(), 't16'), rest)
     })
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 't16'), draftEdit(USERS.qs)))
+    await editRefused('t16', (user) => draftEdit(user), { thenStoreAs: USERS.qs })
     await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 't16'), submitWrite(USERS.qs, { revision: 3 })))
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 't16'), approveWrite(USERS.pm, { revision: 4, amounts: [1500, 800], lines: claimLines([1500, 800]), retention: 100 })))
+    await updateRefused('t16', (user) => approveWrite(user, { revision: 4, amounts: [1500, 800], lines: claimLines([1500, 800]), retention: 100 }))
+    expect(await readStatus('t16')).toBe('submitted')
   })
 })
 
@@ -837,11 +947,12 @@ describe('illegal transitions', () => {
     await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'i1'), approveWrite(USERS.pm)))
     await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'i1'), { status: 'under_review', revision: 2, ...stamps(USERS.pm) }))
     await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'i1'), { status: 'invoiced', invoicedAt: serverTimestamp(), revision: 2, ...stamps(USERS.pm) }))
-    // A bare re-stamp of a DRAFT (status unchanged) is an EMPTY draft edit and
-    // moves nothing — the ADR-57 PO precedent; it still costs a revision.
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'i1'), { status: 'draft', revision: 2, ...stamps(USERS.pm) }))
+    // A bare re-stamp of a DRAFT (status unchanged) USED TO PASS as an EMPTY
+    // draft edit (the ADR-57 PO precedent). ADR-93: there is no draft-edit
+    // branch, so it is REFUSED for every financial role and costs nothing.
+    await updateRefused('i1', (user) => ({ status: 'draft', revision: 2, ...stamps(user) }))
     expect(await readStatus('i1')).toBe('draft')
-    expect((await readClaim('i1')).revision).toBe(2)
+    expect((await readClaim('i1')).revision).toBe(1)
   })
 
   it('submitted → draft, → submitted (re-stamp), → under_review, → invoiced', async () => {
@@ -906,6 +1017,23 @@ describe('transition purity — stamps only, actor == caller, time == server', (
       await assertFails(updateDoc(claimRef(ctx(USERS.qs), 'p1'), submitWrite(USERS.qs, extra)))
     }
     expect(await readStatus('p1')).toBe('draft')
+  })
+
+  // Final-batch ruling D: submission is the one remaining client write on a
+  // claim. It may not touch approval provenance, the calculation version, an
+  // authority or pairing field — only its own six stamps.
+  it('submit cannot alter provenance, calculation version, authority or pairing fields, nor submit as someone else', async () => {
+    await seed('p1b', 'draft')
+    for (const extra of [
+      { calcVersion: 1 }, { calcVersion: 2 }, { sourceCalcVersion: 1 },
+      { lastMaterialEditBy: USERS.pm.uid }, { draftEditors: [USERS.pm.uid] }, { createdBy: USERS.pm.uid }, { createdAt: serverTimestamp() },
+      { approvedBy: USERS.qs.uid }, { approvedAt: serverTimestamp() }, { rejectedBy: USERS.qs.uid },
+      { supplierInvoiceId: 'inv1' }, { invoicedAt: serverTimestamp() }, { supplierId: 'contact2' },
+      { submittedBy: USERS.pm.uid }, { updatedBy: USERS.pm.uid }, { revision: 5 },
+    ]) {
+      await assertFails(updateDoc(claimRef(ctx(USERS.qs), 'p1b'), submitWrite(USERS.qs, extra)))
+    }
+    expect(await readStatus('p1b')).toBe('draft')
   })
 
   it('reject carries no content change beyond the optional notes', async () => {
@@ -978,12 +1106,12 @@ describe('transition purity — stamps only, actor == caller, time == server', (
 
 // ── Approval money ───────────────────────────────────────────────────────────
 
-describe('approval money — approved header in whole cents, never above the claimed subtotal', () => {
+describe('approval money (ADR-93: every client approve is REFUSED — the well-formed one included; the backend certifies)', () => {
   it('approvedSubtotal may not exceed the STORED claimedSubtotal — one cent over is refused', async () => {
     await seed('am1', 'submitted')   // claimed 1000
     await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'am1'), approveWrite(USERS.pm, { amounts: [1000.01, 0] })))
     await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'am1'), approveWrite(USERS.pm, { amounts: [1000, 500] })))
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'am1'), approveWrite(USERS.pm, { amounts: [1000, 0] })))
+    await updateRefused('am1', (user) => approveWrite(user, { amounts: [1000, 0] }))   // ADR-93: the in-limit approval is REFUSED too
   })
 
   it('refuses a negative approved subtotal and non-numeric approved money', async () => {
@@ -1005,29 +1133,29 @@ describe('approval money — approved header in whole cents, never above the cla
     // with retention 300 stored: certify 600 → net 300 → gst 30, total 330; the PO formula (gst 60) is refused
     await seed('am4', 'submitted', USERS.admin, { retention: 300, claimedGst: 70, claimedTotal: 770 })
     await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'am4'), approveWrite(USERS.pm, { amounts: [600, 0], retention: 0 })))
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'am4'), approveWrite(USERS.pm, { amounts: [600, 0], retention: 300 })))
+    await updateRefused('am4', (user) => approveWrite(user, { amounts: [600, 0], retention: 300 }))   // ADR-93: the right header is REFUSED too
   })
 
-  it('on a half-cent boundary the approved gst accepts half-up or one cent below, like the claimed side', async () => {
+  it('on a half-cent boundary — ADR-93: the half-up and one-cent-below approvals are REFUSED; above or two below is refused', async () => {
     const lines = claimLines([40.15, 0])
     const ct = claimTotals([40.15, 0], 0)
     await seed('am5', 'submitted', USERS.admin, { lineItems: lines, claimedSubtotal: ct.subtotal, claimedGst: ct.gst, claimedTotal: ct.total })
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'am5'), approveWrite(USERS.pm, { amounts: [40.15, 0], lines, approvedGst: 4.02, approvedTotal: 44.17 })))
+    await updateRefused('am5', (user) => approveWrite(user, { amounts: [40.15, 0], lines, approvedGst: 4.02, approvedTotal: 44.17 }))
     await seed('am6', 'submitted', USERS.admin, { lineItems: lines, claimedSubtotal: ct.subtotal, claimedGst: ct.gst, claimedTotal: ct.total })
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'am6'), approveWrite(USERS.pm, { amounts: [40.15, 0], lines, approvedGst: 4.01, approvedTotal: 44.16 })))
+    await updateRefused('am6', (user) => approveWrite(user, { amounts: [40.15, 0], lines, approvedGst: 4.01, approvedTotal: 44.16 }))
     await seed('am7', 'submitted', USERS.admin, { lineItems: lines, claimedSubtotal: ct.subtotal, claimedGst: ct.gst, claimedTotal: ct.total })
     await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'am7'), approveWrite(USERS.pm, { amounts: [40.15, 0], lines, approvedGst: 4.03, approvedTotal: 44.18 })))
     await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'am7'), approveWrite(USERS.pm, { amounts: [40.15, 0], lines, approvedGst: 4.00, approvedTotal: 44.15 })))
   })
 
-  it('the certified line COUNT is pinned; the line CONTENTS are not (an approvedThisPeriod above its line is ACCEPTED — DC36)', async () => {
+  it('the certified line COUNT is pinned; ADR-93 — the per-line over-certification formerly ACCEPTED (DC36) is now REFUSED for every financial role', async () => {
     await seed('am8', 'submitted')
     await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'am8'), approveWrite(USERS.pm, { lineItems: [{ ...DEFAULT_LINES[0], approvedThisPeriod: 1000 }] })))
     await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'am8'), approveWrite(USERS.pm, { lineItems: [] })))
     // Per-line over-certification that still sums under the claimed subtotal passes the scalar rule.
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'am8'), approveWrite(USERS.pm, {
+    await updateRefused('am8', (user) => approveWrite(user, {
       amounts: [0, 900], lineItems: [{ ...DEFAULT_LINES[0], approvedThisPeriod: 0 }, { ...DEFAULT_LINES[1], approvedThisPeriod: 900 }],
-    })))
+    }))
   })
 })
 
@@ -1121,30 +1249,49 @@ describe('the claim-to-invoice lifecycle and the M1 figures are unchanged', () =
     return batch.commit()
   }
 
-  it('a claim raised, submitted and approved through the new rules is a valid progress_claim invoice source; a draft, submitted or rejected one is not', async () => {
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'd1'), claimPayload(USERS.qs)))
+  // ADR-93: the invoice side is backend-only too, so EVERY paired client batch
+  // (invoice create + claim link) is refused, and neither document moves.
+  async function pairedRefused(invoiceId, claimId, claim) {
+    const before = await readClaim(claimId)
+    for (const user of FINANCIAL) await assertFails(pairedInvoice(user, invoiceId, claimId, claim))
+    expect(await readClaim(claimId)).toEqual(before)
+    let inv
+    await testEnv.withSecurityRulesDisabled(async (c) => { inv = (await getDoc(invoiceRef(c.firestore(), invoiceId))).exists() })
+    expect(inv).toBe(false)
+  }
+
+  it('ADR-93 — a claim (backend-created, client-submitted, backend-approved) is no CLIENT invoice source any more: the paired batch is REFUSED at every status for every financial role', async () => {
+    await createRefused('d1', claimPayload)
+    await serverCreate('d1', claimPayload(USERS.qs))
     let claim = await readClaim('d1')
     const asApproved = (c) => ({ ...c, lineItems: c.lineItems.map(l => ({ ...l, approvedThisPeriod: l.claimedThisPeriod })) })
     await assertFails(pairedInvoice(USERS.qs, 'inv0', 'd1', asApproved(claim)))
     await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 'd1'), submitWrite(USERS.qs)))
     claim = await readClaim('d1')
     await assertFails(pairedInvoice(USERS.qs, 'inv0', 'd1', asApproved(claim)))
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'd1'), approveWrite(USERS.pm, { revision: 3 })))
+    await updateRefused('d1', (user) => approveWrite(user, { revision: 3 }), { thenStoreAs: USERS.pm })
     claim = await readClaim('d1')
     // ADR-68: the create is paired with the claim's link; an unpaired one is refused.
     await assertFails(setDoc(invoiceRef(ctx(USERS.qs), 'inv_unpaired'), claimInvoicePayload(USERS.qs, 'd1', claim)))
-    await assertSucceeds(pairedInvoice(USERS.qs, 'inv1', 'd1', claim))
-    expect((await readClaim('d1')).supplierInvoiceId).toBe('inv1')
+    await pairedRefused('inv1', 'd1', claim)
+    expect((await readClaim('d1')).supplierInvoiceId).toBeNull()
     await seed('d2', 'rejected')
     await assertFails(pairedInvoice(USERS.qs, 'inv2', 'd2', { ...(await readClaim('d2')), lineItems: DEFAULT_LINES.map(l => ({ ...l, approvedThisPeriod: l.claimedThisPeriod })) }))
   })
 
-  it('posting the claim-sourced invoice needs NO write to the claim — the claim stays approved and a direct `invoiced` write is refused', async () => {
+  it('ADR-93 — the paired create, the invoice approve and post are REFUSED from every client; posting (by the backend) needs NO claim write — the claim stays approved and a direct `invoiced` write is refused', async () => {
     await seed('d3', 'approved')
     const claim = await readClaim('d3')
-    await assertSucceeds(pairedInvoice(USERS.qs, 'inv3', 'd3', claim))
-    await assertSucceeds(updateDoc(invoiceRef(ctx(USERS.qs), 'inv3'), siStamp(USERS.qs, 'approved', 'approvedAt', 'approvedBy')))
-    await assertSucceeds(updateDoc(invoiceRef(ctx(USERS.qs), 'inv3'), siStamp(USERS.qs, 'posted', 'postedAt', 'postedBy')))
+    await pairedRefused('inv3', 'd3', claim)
+    // What the backend stores: the paired invoice and the claim's link.
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(invoiceRef(c.firestore(), 'inv3'), claimInvoicePayload(USERS.qs, 'd3', claim))
+      await updateDoc(claimRef(c.firestore(), 'd3'), { supplierInvoiceId: 'inv3', supplierInvoiceLinkedAt: Timestamp.now(), supplierInvoiceLinkedBy: USERS.qs.uid, revision: 2 })
+    })
+    for (const [status, at, by] of [['approved', 'approvedAt', 'approvedBy'], ['posted', 'postedAt', 'postedBy']]) {
+      for (const user of FINANCIAL) await assertFails(updateDoc(invoiceRef(ctx(user), 'inv3'), siStamp(user, status, at, by)))
+      await testEnv.withSecurityRulesDisabled(async (c) => { await updateDoc(invoiceRef(c.firestore(), 'inv3'), siStamp(USERS.qs, status, at, by)) })
+    }
     expect(await readStatus('d3')).toBe('approved')
     // The link (ADR-68) is the only claim write — approval, status and money stay as they were.
     expect((await readClaim('d3')).supplierInvoiceId).toBe('inv3')
@@ -1167,7 +1314,7 @@ describe('the claim-to-invoice lifecycle and the M1 figures are unchanged', () =
     expect(actualClaimsByCostCode([claim])).toEqual({})
     expect(committedByCostCode([po])).toEqual({ cc1: 2500, cc2: 2000 })
     expect(remainingCommittedByCostCode([po], {}, recognisedClaimsByPoLine([claim]))).toEqual({ cc1: 2500, cc2: 2000 })
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'd4'), approveWrite(USERS.pm, { revision: 3 })))
+    await updateRefused('d4', (user) => approveWrite(user, { revision: 3 }), { thenStoreAs: USERS.pm })   // ADR-93: the backend approves
     claim = await readClaim('d4')
     expect(claimedPendingByCostCode([claim])).toEqual({})
     expect(actualClaimsByCostCode([claim])).toEqual({ cc1: 1000, cc2: 0 })
@@ -1183,35 +1330,36 @@ describe('the claim-to-invoice lifecycle and the M1 figures are unchanged', () =
 
   it('a rejected claim contributes nothing, and a second claim on the same PO after approval seeds from the certified amounts', async () => {
     await seed('d5', 'submitted')
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'd5'), rejectWrite(USERS.pm)))
+    await updateRefused('d5', (user) => rejectWrite(user), { thenStoreAs: USERS.pm })   // ADR-93: the backend rejects
     const rejected = await readClaim('d5')
     expect(actualClaimsByCostCode([rejected])).toEqual({})
     expect(claimedPendingByCostCode([rejected])).toEqual({})
     await seed('d6', 'submitted')
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'd6'), approveWrite(USERS.pm, { amounts: [600, 0] })))
+    await updateRefused('d6', (user) => approveWrite(user, { amounts: [600, 0] }), { thenStoreAs: USERS.pm })
     const prev = previouslyApprovedByPoLine([await readClaim('d6')], PO_ID)
     expect(prev).toEqual({ 0: 600, 1: 0 })
     const second = claimLines([1000, 500], [prev[0] || 0, prev[1] || 0])   // +400 on line 0, +500 on line 1
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'd7'), claimPayload(USERS.qs, { claimNumber: 'PC-0002', lines: second })))
+    await createRefused('d7', (user) => claimPayload(user, { claimNumber: 'PC-0002', lines: second }))
+    await serverCreate('d7', claimPayload(USERS.qs, { claimNumber: 'PC-0002', lines: second }))
     expect((await readClaim('d7')).claimedSubtotal).toBe(900)
   })
 
-  it('a claim against a PO that is later closed or cancelled still submits, approves and rejects (the PO is read at create only)', async () => {
+  it('a claim against a PO that is later cancelled still SUBMITS (the submit reads no PO); ADR-93 — its draft edit and approve are REFUSED from every client', async () => {
     await seed('d8', 'draft')
     await seed('d9', 'submitted')
     await testEnv.withSecurityRulesDisabled(async (c) => {
       await updateDoc(poRef(c.firestore(), PO_ID), { status: 'cancelled', cancelledAt: Timestamp.now(), cancelledBy: 'u_admin' })
     })
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 'd8'), draftEdit(USERS.qs)))
+    await editRefused('d8', (user) => draftEdit(user), { thenStoreAs: USERS.qs })
     await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 'd8'), submitWrite(USERS.qs, { revision: 3 })))
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'd9'), approveWrite(USERS.pm)))
+    await updateRefused('d9', (user) => approveWrite(user))
     await assertFails(setDoc(claimRef(ctx(USERS.qs), 'd10'), claimPayload(USERS.qs, { claimNumber: 'PC-0003' })))   // but no NEW claim
   })
 })
 
 // ── The REAL guarded transactions (lib/progressClaimActions.js) ──────────────
 
-describe('runUpdateClaimDraft / runTransitionClaim — the app’s own transactions against the real rules', () => {
+describe('runUpdateClaimDraft / runTransitionClaim — the old client transactions against the real rules (ADR-93: only submit still writes)', () => {
   const qs = { db: null, uid: USERS.qs.uid }
   const pm = { db: null, uid: USERS.pm.uid }
   beforeEach(() => { qs.db = ctx(USERS.qs); pm.db = ctx(USERS.pm) })
@@ -1219,29 +1367,36 @@ describe('runUpdateClaimDraft / runTransitionClaim — the app’s own transacti
   const edit = { periodEnding: '2026-09-30', claimRef: 'S-1b', notes: 'Revised', retention: '100', claimedToDate: ['1500', '800'] }
   const run = (who, fn, args) => fn({ db: who.db, claimRef: claimRef(who.db, args.id), uid: who.uid, runTransaction, serverTimestamp, ...args })
 
-  it('a draft edit from the reviewed copy writes the rebuilt lines, the header, revision 2 and the stamps', async () => {
-    await seed('x1', 'draft')
-    const seen = await readClaim('x1')
-    await run(qs, runUpdateClaimDraft, { id: 'x1', seen, data: edit })
-    const after = await readClaim('x1')
-    expect(after.revision).toBe(2)
-    expect(after.claimedSubtotal).toBe(2300)
-    expect(after.retention).toBe(100)
-    expect(after.claimedTotal).toBe(2420)
-    expect(after.updatedBy).toBe(USERS.qs.uid)
-    expect(after.lineItems.map(l => l.claimedToDate)).toEqual([1500, 800])
-    expect(after.lineItems.map(l => l.approvedThisPeriod)).toEqual([null, null])
+  it('ADR-93 — the PRODUCTION submit runner submits a draft for every financial role; it never reaches the rules for any other move', async () => {
+    for (const user of FINANCIAL) {
+      await seed(`ps-${user.uid}`, 'draft')
+      await run({ db: ctx(user), uid: user.uid }, runSubmitClaim, { id: `ps-${user.uid}`, seen: await readClaim(`ps-${user.uid}`), nextStatus: CLAIM_STATUS.SUBMITTED })
+      expect(await readStatus(`ps-${user.uid}`)).toBe('submitted')
+    }
+    await seed('ps-x', 'submitted')
+    const seen = await readClaim('ps-x')
+    await expectKind(run(pm, runSubmitClaim, { id: 'ps-x', seen, nextStatus: CLAIM_STATUS.APPROVED }), CLAIM_WRITE_ERROR.INVALID)
+    expect(await readClaim('ps-x')).toEqual(seen)
   })
 
-  it('a STALE copy (edited underneath — revision moved) is refused with nothing written; the fresh copy then saves', async () => {
+  it('ADR-93 — a draft edit from the reviewed copy is refused by the RULES as PERMISSION for every financial role, with nothing written', async () => {
+    await seed('x1', 'draft')
+    const seen = await readClaim('x1')
+    for (const user of FINANCIAL) {
+      await expectKind(run({ db: ctx(user), uid: user.uid }, runUpdateClaimDraft, { id: 'x1', seen, data: edit }), CLAIM_WRITE_ERROR.PERMISSION)
+    }
+    expect(await readClaim('x1')).toEqual(seen)
+  })
+
+  it('a STALE copy (edited underneath by the backend — revision moved) is refused as STALE with nothing written; ADR-93 — the fresh copy is then refused as PERMISSION', async () => {
     await seed('x2', 'draft')
     const seen = await readClaim('x2')
-    await run(pm, runUpdateClaimDraft, { id: 'x2', seen, data: { ...edit, claimedToDate: ['1200', '0'], retention: '' } })
+    await serverUpdate('x2', { ...draftEdit(USERS.pm, { toDate: [1200, 0], retention: 0 }) })
     const err = await expectKind(run(qs, runUpdateClaimDraft, { id: 'x2', seen, data: edit }), CLAIM_WRITE_ERROR.STALE)
     expect(err.message).toMatch(/changed by another user/)
     expect((await readClaim('x2')).claimedSubtotal).toBe(1200)
-    await run(qs, runUpdateClaimDraft, { id: 'x2', seen: await readClaim('x2'), data: edit })
-    expect((await readClaim('x2')).revision).toBe(3)
+    await expectKind(run(qs, runUpdateClaimDraft, { id: 'x2', seen: await readClaim('x2'), data: edit }), CLAIM_WRITE_ERROR.PERMISSION)
+    expect((await readClaim('x2')).revision).toBe(2)
   })
 
   it('a STALE copy (submitted underneath — status moved) is refused for an edit and names the new status', async () => {
@@ -1266,24 +1421,26 @@ describe('runUpdateClaimDraft / runTransitionClaim — the app’s own transacti
     expect((await readClaim('x4')).revision).toBe(1)
   })
 
-  it('submit, approve (certified amounts normalised to cents) and reject from the reviewed copies, each +1', async () => {
-    await seed('x5', 'draft')
-    await run(qs, runTransitionClaim, { id: 'x5', seen: await readClaim('x5'), nextStatus: CLAIM_STATUS.SUBMITTED })
-    let live = await readClaim('x5')
-    expect(live).toMatchObject({ status: 'submitted', submittedBy: USERS.qs.uid, revision: 2 })
-    await run(pm, runTransitionClaim, { id: 'x5', seen: live, nextStatus: CLAIM_STATUS.APPROVED, extras: { approvedAmounts: ['599.999', 0], assessmentNotes: ' Minor defects ' } })
-    live = await readClaim('x5')
-    expect(live).toMatchObject({ status: 'approved', approvedBy: USERS.pm.uid, revision: 3, approvedSubtotal: 600, approvedGst: 60, approvedTotal: 660, assessmentNotes: 'Minor defects' })
-    expect(live.lineItems[0].approvedThisPeriod).toBe(600)
+  it('submit from the reviewed copy writes +1 for every financial role; ADR-93 — approve (certified amounts normalised to cents) and reject are refused as PERMISSION with nothing written', async () => {
+    for (const user of FINANCIAL) {
+      await seed(`x5-${user.uid}`, 'draft')
+      await run({ db: ctx(user), uid: user.uid }, runTransitionClaim, { id: `x5-${user.uid}`, seen: await readClaim(`x5-${user.uid}`), nextStatus: CLAIM_STATUS.SUBMITTED })
+      expect(await readClaim(`x5-${user.uid}`)).toMatchObject({ status: 'submitted', submittedBy: user.uid, updatedBy: user.uid, revision: 2 })
+    }
+    const live = await readClaim(`x5-${USERS.qs.uid}`)
+    await expectKind(run(pm, runTransitionClaim, { id: `x5-${USERS.qs.uid}`, seen: live, nextStatus: CLAIM_STATUS.APPROVED, extras: { approvedAmounts: ['599.999', 0], assessmentNotes: ' Minor defects ' } }), CLAIM_WRITE_ERROR.PERMISSION)
+    expect(await readClaim(`x5-${USERS.qs.uid}`)).toEqual(live)
     await seed('x6', 'submitted')
-    await run(pm, runTransitionClaim, { id: 'x6', seen: await readClaim('x6'), nextStatus: CLAIM_STATUS.REJECTED, extras: { assessmentNotes: 'Not due' } })
-    expect(await readClaim('x6')).toMatchObject({ status: 'rejected', rejectedBy: USERS.pm.uid, revision: 2, assessmentNotes: 'Not due' })
+    const x6 = await readClaim('x6')
+    await expectKind(run(pm, runTransitionClaim, { id: 'x6', seen: x6, nextStatus: CLAIM_STATUS.REJECTED, extras: { assessmentNotes: 'Not due' } }), CLAIM_WRITE_ERROR.PERMISSION)
+    expect(await readClaim('x6')).toEqual(x6)
   })
 
-  it('a STALE assessment (approved underneath) is refused with nothing written — the second assessor never overwrites the first', async () => {
+  it('a STALE assessment (approved underneath by the backend) is refused as STALE with nothing written — the second assessor never overwrites the first; ADR-93 — the first client approve is PERMISSION', async () => {
     await seed('x7', 'submitted')
     const seen = await readClaim('x7')
-    await run(pm, runTransitionClaim, { id: 'x7', seen, nextStatus: CLAIM_STATUS.APPROVED, extras: { approvedAmounts: [1000, 0] } })
+    await expectKind(run(pm, runTransitionClaim, { id: 'x7', seen, nextStatus: CLAIM_STATUS.APPROVED, extras: { approvedAmounts: [1000, 0] } }), CLAIM_WRITE_ERROR.PERMISSION)
+    await serverUpdate('x7', approveWrite(USERS.pm))
     await expectKind(run(qs, runTransitionClaim, { id: 'x7', seen, nextStatus: CLAIM_STATUS.APPROVED, extras: { approvedAmounts: [500, 0] } }), CLAIM_WRITE_ERROR.STALE)
     await expectKind(run(qs, runTransitionClaim, { id: 'x7', seen, nextStatus: CLAIM_STATUS.REJECTED }), CLAIM_WRITE_ERROR.STALE)
     expect((await readClaim('x7')).approvedSubtotal).toBe(1000)
@@ -1311,59 +1468,62 @@ describe('runUpdateClaimDraft / runTransitionClaim — the app’s own transacti
     expect(await readStatus('x10')).toBe('draft')
   })
 
-  it('a legacy draft (no revision stamps) edits and submits through the transactions, acquiring the keys', async () => {
+  it('a legacy draft (no revision stamps): ADR-93 — its edit is PERMISSION with nothing written; it still submits through the transaction, acquiring the keys', async () => {
     await seed('x11', 'draft', USERS.admin, {}, { legacy: true })
     const seen = await readClaim('x11')
-    await run(qs, runUpdateClaimDraft, { id: 'x11', seen, data: edit })
+    await expectKind(run(qs, runUpdateClaimDraft, { id: 'x11', seen, data: edit }), CLAIM_WRITE_ERROR.PERMISSION)
+    expect(await readClaim('x11')).toEqual(seen)
     await run(qs, runTransitionClaim, { id: 'x11', seen: await readClaim('x11'), nextStatus: CLAIM_STATUS.SUBMITTED })
-    expect(await readClaim('x11')).toMatchObject({ status: 'submitted', revision: 3, submittedBy: USERS.qs.uid, updatedBy: USERS.qs.uid })
+    expect(await readClaim('x11')).toMatchObject({ status: 'submitted', revision: 2, submittedBy: USERS.qs.uid, updatedBy: USERS.qs.uid })
   })
 })
 
 // ── NOT enforced — the honest ceiling ────────────────────────────────────────
 
-describe('NOT ENFORCED by rules — proven, so the ceiling is documented (DC36)', () => {
-  it('a SECOND open claim on the same PO is ACCEPTED (one-open-claim is the client’s — no sibling reads)', async () => {
+describe('formerly NOT ENFORCED by rules (DC36) — ADR-93: every such client path is now REFUSED; the backend holds the control', () => {
+  it('ADR-93 — a SECOND open claim on the same PO (formerly ACCEPTED) is REFUSED from every client (one open claim per PO is the backend\'s)', async () => {
     await seed('n1', 'submitted')
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'n2'), claimPayload(USERS.qs, { claimNumber: 'PC-0002' })))
+    await createRefused('n2', (user) => claimPayload(user, { claimNumber: 'PC-0002' }))
   })
 
-  it('lineItems CONTENTS are unverified — junk elements, a wrong poLineIndex, a bogus cost code and a negative line are ACCEPTED', async () => {
+  it('ADR-93 — lineItems with junk elements, a wrong poLineIndex, a bogus cost code and a negative line (formerly ACCEPTED) are REFUSED', async () => {
     const junk = [{ foo: 'bar' }, { poLineIndex: 9, costCodeId: 'ccX', claimedThisPeriod: -5, approvedThisPeriod: 99999 }]
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'n3'), claimPayload(USERS.qs, { lineItems: junk })))
+    await createRefused('n3', (user) => claimPayload(user, { lineItems: junk }))
   })
 
-  it('claimedSubtotal need not equal Σ claimedThisPeriod, and cumulative claiming above the PO line is ACCEPTED (warn-only in the app)', async () => {
+  it('ADR-93 — a claimedSubtotal not equal to Σ claimedThisPeriod, and cumulative claiming above the PO line (formerly ACCEPTED), are REFUSED', async () => {
     const t = claimTotals([99999], 0)
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'n4'), claimPayload(USERS.qs, { claimedSubtotal: t.subtotal, claimedGst: t.gst, claimedTotal: t.total })))
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'n5'), claimPayload(USERS.qs, { claimNumber: 'PC-0002', lines: claimLines([25000, 0]) })))
+    await createRefused('n4', (user) => claimPayload(user, { claimedSubtotal: t.subtotal, claimedGst: t.gst, claimedTotal: t.total }))
+    await createRefused('n5', (user) => claimPayload(user, { claimNumber: 'PC-0002', lines: claimLines([25000, 0]) }))
   })
 
-  it('creator == approver is ACCEPTED (self-approval permitted by decision); duplicate claim numbers are ACCEPTED (the counter is client-written — DC6)', async () => {
+  it('ADR-93 — creator == approver via a client approve, and duplicate client-chosen claim numbers (formerly ACCEPTED), are REFUSED', async () => {
     await seed('n6', 'submitted', USERS.qs)
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 'n6'), approveWrite(USERS.qs)))
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'n7'), claimPayload(USERS.qs, { claimNumber: 'PC-0001' })))
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'n8'), claimPayload(USERS.qs, { claimNumber: 'PC-0001' })))
+    await updateRefused('n6', (user) => approveWrite(user))
+    await createRefused('n7', (user) => claimPayload(user, { claimNumber: 'PC-0001' }))
+    await createRefused('n8', (user) => claimPayload(user, { claimNumber: 'PC-0001' }))
   })
 
-  it('the mixed-mode overlap is ACCEPTED — a claim on a PO line a direct invoice already prices (DC34)', async () => {
+  it('ADR-93 — the mixed-mode overlap (a claim on a PO line a direct invoice already prices — DC34, formerly ACCEPTED) is REFUSED as a client create', async () => {
     await testEnv.withSecurityRulesDisabled(async (c) => {
       await setDoc(invoiceRef(c.firestore(), 'direct1'), { status: 'posted', source: 'direct_po', poId: PO_ID, progressClaimId: null, lineItems: [{ poLineIndex: 0, costCodeId: 'cc1', amount: 500 }] })
     })
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'n9'), claimPayload(USERS.qs)))
+    await createRefused('n9', claimPayload)
   })
 
-  it('a direct-SDK caller who reads first and writes stored + 1 passes the revision rule — the stale guard is rules-ASSISTED, not rules-proven', async () => {
+  it('a direct-SDK caller who reads first and writes stored + 1 still passes the revision rule on the one client write left — SUBMIT (the stale guard is rules-ASSISTED, not rules-proven); ADR-93 — the edit version of that attack is REFUSED', async () => {
     await seed('n10', 'draft')
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 'n10'), draftEdit(USERS.qs)))               // revision 2
+    await editRefused('n10', (user) => draftEdit(user), { thenStoreAs: USERS.qs })   // revision 2 (backend)
     const live = await readClaim('n10')
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'n10'), draftEdit(USERS.pm, { toDate: [1200, 0], retention: 0, revision: live.revision + 1 })))
-    expect((await readClaim('n10')).claimedSubtotal).toBe(1200)
+    await editRefused('n10', (user) => draftEdit(user, { toDate: [1200, 0], retention: 0, revision: live.revision + 1 }))
+    expect((await readClaim('n10')).claimedSubtotal).toBe(2300)
+    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'n10'), submitWrite(USERS.pm, { revision: live.revision + 1 })))
+    expect(await readClaim('n10')).toMatchObject({ status: 'submitted', revision: 3, submittedBy: USERS.pm.uid })
   })
 
-  it('a claimed line below its previously approved amount (negative claimedThisPeriod) is ACCEPTED when the header still balances', async () => {
+  it('ADR-93 — a claimed line below its previously approved amount (negative claimedThisPeriod, formerly ACCEPTED) is REFUSED', async () => {
     const lines = [{ ...DEFAULT_LINES[0], previouslyApproved: 1500, claimedToDate: 1000, claimedThisPeriod: -500 }, { ...DEFAULT_LINES[1], claimedToDate: 1500, claimedThisPeriod: 1500 }]
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'n11'), claimPayload(USERS.qs, { lines })))
+    await createRefused('n11', (user) => claimPayload(user, { lines }))
   })
 })
 
@@ -1392,17 +1552,13 @@ const oldClientRebuild = (li) => {
   return { ...rest, poLineIndex: 0, poLineTotal: 0 }
 }
 
-describe('ADR-63 — create with variation-origin lines', () => {
-  it('every financial role creates a claim with PO lines + one variation line when the count says 1; the header and line identity are stored as written', async () => {
+describe('ADR-63 — create with variation-origin lines (ADR-93: REFUSED from every client)', () => {
+  it('ADR-93 — a claim with PO lines + one variation line (count 1), and one with several variation lines, is REFUSED for every financial role; nothing is stored', async () => {
     for (const user of FINANCIAL) {
-      await assertSucceeds(setDoc(claimRef(ctx(user), `v_${user.uid}`), varPayload(user)))
-      const c = await readClaim(`v_${user.uid}`)
-      expect(c.variationLineCount).toBe(1)
-      expect(c.variationId).toBeNull()
-      expect(c.lineItems[2]).toMatchObject({ poLineIndex: null, variationId: 'svScoped', variationLineIndex: 0, variationLineTotal: 4000 })
+      await createRefused(`v_${user.uid}`, varPayload)
     }
     // Several variation lines, from several variations, in one claim.
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'multi'), claimPayload(USERS.qs, { lines: [...claimLines([1000, 0]), varLine(2000), varLine(500, 0, VAR_ROW_2)], variationLineCount: 2 })))
+    await createRefused('multi', (user) => claimPayload(user, { lines: [...claimLines([1000, 0]), varLine(2000), varLine(500, 0, VAR_ROW_2)], variationLineCount: 2 }))
   })
 
   it('FINAL RULES — a create WITHOUT the variationLineCount key (the M3-B1 bundle) is refused; a negative, fractional or string count is refused', async () => {
@@ -1440,7 +1596,7 @@ describe('ADR-63 — OLD-CLIENT PROTECTION on update: a pre-M3-B2 draft edit can
   const seedVar = (id, status = 'draft', extra = {}) =>
     seed(id, status, USERS.admin, { lineItems: VAR_LINES, variationLineCount: 1, claimedSubtotal: t.subtotal, claimedGst: t.gst, claimedTotal: t.total, ...extra })
 
-  it('the NEW bundle’s draft edit (identity preserved, amounts re-authored) passes; the OLD bundle’s rebuild (variation line → PO line 0, keys dropped) is REFUSED with nothing written', async () => {
+  it('the OLD bundle’s rebuild (variation line → PO line 0, keys dropped) is REFUSED with nothing written; ADR-93 — the NEW bundle’s draft edit is REFUSED too (the backend stores it with the identity kept)', async () => {
     await seedVar('e1')
     const db = ctx(USERS.qs)
     const oldShape = varDraftEdit(USERS.qs, { lines: [...claimLines([1500, 800]), oldClientRebuild(varLine(3000))] })
@@ -1448,7 +1604,7 @@ describe('ADR-63 — OLD-CLIENT PROTECTION on update: a pre-M3-B2 draft edit can
     const before = await readClaim('e1')
     expect(before.revision).toBe(1)
     expect(before.lineItems[2].variationId).toBe('svScoped')
-    await assertSucceeds(updateDoc(claimRef(db, 'e1'), varDraftEdit(USERS.qs)))
+    await editRefused('e1', (user) => varDraftEdit(user), { thenStoreAs: USERS.qs })
     const after = await readClaim('e1')
     expect(after.lineItems[2]).toMatchObject({ poLineIndex: null, variationId: 'svScoped', variationLineIndex: 0, claimedToDate: 3000 })
     expect(after.variationLineCount).toBe(1)
@@ -1464,14 +1620,14 @@ describe('ADR-63 — OLD-CLIENT PROTECTION on update: a pre-M3-B2 draft edit can
     expect((await readClaim('e2')).revision).toBe(1)
   })
 
-  it('approval preserves the identity: the certified lines keep the variation keys; an approve that rewrites them is refused', async () => {
+  it('an approve that rewrites the variation keys is refused; ADR-93 — the identity-preserving client approve is REFUSED too; the backend-certified lines keep the variation keys', async () => {
     await seedVar('a1', 'submitted')
     const approvedLines = VAR_LINES.map((li, idx) => ({ ...li, approvedThisPeriod: [1000, 0, 2000][idx] }))
     const tt = claimTotals([1000, 0, 2000], 0)
     const good = { status: 'approved', lineItems: approvedLines, approvedSubtotal: tt.subtotal, approvedGst: tt.gst, approvedTotal: tt.total, assessmentNotes: '', approvedAt: serverTimestamp(), approvedBy: USERS.pm.uid, revision: 2, ...stamps(USERS.pm) }
     const rewritten = { ...good, lineItems: [approvedLines[0], approvedLines[1], oldClientRebuild(approvedLines[2])] }
     await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'a1'), rewritten))
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'a1'), good))
+    await updateRefused('a1', () => good, { thenStoreAs: USERS.pm })
     const c = await readClaim('a1')
     expect(c.lineItems[2]).toMatchObject({ variationId: 'svScoped', variationLineIndex: 0, approvedThisPeriod: 2000 })
     // The recognition selectors key the certified amount by the VARIATION line, never PO line 0.
@@ -1492,9 +1648,9 @@ describe('ADR-63 — OLD-CLIENT PROTECTION on update: a pre-M3-B2 draft edit can
     expect(await readClaim(id)).not.toHaveProperty('variationLineCount')
   }
 
-  it('a LEGACY claim (no variationLineCount key, PO lines only) still EDITS — absent reads 0, never backfilled', async () => {
+  it('ADR-93 — a LEGACY claim (no variationLineCount key, PO lines only) can no longer be EDITED by a client; nothing is backfilled', async () => {
     await seedLegacyNoCount('legE', 'draft')
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 'legE'), draftEdit(USERS.qs)))
+    await editRefused('legE', (user) => draftEdit(user))
     expect(await readClaim('legE')).not.toHaveProperty('variationLineCount')
   })
 
@@ -1503,42 +1659,42 @@ describe('ADR-63 — OLD-CLIENT PROTECTION on update: a pre-M3-B2 draft edit can
     await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 'legS'), submitWrite(USERS.qs)))
   })
 
-  it('a LEGACY claim (no variationLineCount key) still APPROVES — the certified lines keep their PO identity', async () => {
+  it('ADR-93 — a LEGACY claim (no variationLineCount key) can no longer be APPROVED by a client; it stays submitted, the key absent', async () => {
     await seedLegacyNoCount('legA', 'submitted')
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'legA'), approveWrite(USERS.pm)))
+    await updateRefused('legA', (user) => approveWrite(user))
     const c = await readClaim('legA')
-    expect(c.status).toBe('approved')
+    expect(c.status).toBe('submitted')
     expect(c).not.toHaveProperty('variationLineCount')
   })
 
-  it('the app’s runUpdateClaimDraft over a claim with a variation line passes the real rules and keeps the identity', async () => {
+  it('ADR-93 — the app’s old runUpdateClaimDraft over a claim with a variation line is refused by the real rules as PERMISSION; the stored identity is untouched', async () => {
     await seedVar('tx')
     const db = ctx(USERS.qs)
     const seen = await readClaim('tx')
-    await runUpdateClaimDraft({
+    await expectKind(runUpdateClaimDraft({
       db, claimRef: claimRef(db, 'tx'), seen, data: { periodEnding: '2026-09-30', claimRef: 'S-2', notes: '', retention: 0, claimedToDate: ['1200', '0', '3500'] },
       uid: USERS.qs.uid, runTransaction, serverTimestamp,
-    })
+    }), CLAIM_WRITE_ERROR.PERMISSION)
     const after = await readClaim('tx')
-    expect(after.revision).toBe(2)
-    expect(after.lineItems[2]).toMatchObject({ poLineIndex: null, variationId: 'svScoped', variationLineIndex: 0, variationLineTotal: 4000, claimedToDate: 3500, claimedThisPeriod: 3500 })
+    expect(after).toEqual(seen)
+    expect(after.lineItems[2]).toMatchObject({ poLineIndex: null, variationId: 'svScoped', variationLineIndex: 0, variationLineTotal: 4000 })
   })
 })
 
-describe('ADR-63 — NOT enforced by rules (Deferred Control 40)', () => {
+describe('ADR-63 — formerly NOT enforced by rules (Deferred Control 40); ADR-93: every such client create is REFUSED', () => {
   it('rules cannot see whether the variation exists, is approved, scope-committed, on this PO, positive, or matches the cost code and ceiling — a create naming a NONEXISTENT variation with a wrong cost code and ceiling is ACCEPTED (the create transaction and SHIELD check 4 condition H are the controls)', async () => {
     const forged = varLine(2000, 0, { ...VAR_ROW, variationId: 'svNowhere', amount: 999_999, costCodeId: 'cc9', costCodeName: 'Wrong' })
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'f1'), claimPayload(USERS.qs, { lines: [...claimLines([1000, 0]), forged], variationLineCount: 1 })))
+    await createRefused('f1', (user) => claimPayload(user, { lines: [...claimLines([1000, 0]), forged], variationLineCount: 1 }))
   })
 
   it('rules pin only the FIRST and LAST variation lines: with three variation lines the middle one can be malformed and is ACCEPTED (the client identity check refuses it)', async () => {
     const middle = { ...varLine(10, 0, VAR_ROW_2), poLineIndex: 0, variationId: undefined }
     delete middle.variationId
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'f2'), claimPayload(USERS.qs, { lines: [...claimLines([1000, 0]), varLine(2000), middle, varLine(5, 0, { ...VAR_ROW_2, lineIndex: 3 })], variationLineCount: 3 })))
+    await createRefused('f2', (user) => claimPayload(user, { lines: [...claimLines([1000, 0]), varLine(2000), middle, varLine(5, 0, { ...VAR_ROW_2, lineIndex: 3 })], variationLineCount: 3 }))
   })
 
   it('a duplicated variation line in one claim is ACCEPTED by rules (sourceLineIdentityError refuses it in the app)', async () => {
-    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'f3'), claimPayload(USERS.qs, { lines: [...claimLines([1000, 0]), varLine(2000), varLine(2000)], variationLineCount: 2 })))
+    await createRefused('f3', (user) => claimPayload(user, { lines: [...claimLines([1000, 0]), varLine(2000), varLine(2000)], variationLineCount: 2 }))
   })
 })
 
@@ -1558,7 +1714,7 @@ describe('ADR-68 — the invoice link keys are REQUIRED (null) at create and on 
     await assertFails(setDoc(claimRef(db, 'lk2'), { ...old, supplierInvoiceId: null }))
     await assertFails(setDoc(claimRef(db, 'lk3'), claimPayload(USERS.qs, { supplierInvoiceId: 'si_forged' })))
     await assertFails(setDoc(claimRef(db, 'lk4'), claimPayload(USERS.qs, { supplierInvoiceLinkedAt: serverTimestamp(), supplierInvoiceLinkedBy: USERS.qs.uid })))
-    await assertSucceeds(setDoc(claimRef(db, 'lk5'), claimPayload(USERS.qs)))
+    await createRefused('lk5', claimPayload)   // ADR-93: the well-formed create is REFUSED too
   })
 
   it('approve on a LEGACY claim (no link key) must initialise the keys — the pre-2A approve payload is REFUSED, the new one accepted; a string link on approve is refused', async () => {
@@ -1568,17 +1724,15 @@ describe('ADR-68 — the invoice link keys are REQUIRED (null) at create and on 
     await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'la1'), oldApprove))
     await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'la1'), approveWrite(USERS.pm, { supplierInvoiceId: 'si_forged' })))
     await assertFails(updateDoc(claimRef(ctx(USERS.pm), 'la1'), approveWrite(USERS.pm, { supplierInvoiceLinkedBy: USERS.pm.uid, supplierInvoiceLinkedAt: serverTimestamp() })))
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'la1'), approveWrite(USERS.pm)))
-    const after = await readClaim('la1')
-    expect('supplierInvoiceId' in after).toBe(true)
-    expect(after.supplierInvoiceId).toBeNull()
+    await updateRefused('la1', (user) => approveWrite(user))   // ADR-93: the new approve is REFUSED too
+    expect('supplierInvoiceId' in (await readClaim('la1'))).toBe(false)
   })
 
   it('approve on a NEW-FORMAT claim passes with or without the keys in the payload (unchanged keys are not a change); draft edit, submit and reject may not touch them', async () => {
     await seed('ln1', 'submitted')
     const oldApprove = approveWrite(USERS.pm)
     for (const k of LINK_KEYS) delete oldApprove[k]
-    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'ln1'), oldApprove))
+    await updateRefused('ln1', () => oldApprove)   // ADR-93: REFUSED
     await seed('ln2', 'draft')
     const db = ctx(USERS.qs)
     await assertFails(updateDoc(claimRef(db, 'ln2'), draftEdit(USERS.qs, { supplierInvoiceId: 'x' })))
@@ -1586,5 +1740,196 @@ describe('ADR-68 — the invoice link keys are REQUIRED (null) at create and on 
     await assertFails(updateDoc(claimRef(db, 'ln2'), rejectWrite(USERS.qs, { supplierInvoiceId: 'x' })))
     await assertFails(updateDoc(claimRef(db, 'ln2'), submitWrite(USERS.qs, { supplierInvoiceLinkedBy: USERS.qs.uid })))
     await assertSucceeds(updateDoc(claimRef(db, 'ln2'), submitWrite(USERS.qs)))
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ADR-93 — SUBMIT, the ONE client write left on a progress claim. Exactly:
+// stored draft with a non-empty line list → `submitted`; changed keys only
+// status / submittedAt / submittedBy / revision / updatedAt / updatedBy;
+// submittedBy == updatedBy == caller; submittedAt == updatedAt == request.time;
+// revision == stored (absent reads 0) + 1. Everything else is refused.
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe('ADR-93 — SUBMIT is the only client write, and it is exact', () => {
+  const submitRefused = async (id, build, users = FINANCIAL) => {
+    const before = await readClaim(id)
+    expect(before).toBeDefined()
+    for (const user of users) await assertFails(updateDoc(claimRef(ctx(user), id), build(user)))
+    expect(await readClaim(id)).toEqual(before)
+  }
+
+  it('every financial role submits; the stored document changes in EXACTLY the six submit keys, the stamps are the caller and the server time', async () => {
+    for (const user of FINANCIAL) {
+      const id = `sx-${user.uid}`
+      await seed(id, 'draft')
+      const before = await readClaim(id)
+      await assertSucceeds(updateDoc(claimRef(ctx(user), id), submitWrite(user)))
+      const after = await readClaim(id)
+      expect(after.status).toBe('submitted')
+      expect(after.submittedBy).toBe(user.uid)
+      expect(after.updatedBy).toBe(user.uid)
+      expect(after.revision).toBe(2)
+      expect(after.submittedAt).toBeInstanceOf(Timestamp)
+      expect(after.submittedAt.isEqual(after.updatedAt)).toBe(true)   // both are request.time
+      // (updatedBy is unchanged only for the admin, who also wrote the seed.)
+      const changed = Object.keys(after).filter(k => JSON.stringify(after[k]) !== JSON.stringify(before[k])).sort()
+      expect(changed.filter(k => k !== 'updatedBy')).toEqual(['revision', 'status', 'submittedAt', 'submittedBy', 'updatedAt'])
+      expect(Object.keys(after).sort()).toEqual(Object.keys(before).sort())
+    }
+  })
+
+  it.each(['submitted', 'under_review', 'approved', 'rejected', 'invoiced'])('a %s claim cannot be (re-)submitted by any financial role — only a draft submits', async (status) => {
+    await seed(`ns-${status}`, status)
+    await submitRefused(`ns-${status}`, (user) => submitWrite(user))
+  })
+
+  it.each([
+    ['an empty list', []],
+    ['a string', 'two lines'],
+    ['a map', { 0: DEFAULT_LINES[0] }],
+    ['null', null],
+    ['a number', 2],
+  ])('a draft whose stored lineItems is %s cannot be submitted', async (_label, lineItems) => {
+    await seed('nl', 'draft', USERS.admin, { lineItems })
+    await submitRefused('nl', (user) => submitWrite(user))
+  })
+
+  it('a draft with NO lineItems key cannot be submitted', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      const { lineItems: _l, ...noLines } = { ...claimPayload(USERS.admin), createdAt: Timestamp.now(), updatedAt: Timestamp.now() }   // eslint-disable-line no-unused-vars
+      await setDoc(claimRef(c.firestore(), 'nk'), noLines)
+    })
+    await submitRefused('nk', (user) => submitWrite(user))
+  })
+
+  it.each([
+    ['claimRef', { claimRef: 'X' }], ['notes', { notes: 'late' }], ['periodEnding', { periodEnding: '2027-01-01' }],
+    ['lineItems', { lineItems: claimLines([5000, 0]) }], ['retention', { retention: 50 }],
+    ['claimedSubtotal', { claimedSubtotal: 1 }], ['claimedGst', { claimedGst: 0.1 }], ['claimedTotal', { claimedTotal: 1.1 }],
+    ['approvedSubtotal', { approvedSubtotal: 1000 }], ['approvedGst', { approvedGst: 100 }], ['approvedTotal', { approvedTotal: 1100 }],
+    ['approvedAt', { approvedAt: serverTimestamp() }], ['approvedBy', { approvedBy: USERS.qs.uid }],
+    ['rejectedAt', { rejectedAt: serverTimestamp() }], ['rejectedBy', { rejectedBy: USERS.qs.uid }], ['invoicedAt', { invoicedAt: serverTimestamp() }],
+    ['assessmentNotes', { assessmentNotes: 'note' }],
+    ['supplierInvoiceId', { supplierInvoiceId: 'si1' }], ['supplierInvoiceLinkedAt', { supplierInvoiceLinkedAt: serverTimestamp() }],
+    ['supplierInvoiceLinkedBy', { supplierInvoiceLinkedBy: USERS.qs.uid }],
+    ['the three link keys together', { supplierInvoiceId: 'si1', supplierInvoiceLinkedAt: serverTimestamp(), supplierInvoiceLinkedBy: USERS.qs.uid }],
+    ['calcVersion (a new key)', { calcVersion: 1 }], ['variationLineCount', { variationLineCount: 1 }], ['variationId', { variationId: 'sv1' }],
+    ['claimNumber', { claimNumber: 'PC-0099' }], ['poId', { poId: 'po2' }], ['poNumber', { poNumber: 'PO-0002' }],
+    ['supplierName', { supplierName: 'Other' }], ['supplierId', { supplierId: 'contact9' }], ['currency', { currency: 'NZD' }],
+    ['externalRefs', { externalRefs: { xero: '1' } }], ['createdBy', { createdBy: USERS.other.uid }], ['createdAt', { createdAt: Timestamp.now() }],
+    ['an arbitrary new key', { approved: true }],
+  ])('a submit that also changes %s is refused for every financial role', async (_label, extra) => {
+    await seed('sk', 'draft')
+    await submitRefused('sk', (user) => submitWrite(user, extra))
+  })
+
+  it.each(['approved', 'rejected', 'under_review', 'invoiced', 'draft', 'bogus', null])('a draft moved to status %s with the submit stamps is refused — the only target is submitted', async (status) => {
+    await seed('st', 'draft')
+    await submitRefused('st', (user) => submitWrite(user, { status }))
+  })
+
+  it('submittedBy must be the caller — another member, another tenant\'s admin, null or absent is refused', async () => {
+    await seed('sb', 'draft')
+    for (const submittedBy of [USERS.admin.uid, USERS.other.uid, USERS.sub.uid, null, '']) {
+      await submitRefused('sb', (user) => submitWrite(user, { submittedBy: submittedBy === USERS.admin.uid && user === USERS.admin ? USERS.pm.uid : submittedBy }))
+    }
+    const { submittedBy: _s, ...noBy } = submitWrite(USERS.qs)   // eslint-disable-line no-unused-vars
+    await submitRefused('sb', () => noBy, [USERS.qs])
+  })
+
+  it('submittedAt must be request.time — three skewed client clocks, null and absent are refused', async () => {
+    await seed('sa', 'draft')
+    for (const clock of CLIENT_CLOCKS) await submitRefused('sa', (user) => submitWrite(user, { submittedAt: clock() }))
+    await submitRefused('sa', (user) => submitWrite(user, { submittedAt: null }))
+    const { submittedAt: _a, ...noAt } = submitWrite(USERS.qs)   // eslint-disable-line no-unused-vars
+    await submitRefused('sa', () => noAt, [USERS.qs])
+  })
+
+  it('updateStamped — updatedBy another uid, null or absent, and updatedAt a client clock, null or absent are refused', async () => {
+    await seed('us', 'draft')
+    await submitRefused('us', (user) => submitWrite(user, { updatedBy: user === USERS.admin ? USERS.pm.uid : USERS.admin.uid }))
+    await submitRefused('us', (user) => submitWrite(user, { updatedBy: null }))
+    for (const clock of CLIENT_CLOCKS) await submitRefused('us', (user) => submitWrite(user, { updatedAt: clock() }))
+    await submitRefused('us', (user) => submitWrite(user, { updatedAt: null }))
+    const { updatedBy: _b, ...noBy } = submitWrite(USERS.qs)   // eslint-disable-line no-unused-vars
+    const { updatedAt: _a, ...noAt } = submitWrite(USERS.qs)   // eslint-disable-line no-unused-vars
+    await submitRefused('us', () => noBy, [USERS.qs])
+    await submitRefused('us', () => noAt, [USERS.qs])
+  })
+
+  it('revision must be exactly stored + 1 — the same, +2, 0, a string, null, a float and absent are refused; 2 over a stored 1 passes', async () => {
+    await seed('rv', 'draft')
+    for (const revision of [1, 3, 0, '2', null, 2.5, -1]) await submitRefused('rv', (user) => submitWrite(user, { revision }))
+    const { revision: _r, ...noRev } = submitWrite(USERS.qs)   // eslint-disable-line no-unused-vars
+    await submitRefused('rv', () => noRev, [USERS.qs])
+    await assertSucceeds(updateDoc(claimRef(ctx(USERS.qs), 'rv'), submitWrite(USERS.qs, { revision: 2 })))
+  })
+
+  it('a document with NO revision key takes exactly 1 (absent reads 0); 2 or 0 is refused', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      const { revision: _r, ...noRev } = { ...claimPayload(USERS.admin), createdAt: Timestamp.now(), updatedAt: Timestamp.now() }   // eslint-disable-line no-unused-vars
+      await setDoc(claimRef(c.firestore(), 'rv0'), noRev)
+    })
+    await submitRefused('rv0', (user) => submitWrite(user, { revision: 2 }))
+    await submitRefused('rv0', (user) => submitWrite(user, { revision: 0 }))
+    await assertSucceeds(updateDoc(claimRef(ctx(USERS.pm), 'rv0'), submitWrite(USERS.pm, { revision: 1 })))
+    expect((await readClaim('rv0')).revision).toBe(1)
+  })
+
+  it('non-members, an orphan account, an anonymous caller and another tenant\'s admin cannot submit (each with its own well-formed stamps)', async () => {
+    await seed('nm', 'draft')
+    const before = await readClaim('nm')
+    for (const user of [USERS.sub, USERS.client, USERS.other]) {
+      await assertFails(updateDoc(claimRef(ctx(user), 'nm'), submitWrite(user)))
+    }
+    await assertFails(updateDoc(claimRef(testEnv.authenticatedContext(ORPHAN_UID).firestore(), 'nm'), submitWrite({ uid: ORPHAN_UID })))
+    await assertFails(updateDoc(claimRef(testEnv.unauthenticatedContext().firestore(), 'nm'), submitWrite(USERS.admin)))
+    expect(await readClaim('nm')).toEqual(before)
+  })
+
+  it('a full-document setDoc that is otherwise a valid submit (every other key re-sent unchanged) passes — changed keys, not sent keys, are what count; a setDoc that drops a key is refused', async () => {
+    await seed('sd', 'draft')
+    const { id: _id, ...stored } = await readClaim('sd')   // eslint-disable-line no-unused-vars
+    const { notes: _n, ...dropped } = stored   // eslint-disable-line no-unused-vars
+    await assertFails(setDoc(claimRef(ctx(USERS.qs), 'sd'), { ...dropped, ...submitWrite(USERS.qs) }))
+    await assertSucceeds(setDoc(claimRef(ctx(USERS.qs), 'sd'), { ...stored, ...submitWrite(USERS.qs) }))
+    expect(await readStatus('sd')).toBe('submitted')
+  })
+})
+
+// ── ADR-93 — the progressClaims number counter is backend-only ───────────────
+
+describe('ADR-93 — the progressClaims counter', () => {
+  const counter = (db, id) => doc(db, `companies/${COMPANY_A}/counters`, id)
+  const readCounter = async (id) => {
+    let data
+    await testEnv.withSecurityRulesDisabled(async (c) => { const s = await getDoc(counter(c.firestore(), id)); data = s.exists() ? s.data() : undefined })
+    return data
+  }
+
+  it('every financial role is REFUSED a read, a create, an advance, a rollback, a delete and the old numbering transaction; the stored value does not move', async () => {
+    for (const user of FINANCIAL) await assertFails(setDoc(counter(ctx(user), 'progressClaims'), { next: 2 }, { merge: true }))
+    expect(await readCounter('progressClaims')).toBeUndefined()
+    await testEnv.withSecurityRulesDisabled(async (c) => { await setDoc(counter(c.firestore(), 'progressClaims'), { next: 7 }) })
+    for (const user of FINANCIAL) {
+      const db = ctx(user)
+      await assertFails(getDoc(counter(db, 'progressClaims')))
+      await assertFails(updateDoc(counter(db, 'progressClaims'), { next: 8 }))
+      await assertFails(setDoc(counter(db, 'progressClaims'), { next: 1 }, { merge: true }))
+      await assertFails(deleteDoc(counter(db, 'progressClaims')))
+      await assertFails(runTransaction(db, async (tx) => {
+        const snap = await tx.get(counter(db, 'progressClaims'))
+        tx.set(counter(db, 'progressClaims'), { next: (snap.exists() ? snap.data().next : 1) + 1 }, { merge: true })
+      }))
+    }
+    expect(await readCounter('progressClaims')).toEqual({ next: 7 })
+  })
+
+  it('another register\'s counter (purchaseOrders) still reads and advances for every financial role', async () => {
+    for (const user of FINANCIAL) {
+      await assertSucceeds(setDoc(counter(ctx(user), 'purchaseOrders'), { next: 2 }, { merge: true }))
+      await assertSucceeds(getDoc(counter(ctx(user), 'purchaseOrders')))
+    }
   })
 })

@@ -1,0 +1,11 @@
+{
+  "name": "phase2_baselines_established",
+  "description": "Phase 2 cutover: one count per historical baseline established (the supplier-finance baseline info line, and the client receipt baseline info line). Counts only; extracts nothing (the receipt line also carries a cents total, which is never read here). For verification; no alert reads it.",
+  "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.location=\"australia-southeast1\" AND resource.labels.service_name=(\"createvariation\" OR \"updatevariationdraft\" OR \"approvevariation\" OR \"applyvariationcommitment\" OR \"progressclaimoperation\" OR \"supplierinvoiceoperation\" OR \"suppliersettlementoperation\" OR \"postclientrefund\" OR \"voidclientrefund\" OR \"postclientreceiptapplication\" OR \"voidclientreceiptapplication\" OR \"voidclientinvoice\" OR \"contractvalueoperation\" OR \"estimateoperation\" OR \"postclientcreditnote\" OR \"voidclientcreditnote\" OR \"postclientretentionrelease\" OR \"voidclientretentionrelease\" OR \"postclientreceipt\" OR \"voidclientreceipt\" OR \"transferboqtobudget\" OR \"approvefinalaccount\") AND log_id(\"run.googleapis.com/stdout\") AND jsonPayload.message=(\"supplier-finance baseline\" OR \"client receipt baseline established\")",
+  "metricDescriptor": {
+    "metricKind": "DELTA",
+    "valueType": "INT64",
+    "unit": "1",
+    "displayName": "Phase 2 baselines established"
+  }
+}

@@ -7,6 +7,7 @@ import Stat from '../../components/Stat'
 import { useProfile } from '../../hooks/useProfile'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
 import { useRetentionReleases } from '../../hooks/useRetentionReleases'
+import { useSupplierCreditNotes } from '../../hooks/useSupplierCreditNotes'
 import { formatCurrency } from '../../lib/formatters'
 import { isFinancialRole } from '../../lib/margin'
 import {
@@ -20,6 +21,8 @@ import {
 import { LEGACY_SUPPLIER_MATCH_NOTE } from '../../lib/supplierPayments'
 import ReleaseModal from './retention/ReleaseModal'
 import ReleaseVoidModal from './retention/ReleaseVoidModal'
+import { useCommercialActivation } from '../../hooks/useCommercialActivation'
+import CommercialMaintenanceNotice from '../../components/CommercialMaintenanceNotice'
 
 // ── Supplier Retention register ──────────────────────────────────────────────
 //
@@ -62,6 +65,16 @@ export default function ProjectRetention() {
     retentionReleases, retentionReleasesLoading, retentionReleasesError,
     createRetentionRelease, updateRetentionRelease, postRetentionRelease, voidRetentionRelease,
   } = useRetentionReleases(mid)
+  // ADR-94 (G1): the retained part of a posted credit note is retention no
+  // longer held, so held figures need the credit register too.
+  const { supplierCreditNotes, supplierCreditNotesError } = useSupplierCreditNotes(mid)
+
+  // Phase 2 activation (lib/commercialActivation.js): a company not yet
+  // switched over sees retention releases READ-ONLY — release, edit, post and
+  // void are withheld; every figure stays. UX only; the server and the Rules
+  // refuse regardless.
+  const activation = useCommercialActivation()
+  const writable = activation.writable
 
   const [releaseFor, setReleaseFor] = useState(null) // { invoice, release? }
   const [voidTarget, setVoidTarget] = useState(null)
@@ -72,7 +85,7 @@ export default function ProjectRetention() {
   // action disabled while this is true.
   const releasesUnavailable = retentionReleasesError
   const invoicesUnavailable = supplierInvoicesError
-  const figuresUnavailable  = releasesUnavailable || invoicesUnavailable
+  const figuresUnavailable  = releasesUnavailable || invoicesUnavailable || supplierCreditNotesError
 
   const invoiceById = useMemo(
     () => new Map((supplierInvoices ?? []).map(inv => [inv.id, inv])),
@@ -80,20 +93,20 @@ export default function ProjectRetention() {
   )
 
   const groups = useMemo(
-    () => (figuresUnavailable ? [] : retentionBySupplier(supplierInvoices, retentionReleases)),
-    [figuresUnavailable, supplierInvoices, retentionReleases],
+    () => (figuresUnavailable ? [] : retentionBySupplier(supplierInvoices, retentionReleases, supplierCreditNotes)),
+    [figuresUnavailable, supplierInvoices, retentionReleases, supplierCreditNotes],
   )
   const summary = useMemo(
-    () => (figuresUnavailable ? null : retentionSummary(supplierInvoices, retentionReleases)),
-    [figuresUnavailable, supplierInvoices, retentionReleases],
+    () => (figuresUnavailable ? null : retentionSummary(supplierInvoices, retentionReleases, supplierCreditNotes)),
+    [figuresUnavailable, supplierInvoices, retentionReleases, supplierCreditNotes],
   )
   const exceptions = useMemo(
     () => (figuresUnavailable ? [] : releaseExceptions(retentionReleases, supplierInvoices)),
     [figuresUnavailable, retentionReleases, supplierInvoices],
   )
   const overReleased = useMemo(
-    () => (figuresUnavailable ? [] : overReleasedRows(retentionInvoiceRows(supplierInvoices, retentionReleases))),
-    [figuresUnavailable, supplierInvoices, retentionReleases],
+    () => (figuresUnavailable ? [] : overReleasedRows(retentionInvoiceRows(supplierInvoices, retentionReleases, supplierCreditNotes))),
+    [figuresUnavailable, supplierInvoices, retentionReleases, supplierCreditNotes],
   )
 
   const sortedReleases = useMemo(
@@ -182,6 +195,7 @@ export default function ProjectRetention() {
         </Card>
       )}
 
+      <CommercialMaintenanceNotice activation={activation} className="" />
       {actionError && (
         <Card><p className="m-0 text-[12.5px] text-brand-red">{actionError}</p></Card>
       )}
@@ -262,6 +276,7 @@ export default function ProjectRetention() {
                     group={group}
                     money={money}
                     moneyExact={moneyExact}
+                    canRelease={writable}
                     onRelease={(row) => setReleaseFor({ invoice: invoiceById.get(row.id) })}
                   />
                 ))}
@@ -328,7 +343,7 @@ export default function ProjectRetention() {
                       <td className={`${tdMoney} font-semibold`}>{moneyExact(r.releaseTotal)}</td>
                       <td className={`${tdCls} max-w-[220px] truncate`} title={r.reason}>{r.reason || '—'}</td>
                       <td className="px-3.5 py-2.5 whitespace-nowrap">
-                        {!isVoid && (
+                        {writable && !isVoid && (
                           <div className="flex items-center gap-1.5 justify-end">
                             {isDraft && (
                               <>
@@ -375,11 +390,12 @@ export default function ProjectRetention() {
         </div>
       </Card>
 
-      {releaseFor?.invoice && (
+      {writable && releaseFor?.invoice && (
         <ReleaseModal
           invoice={releaseFor.invoice}
           release={releaseFor.release ?? null}
           releases={retentionReleases}
+          creditNotes={supplierCreditNotes}
           currencyCode={currencyCode}
           onClose={() => setReleaseFor(null)}
           onSave={async (input) => {
@@ -392,7 +408,7 @@ export default function ProjectRetention() {
         />
       )}
 
-      {voidTarget && (
+      {writable && voidTarget && (
         <ReleaseVoidModal
           release={voidTarget}
           currencyCode={currencyCode}
@@ -405,7 +421,7 @@ export default function ProjectRetention() {
 }
 
 // One supplier group, expandable to its retention-holding invoices.
-function SupplierGroup({ group, money, moneyExact, onRelease }) {
+function SupplierGroup({ group, money, moneyExact, onRelease, canRelease = false }) {
   const [open, setOpen] = useState(false)
 
   return (
@@ -444,14 +460,16 @@ function SupplierGroup({ group, money, moneyExact, onRelease }) {
           <td className={`${tdMoney} text-brand-muted`}>{row.releasedTotal ? moneyExact(row.releasedTotal) : '—'}</td>
           <td className={`${tdMoney} font-semibold`}>{moneyExact(row.retentionHeld)}</td>
           <td className="px-3.5 py-2.5 text-right whitespace-nowrap">
-            <Btn
-              sm variant="ghost"
-              disabled={row.remainingRetentionExGst <= 0}
-              title={row.remainingRetentionExGst <= 0 ? 'All retention on this invoice has been released' : 'Release retention'}
-              onClick={() => onRelease(row)}
-            >
-              Release
-            </Btn>
+            {canRelease && (
+              <Btn
+                sm variant="ghost"
+                disabled={row.remainingRetentionExGst <= 0}
+                title={row.remainingRetentionExGst <= 0 ? 'All retention on this invoice has been released' : 'Release retention'}
+                onClick={() => onRelease(row)}
+              >
+                Release
+              </Btn>
+            )}
           </td>
         </tr>
       ))}

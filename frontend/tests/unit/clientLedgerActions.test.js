@@ -13,6 +13,7 @@ import {
   CLIENT_ENTRY_SHAPES, CLIENT_CREDIT_LINE_KEYS, CLIENT_ENTRY_LIMITS, clientEntryDraftProblem,
 } from '../../src/lib/clientEntryShape'
 import { describeWriteError, WRITE_FAILURE, WRITE_MESSAGES } from '../../src/lib/writeOutcome'
+import { COMMERCIAL_NOT_ACTIVATED_CODE, COMMERCIAL_MAINTENANCE_TEXT } from '../../src/lib/commercialActivation'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
@@ -941,11 +942,16 @@ describe('the browser has no path to a ledger or to `posted`', () => {
     expect(src).not.toMatch(/status:\s*(CCN_STATUS|CRR_STATUS|kind\.status)\.POSTED/)
     expect(src).not.toMatch(/postedAt:\s*serverTimestamp|postedBy:\s*uid/)
     expect(src).not.toMatch(/from 'firebase/)
+    // REFUND_VOID_SEGREGATION_TEXT and REFUND_WORDING are wording constants (D3 #47), not write paths.
     expect(Object.keys(actions).sort()).toEqual([
-      'APP_CHECK_REFUSED_TEXT', 'CLIENT_FINANCE_CALL_TIMEOUT_MS', 'CLIENT_RECEIPT_OVER_ALLOCATION_PREFIX', 'ClientFinanceUncertainError', 'VOID_REASON_MAX',
+      'APP_CHECK_REFUSED_TEXT', 'CLIENT_FINANCE_CALL_TIMEOUT_MS', 'CLIENT_RECEIPT_OVER_ALLOCATION_PREFIX', 'ClientFinanceUncertainError',
+      'REFUND_VOID_SEGREGATION_TEXT', 'REFUND_WORDING', 'VOID_REASON_MAX',
       'clientFinanceCallError', 'clientReceiptOverAllocationMessage',
+      'runClientApplicationPost', 'runClientApplicationVoid',   // Phase 2 step 5 — callables only
       'runClientCreditCreate', 'runClientCreditPost', 'runClientCreditUpdate', 'runClientCreditVoid',
+      'runClientInvoiceVoid',
       'runClientReceiptPost', 'runClientReceiptVoid',
+      'runClientRefundPost', 'runClientRefundVoid',
       'runClientReleaseCreate', 'runClientReleasePost', 'runClientReleaseUpdate', 'runClientReleaseVoid',
     ])
   })
@@ -977,6 +983,74 @@ describe('the browser has no path to a ledger or to `posted`', () => {
     for (const name of ['postClientCreditNote', 'voidClientCreditNote', 'postClientRetentionRelease', 'voidClientRetentionRelease', 'postClientReceipt', 'voidClientReceipt']) {
       expect(actionsSrc).toContain(`'${name}'`)
       expect(read('functions/src/index.js')).toMatch(new RegExp(`^export const ${name}\\s+= clientFinanceCall\\('${name}'\\)$`, 'm'))
+    }
+  })
+})
+
+// ── Phase 2 activation and the refund-void correction (D3 #47) ──────────────
+
+describe('a refund void refused under approval segregation, and the activation refusal', () => {
+  const call = (error) => async () => { throw error }
+  const read = (rel) => readFileSync(fileURLToPath(new URL(`../../${rel}`, import.meta.url)), 'utf8')
+  const voidRefund = (error) => actions.runClientRefundVoid({ call: call(error), projectId: 'p1', refundId: 'rf1', reason: 'Recorded twice', isSignedIn: () => true })
+  const SENTENCE = 'Approval segregation is enabled for this company: a refund is voided by another authorised member, not by the person who recorded it.'
+
+  it('voiding a POSTED refund: approval-segregation-required is a CERTAIN refusal with the SERVER\'s sentence', async () => {
+    const err = await voidRefund(serverError('failed-precondition', 'approval-segregation-required')).then(() => null, e => e)
+    expect(err.message).toBe('sdk text for failed-precondition')   // the server's own sentence (err.message)
+    expect(err.serverCode).toBe('approval-segregation-required')
+    expect(describeWriteError(err)).toEqual({ certain: true, kind: WRITE_FAILURE.LOCAL, message: err.message })
+    const withDetails = serverError('failed-precondition', 'approval-segregation-required', { message: SENTENCE })
+    expect((await voidRefund(withDetails).then(() => null, e => e)).message).toBe(SENTENCE)
+  })
+
+  it('with no server sentence at all, the fixed refund-void text — still certain', () => {
+    const bare = { name: 'FirebaseError', code: 'functions/failed-precondition', message: '', details: { code: 'approval-segregation-required' } }
+    const err = clientFinanceCallError(bare, { noun: 'refund', voidFn: 'voidClientRefund' }, 'void')
+    expect(err).toBeInstanceOf(Error)
+    expect(describeWriteError(err).certain).toBe(true)
+  })
+
+  it('posting a credit note keeps its own segregation wording (unchanged); an application void is unchanged', async () => {
+    const h = setup({ server: async () => { throw serverError('failed-precondition', 'approval-segregation-required') } })
+    await h.createCredit('cnA', ROWS)
+    const posted = await h.postCredit('cnA').then(() => null, e => e)
+    expect(posted.message).toBe('Approval segregation is enabled for this company: this credit note must be posted by another authorised member — not by the user who prepared or last edited it. Nothing was posted.')
+    const app = await actions.runClientApplicationVoid({ call: call(serverError('failed-precondition', 'approval-segregation-required')), projectId: 'p1', applicationId: 'ap1', reason: 'x' }).then(() => null, e => e)
+    expect(app.message).toBe('Approval segregation is enabled for this company: this receipt application must be posted by another authorised member — not by the user who prepared or last edited it. Nothing was posted.')
+  })
+
+  it('commercial-completion-not-activated is a CERTAIN refusal with the maintenance text, for every Phase 2 client call', async () => {
+    const refused = serverError('failed-precondition', COMMERCIAL_NOT_ACTIVATED_CODE)
+    const runs = [
+      () => voidRefund(refused),
+      () => actions.runClientRefundPost({ call: call(refused), projectId: 'p1', refundId: 'rf1', input: { source: 'receipt', receiptId: 'r1', amount: 10, refundDate: '2026-11-01', method: 'bank_transfer', reference: 'x', reason: 'y' } }),
+      () => actions.runClientApplicationPost({ call: call(refused), projectId: 'p1', applicationId: 'a1', input: { receiptId: 'r1', clientInvoiceId: 'i1', amount: 10, applicationDate: '2026-11-01' } }),
+      () => actions.runClientApplicationVoid({ call: call(refused), projectId: 'p1', applicationId: 'a1', reason: 'x' }),
+      () => actions.runClientInvoiceVoid({ call: call(refused), projectId: 'p1', invoiceId: 'i1', reason: 'x' }),
+    ]
+    for (const run of runs) {
+      const err = await run().then(() => null, e => e)
+      expect(err).not.toBeInstanceOf(ClientFinanceUncertainError)
+      expect(err.message).toBe(COMMERCIAL_MAINTENANCE_TEXT)
+      expect(describeWriteError(err)).toEqual({ certain: true, kind: WRITE_FAILURE.LOCAL, message: COMMERCIAL_MAINTENANCE_TEXT })
+    }
+  })
+
+  it('the refund wording separates the four things: a record, a void, a real repayment, and no money moving', () => {
+    const w = actions.REFUND_WORDING
+    expect(w.RECORD).toMatch(/money was actually returned/)
+    expect(w.RECORD).toMatch(/after the bank payment has been made/)
+    expect(w.VOID).toMatch(/recorded in error/)
+    expect(w.VOID).toMatch(/kept and marked void/)
+    expect(w.VOID).toMatch(/no money moves/)
+    expect(w.REPAID).toMatch(/not a void/)
+    expect(w.REPAID).toMatch(/record a new receipt/)
+    expect(w.NO_MONEY).toMatch(/never moves money/)
+    expect(w.CONFIRM_BUTTON).toMatch(/no money moves/)
+    const dialog = read('src/pages/project/clientReceipts/ClientSettlement.jsx')
+    for (const key of ['RECORD', 'VOID', 'REPAID', 'NO_MONEY', 'SEGREGATION', 'CONFIRM_BUTTON', 'VOID_BUTTON', 'VOID_BUTTON_TITLE']) {
+      expect(dialog, key).toContain(`REFUND_WORDING.${key}`)
     }
   })
 })

@@ -344,6 +344,14 @@ const RFI_GROUP_HINTS = {
 };
 
 //#endregion
+//#region src/lib/supplierCalc.js
+const CALC_VERSION = Object.freeze({
+	LEGACY: 1,
+	EXACT: 2
+});
+const CURRENT_CALC_VERSION = CALC_VERSION.EXACT;
+
+//#endregion
 //#region src/lib/variations.js
 const VARIATION_TYPE = {
 	CLIENT: "client",
@@ -612,7 +620,11 @@ const LEDGER_KIND = {
 	RELEASE: "release",
 	RELEASE_VOID: "release_void",
 	RECEIPT: "receipt",
-	RECEIPT_VOID: "receipt_void"
+	RECEIPT_VOID: "receipt_void",
+	APPLICATION: "application",
+	APPLICATION_VOID: "application_void",
+	REFUND: "refund",
+	REFUND_VOID: "refund_void"
 };
 const LEDGER_TOTAL_KEYS = [
 	"creditedSubtotalCents",
@@ -631,25 +643,28 @@ const emptyLedger = () => ({
 	releasedRetentionCents: 0,
 	releasedRetentionGstCents: 0,
 	receivedCents: 0,
+	refundedCents: 0,
+	refundedPresent: false,
 	lines: {}
 });
 const int = (v) => Number.isInteger(v) ? v : 0;
-const isLedgerCents = (v) => Number.isSafeInteger(v) && v >= 0;
+const isLedgerCents$1 = (v) => Number.isSafeInteger(v) && v >= 0;
 const ledgerFigureKeys = () => [
 	"seq",
 	...LEDGER_TOTAL_KEYS,
-	"receivedCents"
+	"receivedCents",
+	"refundedCents"
 ];
 const figureProblem = (key) => `The ledger figure ${key} is not a whole, non-negative number of cents.`;
 function storedLedgerProblem(doc) {
 	if (!doc) return null;
-	for (const key of ledgerFigureKeys()) if (doc[key] !== void 0 && !isLedgerCents(doc[key])) return figureProblem(key);
-	for (const [index, line] of Object.entries(doc.lines ?? {})) if (!isLedgerCents(line?.amountCents) || !isLedgerCents(line?.gstCents)) return figureProblem(`lines.${index}`);
-	if (doc.receiptBaseline !== void 0 && !isLedgerCents(doc.receiptBaseline?.legacyCents)) return figureProblem("receiptBaseline.legacyCents");
+	for (const key of ledgerFigureKeys()) if (doc[key] !== void 0 && !isLedgerCents$1(doc[key])) return figureProblem(key);
+	for (const [index, line] of Object.entries(doc.lines ?? {})) if (!isLedgerCents$1(line?.amountCents) || !isLedgerCents$1(line?.gstCents)) return figureProblem(`lines.${index}`);
+	if (doc.receiptBaseline !== void 0 && !isLedgerCents$1(doc.receiptBaseline?.legacyCents)) return figureProblem("receiptBaseline.legacyCents");
 	return null;
 }
 function ledgerStateProblem(ledger) {
-	for (const key of ledgerFigureKeys()) if (!isLedgerCents(ledger?.[key])) return figureProblem(key);
+	for (const key of ledgerFigureKeys()) if (!isLedgerCents$1(key === "refundedCents" && ledger?.[key] === void 0 ? 0 : ledger?.[key])) return figureProblem(key);
 	return null;
 }
 function readLedger(doc) {
@@ -658,6 +673,8 @@ function readLedger(doc) {
 	out.seq = int(doc.seq);
 	for (const key of LEDGER_TOTAL_KEYS) out[key] = int(doc[key]);
 	out.receivedCents = int(doc.receivedCents);
+	out.refundedCents = int(doc.refundedCents);
+	out.refundedPresent = doc.refundedCents !== void 0;
 	for (const [index, line] of Object.entries(doc.lines ?? {})) out.lines[index] = {
 		amountCents: int(line?.amountCents),
 		gstCents: int(line?.gstCents)
@@ -841,8 +858,38 @@ function applyReceiptVoid(ledgerState, allocatedCents, receiptId) {
 	next.receivedCents = (ledgerState.receivedCents ?? 0) - allocatedCents;
 	return next;
 }
+const netReceivedCents = (ledgerState) => (ledgerState?.receivedCents ?? 0) - (ledgerState?.refundedCents ?? 0);
 function ledgerRemainingCents(invoice, ledgerState) {
-	return ledgerPosition(invoice, ledgerState).receivableBasisCents - (ledgerState?.receivedCents ?? 0);
+	return ledgerPosition(invoice, ledgerState).receivableBasisCents - netReceivedCents(ledgerState);
+}
+const ledgerOwedCents = (invoice, ledgerState) => Math.max(0, ledgerRemainingCents(invoice, ledgerState));
+const ledgerRefundableCents = (invoice, ledgerState) => Math.max(0, -ledgerRemainingCents(invoice, ledgerState));
+function settlementInvariantError(invoice, ledgerState) {
+	if ((ledgerState?.refundedCents ?? 0) <= 0) return null;
+	if (ledgerRemainingCents(invoice, ledgerState) > 0) return "Money already refunded to the client out of this invoice would no longer be covered by what the invoice holds.";
+	return null;
+}
+function applyApplication(ledgerState, cents, applicationId) {
+	const next = step(ledgerState, LEDGER_KIND.APPLICATION, applicationId);
+	next.receivedCents = (ledgerState.receivedCents ?? 0) + cents;
+	return next;
+}
+function applyApplicationVoid(ledgerState, cents, applicationId) {
+	const next = step(ledgerState, LEDGER_KIND.APPLICATION_VOID, applicationId);
+	next.receivedCents = (ledgerState.receivedCents ?? 0) - cents;
+	return next;
+}
+function applyInvoiceRefund(ledgerState, cents, refundId) {
+	const next = step(ledgerState, LEDGER_KIND.REFUND, refundId);
+	next.refundedCents = (ledgerState.refundedCents ?? 0) + cents;
+	next.refundedPresent = true;
+	return next;
+}
+function applyInvoiceRefundVoid(ledgerState, cents, refundId) {
+	const next = step(ledgerState, LEDGER_KIND.REFUND_VOID, refundId);
+	next.refundedCents = (ledgerState.refundedCents ?? 0) - cents;
+	next.refundedPresent = true;
+	return next;
 }
 const applyRelease = (ledgerState, release) => moveRelease(ledgerState, release, 1, LEDGER_KIND.RELEASE);
 const applyReleaseVoid = (ledgerState, release) => moveRelease(ledgerState, release, -1, LEDGER_KIND.RELEASE_VOID);
@@ -855,7 +902,315 @@ function ledgerDocument(ledgerState) {
 	};
 	for (const key of LEDGER_TOTAL_KEYS) doc[key] = ledgerState[key];
 	doc.receivedCents = ledgerState.receivedCents ?? 0;
+	if (ledgerState.refundedPresent || (ledgerState.refundedCents ?? 0) !== 0) doc.refundedCents = ledgerState.refundedCents ?? 0;
 	return doc;
+}
+
+//#endregion
+//#region src/lib/clientReceiptPosting.js
+const DAY_MS = 1440 * 60 * 1e3;
+function latestPostableReceiptDate(now = /* @__PURE__ */ new Date()) {
+	const next = new Date(now.getTime() + DAY_MS);
+	return toIsoDate(new Date(next.getUTCFullYear(), next.getUTCMonth(), next.getUTCDate()));
+}
+function deriveReceiptTotals(receipt) {
+	if (!isWholeCents(receipt?.amount) || toCents(receipt.amount) <= 0) return { field: "amount" };
+	const amountCents = toCents(receipt.amount);
+	if (amountCents > 999999999999990) return {
+		field: "amount",
+		outOfRange: true,
+		maxCents: MAX_SUPPORTED_RECEIPT_CENTS
+	};
+	const allocations = [];
+	let allocatedCents = 0;
+	for (const [i, a] of (receipt.allocations ?? []).entries()) {
+		if (!isWholeCents(a?.allocatedAmount) || toCents(a.allocatedAmount) <= 0) return { field: `allocations[${i}].allocatedAmount` };
+		const cents = toCents(a.allocatedAmount);
+		allocations.push({
+			clientInvoiceId: a.clientInvoiceId,
+			invoiceNumber: a.invoiceNumber,
+			cents
+		});
+		allocatedCents += cents;
+	}
+	if (allocatedCents > amountCents) return { field: "allocations" };
+	if (!isWholeCents(receipt.allocatedTotal) || toCents(receipt.allocatedTotal) !== allocatedCents) return { field: "allocatedTotal" };
+	if (!isWholeCents(receipt.unallocatedAmount) || toCents(receipt.unallocatedAmount) !== amountCents - allocatedCents) return { field: "unallocatedAmount" };
+	return {
+		amountCents,
+		allocatedCents,
+		unallocatedCents: amountCents - allocatedCents,
+		allocations
+	};
+}
+function postedReceiptAllocations(receipt) {
+	if (!Array.isArray(receipt?.allocations)) return { field: "allocations" };
+	const byInvoice = /* @__PURE__ */ new Map();
+	for (const [i, a] of receipt.allocations.entries()) {
+		if (a === null || typeof a !== "object" || Array.isArray(a)) return { field: `allocations[${i}]` };
+		if (typeof a.clientInvoiceId !== "string" || a.clientInvoiceId.length === 0) return { field: `allocations[${i}].clientInvoiceId` };
+		const cents = toCents(a.allocatedAmount);
+		if (!isWholeCents(a.allocatedAmount) || cents <= 0 || !Number.isSafeInteger(cents)) return { field: `allocations[${i}].allocatedAmount` };
+		const row = byInvoice.get(a.clientInvoiceId);
+		if (row) row.cents += cents;
+		else byInvoice.set(a.clientInvoiceId, {
+			clientInvoiceId: a.clientInvoiceId,
+			invoiceNumber: typeof a.invoiceNumber === "string" ? a.invoiceNumber : "",
+			cents
+		});
+	}
+	const allocations = [...byInvoice.values()];
+	if (allocations.some((row) => !Number.isSafeInteger(row.cents))) return { field: "allocations" };
+	return {
+		allocations,
+		count: receipt.allocations.length
+	};
+}
+function receiptBaselineSums(postedReceipts, isInvoiceId = () => true) {
+	const byInvoice = /* @__PURE__ */ new Map();
+	let legacyAllocations = 0;
+	let legacyCents = 0;
+	for (const receipt of postedReceipts ?? []) {
+		const named = {
+			receiptId: receipt?.id ?? null,
+			number: typeof receipt?.receiptNumber === "string" ? receipt.receiptNumber : null
+		};
+		if (receipt?.allocatedInvoiceIds !== void 0) return { problem: {
+			kind: "inconsistent",
+			...named
+		} };
+		const parsed = postedReceiptAllocations(receipt);
+		if (parsed.field) return { problem: {
+			kind: "invalid",
+			...named,
+			field: parsed.field
+		} };
+		for (const a of parsed.allocations) {
+			if (!isInvoiceId(a.clientInvoiceId)) return { problem: {
+				kind: "invalid",
+				...named,
+				field: "allocations"
+			} };
+			const row = byInvoice.get(a.clientInvoiceId) ?? {
+				invoiceId: a.clientInvoiceId,
+				cents: 0,
+				receipts: 0
+			};
+			row.cents += a.cents;
+			row.receipts += 1;
+			byInvoice.set(a.clientInvoiceId, row);
+			legacyCents += a.cents;
+			if (!Number.isSafeInteger(row.cents) || !Number.isSafeInteger(legacyCents)) return { problem: {
+				kind: "range",
+				...named
+			} };
+		}
+		legacyAllocations += parsed.count;
+	}
+	return {
+		invoices: [...byInvoice.values()],
+		legacyPostedReceipts: (postedReceipts ?? []).length,
+		legacyAllocations,
+		legacyCents
+	};
+}
+function unlistedReceivedCents(receivedCents, listed) {
+	let explained = 0;
+	for (const r of listed ?? []) explained += r.allocatedCents;
+	return Math.max(0, receivedCents - explained);
+}
+function storedReceiptAllocations(receipt) {
+	return (Array.isArray(receipt?.allocations) ? receipt.allocations : []).filter((a) => typeof a?.clientInvoiceId === "string" && a.clientInvoiceId.length > 0 && toCents(a.allocatedAmount) > 0).map((a) => ({
+		clientInvoiceId: a.clientInvoiceId,
+		invoiceNumber: a.invoiceNumber ?? "",
+		cents: toCents(a.allocatedAmount)
+	}));
+}
+const allocatedInvoiceIds = (allocations) => [...new Set((allocations ?? []).map((a) => a.clientInvoiceId))].sort();
+function receiptOverAllocations(allocations, positions) {
+	const out = [];
+	for (const a of allocations ?? []) {
+		const position = positions?.[a.clientInvoiceId];
+		if (!position) continue;
+		const remainingCents = Math.max(0, ledgerRemainingCents(position.invoice, position.ledgerState));
+		if (a.cents > remainingCents) out.push({
+			invoiceId: a.clientInvoiceId,
+			invoiceNumber: position.invoice?.invoiceNumber || a.invoiceNumber || "",
+			allocatedCents: a.cents,
+			remainingCents,
+			excessCents: a.cents - remainingCents
+		});
+	}
+	return out;
+}
+
+//#endregion
+//#region src/lib/clientSettlement.js
+const SETTLEMENT_STATUS = {
+	POSTED: "posted",
+	VOID: "void"
+};
+const REFUND_SOURCE = {
+	RECEIPT: "receipt",
+	INVOICE: "invoice"
+};
+const REFUND_SOURCES = Object.values(REFUND_SOURCE);
+const CLIENT_REFUND_DOC_TYPE = "client_refund";
+const CLIENT_APPLICATION_DOC_TYPE = "client_receipt_application";
+const CLIENT_REFUND_COUNTER_ID = "clientRefunds";
+const CLIENT_APPLICATION_COUNTER_ID = "clientReceiptApplications";
+const SETTLEMENT_COUNTER_MAX = 999999999;
+const counterAfter = (n) => n + 1;
+const clientRefundNumberOf = (n) => `CRF-${String(n).padStart(4, "0")}`;
+const clientApplicationNumberOf = (n) => `CRA-${String(n).padStart(4, "0")}`;
+const SETTLEMENT_LIMITS = {
+	REFERENCE: 100,
+	REASON: 500,
+	NOTES: 1e3
+};
+const isText = (v, max, { required = false } = {}) => typeof v === "string" && v.length <= max && (!required || v.trim().length > 0);
+function requestCents(amount) {
+	if (typeof amount !== "number" || !isWholeCents(amount)) return null;
+	const cents = toCents(amount);
+	if (!Number.isSafeInteger(cents) || cents <= 0 || cents > 999999999999990) return null;
+	return cents;
+}
+const REFUND_REQUEST_KEYS = [
+	"projectId",
+	"refundId",
+	"source",
+	"receiptId",
+	"clientInvoiceId",
+	"amount",
+	"refundDate",
+	"method",
+	"reference",
+	"reason"
+];
+const APPLICATION_REQUEST_KEYS = [
+	"projectId",
+	"applicationId",
+	"receiptId",
+	"clientInvoiceId",
+	"amount",
+	"applicationDate",
+	"notes"
+];
+function refundRequestProblem(input) {
+	if (!REFUND_SOURCES.includes(input?.source)) return "source";
+	if (input.source === REFUND_SOURCE.RECEIPT && (typeof input.receiptId !== "string" || input.clientInvoiceId !== null)) return "receiptId";
+	if (input.source === REFUND_SOURCE.INVOICE && (typeof input.clientInvoiceId !== "string" || input.receiptId !== null)) return "clientInvoiceId";
+	if (requestCents(input.amount) === null) return "amount";
+	if (!isIsoDateShape(input.refundDate)) return "refundDate";
+	if (!isPaymentMethod(input.method)) return "method";
+	if (!isText(input.reference, SETTLEMENT_LIMITS.REFERENCE, { required: true })) return "reference";
+	if (!isText(input.reason, SETTLEMENT_LIMITS.REASON, { required: true })) return "reason";
+	return null;
+}
+function applicationRequestProblem(input) {
+	if (typeof input?.receiptId !== "string") return "receiptId";
+	if (typeof input.clientInvoiceId !== "string") return "clientInvoiceId";
+	if (requestCents(input.amount) === null) return "amount";
+	if (!isIsoDateShape(input.applicationDate)) return "applicationDate";
+	if (!isText(input.notes, SETTLEMENT_LIMITS.NOTES)) return "notes";
+	return null;
+}
+function postedReceiptUnallocatedCents(receipt) {
+	if (typeof receipt?.amount !== "number" || !isWholeCents(receipt.amount)) return { field: "amount" };
+	const amountCents = toCents(receipt.amount);
+	if (!Number.isSafeInteger(amountCents) || amountCents <= 0) return { field: "amount" };
+	const parsed = postedReceiptAllocations(receipt);
+	if (parsed.field) return { field: parsed.field };
+	const allocatedCents = parsed.allocations.reduce((sum, a) => sum + a.cents, 0);
+	if (!Number.isSafeInteger(allocatedCents) || allocatedCents > amountCents) return { field: "allocations" };
+	return {
+		cents: amountCents - allocatedCents,
+		amountCents,
+		allocatedCents
+	};
+}
+const RECEIPT_LEDGER_KIND = {
+	APPLICATION: "application",
+	APPLICATION_VOID: "application_void",
+	REFUND: "refund",
+	REFUND_VOID: "refund_void"
+};
+const isLedgerCents = (v) => Number.isSafeInteger(v) && v >= 0;
+const RECEIPT_LEDGER_FIGURES = [
+	"seq",
+	"appliedCents",
+	"refundedCents"
+];
+function receiptLedgerProblem(doc) {
+	if (!doc) return null;
+	for (const key of RECEIPT_LEDGER_FIGURES) if (!isLedgerCents(doc[key])) return `The receipt ledger figure ${key} is not a whole, non-negative number of cents.`;
+	return null;
+}
+const readReceiptLedger = (doc) => ({
+	seq: doc?.seq ?? 0,
+	appliedCents: doc?.appliedCents ?? 0,
+	refundedCents: doc?.refundedCents ?? 0
+});
+const receiptAvailableCents = (unallocatedCents, ledger) => unallocatedCents - (ledger?.appliedCents ?? 0) - (ledger?.refundedCents ?? 0);
+function moveReceiptLedger(ledger, { appliedCents = 0, refundedCents = 0 }, kind, entryId) {
+	return {
+		seq: (ledger?.seq ?? 0) + 1,
+		appliedCents: (ledger?.appliedCents ?? 0) + appliedCents,
+		refundedCents: (ledger?.refundedCents ?? 0) + refundedCents,
+		lastEntryId: entryId,
+		lastEntryKind: kind
+	};
+}
+function receiptLedgerStateProblem(state) {
+	for (const key of RECEIPT_LEDGER_FIGURES) if (!isLedgerCents(state?.[key])) return `The receipt ledger figure ${key} would not be a whole, non-negative number of cents.`;
+	return null;
+}
+function buildClientRefund({ refundNumber, source, receipt = null, invoice = null, clientId, clientName, currency, cents, refundDate, method, reference, reason, uid }) {
+	return {
+		docType: CLIENT_REFUND_DOC_TYPE,
+		refundNumber,
+		status: SETTLEMENT_STATUS.POSTED,
+		source,
+		receiptId: receipt?.id ?? null,
+		receiptNumber: receipt?.receiptNumber ?? null,
+		clientInvoiceId: invoice?.id ?? null,
+		invoiceNumber: invoice?.invoiceNumber ?? null,
+		clientId,
+		clientName: clientName || "",
+		currency,
+		amount: fromCents(cents),
+		refundDate,
+		method,
+		reference: reference.trim(),
+		reason: reason.trim(),
+		postedBy: uid,
+		voidedBy: null,
+		voidReason: "",
+		createdBy: uid,
+		updatedBy: uid
+	};
+}
+function buildReceiptApplication({ applicationNumber, receipt, invoice, cents, applicationDate, notes, uid }) {
+	return {
+		docType: CLIENT_APPLICATION_DOC_TYPE,
+		applicationNumber,
+		status: SETTLEMENT_STATUS.POSTED,
+		receiptId: receipt.id,
+		receiptNumber: receipt.receiptNumber ?? null,
+		clientInvoiceId: invoice.id,
+		invoiceNumber: invoice.invoiceNumber ?? null,
+		clientId: receipt.clientId,
+		clientName: receipt.clientName || "",
+		currency: receipt.currency,
+		amount: fromCents(cents),
+		applicationDate,
+		notes: (notes ?? "").trim(),
+		postedBy: uid,
+		voidedBy: null,
+		voidReason: "",
+		createdBy: uid,
+		updatedBy: uid
+	};
 }
 
 //#endregion
@@ -1174,142 +1529,4 @@ function clientReceiptDraftProblem(receipt) {
 }
 
 //#endregion
-//#region src/lib/clientReceiptPosting.js
-const DAY_MS = 1440 * 60 * 1e3;
-function latestPostableReceiptDate(now = /* @__PURE__ */ new Date()) {
-	const next = new Date(now.getTime() + DAY_MS);
-	return toIsoDate(new Date(next.getUTCFullYear(), next.getUTCMonth(), next.getUTCDate()));
-}
-function deriveReceiptTotals(receipt) {
-	if (!isWholeCents(receipt?.amount) || toCents(receipt.amount) <= 0) return { field: "amount" };
-	const amountCents = toCents(receipt.amount);
-	if (amountCents > 999999999999990) return {
-		field: "amount",
-		outOfRange: true,
-		maxCents: MAX_SUPPORTED_RECEIPT_CENTS
-	};
-	const allocations = [];
-	let allocatedCents = 0;
-	for (const [i, a] of (receipt.allocations ?? []).entries()) {
-		if (!isWholeCents(a?.allocatedAmount) || toCents(a.allocatedAmount) <= 0) return { field: `allocations[${i}].allocatedAmount` };
-		const cents = toCents(a.allocatedAmount);
-		allocations.push({
-			clientInvoiceId: a.clientInvoiceId,
-			invoiceNumber: a.invoiceNumber,
-			cents
-		});
-		allocatedCents += cents;
-	}
-	if (allocatedCents > amountCents) return { field: "allocations" };
-	if (!isWholeCents(receipt.allocatedTotal) || toCents(receipt.allocatedTotal) !== allocatedCents) return { field: "allocatedTotal" };
-	if (!isWholeCents(receipt.unallocatedAmount) || toCents(receipt.unallocatedAmount) !== amountCents - allocatedCents) return { field: "unallocatedAmount" };
-	return {
-		amountCents,
-		allocatedCents,
-		unallocatedCents: amountCents - allocatedCents,
-		allocations
-	};
-}
-function postedReceiptAllocations(receipt) {
-	if (!Array.isArray(receipt?.allocations)) return { field: "allocations" };
-	const byInvoice = /* @__PURE__ */ new Map();
-	for (const [i, a] of receipt.allocations.entries()) {
-		if (a === null || typeof a !== "object" || Array.isArray(a)) return { field: `allocations[${i}]` };
-		if (typeof a.clientInvoiceId !== "string" || a.clientInvoiceId.length === 0) return { field: `allocations[${i}].clientInvoiceId` };
-		const cents = toCents(a.allocatedAmount);
-		if (!isWholeCents(a.allocatedAmount) || cents <= 0 || !Number.isSafeInteger(cents)) return { field: `allocations[${i}].allocatedAmount` };
-		const row = byInvoice.get(a.clientInvoiceId);
-		if (row) row.cents += cents;
-		else byInvoice.set(a.clientInvoiceId, {
-			clientInvoiceId: a.clientInvoiceId,
-			invoiceNumber: typeof a.invoiceNumber === "string" ? a.invoiceNumber : "",
-			cents
-		});
-	}
-	const allocations = [...byInvoice.values()];
-	if (allocations.some((row) => !Number.isSafeInteger(row.cents))) return { field: "allocations" };
-	return {
-		allocations,
-		count: receipt.allocations.length
-	};
-}
-function receiptBaselineSums(postedReceipts, isInvoiceId = () => true) {
-	const byInvoice = /* @__PURE__ */ new Map();
-	let legacyAllocations = 0;
-	let legacyCents = 0;
-	for (const receipt of postedReceipts ?? []) {
-		const named = {
-			receiptId: receipt?.id ?? null,
-			number: typeof receipt?.receiptNumber === "string" ? receipt.receiptNumber : null
-		};
-		if (receipt?.allocatedInvoiceIds !== void 0) return { problem: {
-			kind: "inconsistent",
-			...named
-		} };
-		const parsed = postedReceiptAllocations(receipt);
-		if (parsed.field) return { problem: {
-			kind: "invalid",
-			...named,
-			field: parsed.field
-		} };
-		for (const a of parsed.allocations) {
-			if (!isInvoiceId(a.clientInvoiceId)) return { problem: {
-				kind: "invalid",
-				...named,
-				field: "allocations"
-			} };
-			const row = byInvoice.get(a.clientInvoiceId) ?? {
-				invoiceId: a.clientInvoiceId,
-				cents: 0,
-				receipts: 0
-			};
-			row.cents += a.cents;
-			row.receipts += 1;
-			byInvoice.set(a.clientInvoiceId, row);
-			legacyCents += a.cents;
-			if (!Number.isSafeInteger(row.cents) || !Number.isSafeInteger(legacyCents)) return { problem: {
-				kind: "range",
-				...named
-			} };
-		}
-		legacyAllocations += parsed.count;
-	}
-	return {
-		invoices: [...byInvoice.values()],
-		legacyPostedReceipts: (postedReceipts ?? []).length,
-		legacyAllocations,
-		legacyCents
-	};
-}
-function unlistedReceivedCents(receivedCents, listed) {
-	let explained = 0;
-	for (const r of listed ?? []) explained += r.allocatedCents;
-	return Math.max(0, receivedCents - explained);
-}
-function storedReceiptAllocations(receipt) {
-	return (Array.isArray(receipt?.allocations) ? receipt.allocations : []).filter((a) => typeof a?.clientInvoiceId === "string" && a.clientInvoiceId.length > 0 && toCents(a.allocatedAmount) > 0).map((a) => ({
-		clientInvoiceId: a.clientInvoiceId,
-		invoiceNumber: a.invoiceNumber ?? "",
-		cents: toCents(a.allocatedAmount)
-	}));
-}
-const allocatedInvoiceIds = (allocations) => [...new Set((allocations ?? []).map((a) => a.clientInvoiceId))].sort();
-function receiptOverAllocations(allocations, positions) {
-	const out = [];
-	for (const a of allocations ?? []) {
-		const position = positions?.[a.clientInvoiceId];
-		if (!position) continue;
-		const remainingCents = Math.max(0, ledgerRemainingCents(position.invoice, position.ledgerState));
-		if (a.cents > remainingCents) out.push({
-			invoiceId: a.clientInvoiceId,
-			invoiceNumber: position.invoice?.invoiceNumber || a.invoiceNumber || "",
-			allocatedCents: a.cents,
-			remainingCents,
-			excessCents: a.cents - remainingCents
-		});
-	}
-	return out;
-}
-
-//#endregion
-export { CCN_DOC_TYPE, CCN_STATUS, CI_STATUS, CLIENT_CREDIT_LINE_KEYS, CLIENT_ENTRY_SHAPES, CLIENT_RECEIPT_ALLOCATION_KEYS, CLIENT_RECEIPT_KEYS, CRR_DOC_TYPE, CRR_STATUS, LEDGER_KIND, LEDGER_TOTAL_KEYS, MAX_SUPPORTED_AMOUNT_CENTS, MAX_SUPPORTED_RECEIPT_CENTS, PAYMENT_STATUS, allocatedInvoiceIds, applyCredit, applyCreditVoid, applyReceipt, applyReceiptVoid, applyRelease, applyReleaseVoid, buildClientCreditNote, buildClientRetentionRelease, clientEntryDraftProblem, clientFinanceActivated, clientReceiptDraftProblem, deriveReceiptTotals, fromCents, invoiceRetention, invoiceTotals, isWholeCents, latestPostableReceiptDate, ledgerDocument, ledgerInvariantError, ledgerPosition, ledgerStateProblem, postedReceiptAllocations, readLedger, receiptBaselineSums, receiptOverAllocations, storedLedgerProblem, storedReceiptAllocations, toCents, unlistedReceivedCents };
+export { APPLICATION_REQUEST_KEYS, CCN_DOC_TYPE, CCN_STATUS, CI_STATUS, CLIENT_APPLICATION_COUNTER_ID, CLIENT_APPLICATION_DOC_TYPE, CLIENT_CREDIT_LINE_KEYS, CLIENT_ENTRY_SHAPES, CLIENT_RECEIPT_ALLOCATION_KEYS, CLIENT_RECEIPT_KEYS, CLIENT_REFUND_COUNTER_ID, CLIENT_REFUND_DOC_TYPE, CRR_DOC_TYPE, CRR_STATUS, LEDGER_KIND, LEDGER_TOTAL_KEYS, MAX_SUPPORTED_AMOUNT_CENTS, MAX_SUPPORTED_RECEIPT_CENTS, PAYMENT_STATUS, RECEIPT_LEDGER_KIND, REFUND_REQUEST_KEYS, REFUND_SOURCE, SETTLEMENT_COUNTER_MAX, SETTLEMENT_STATUS, allocatedInvoiceIds, applicationRequestProblem, applyApplication, applyApplicationVoid, applyCredit, applyCreditVoid, applyInvoiceRefund, applyInvoiceRefundVoid, applyReceipt, applyReceiptVoid, applyRelease, applyReleaseVoid, buildClientCreditNote, buildClientRefund, buildClientRetentionRelease, buildReceiptApplication, clientApplicationNumberOf, clientEntryDraftProblem, clientFinanceActivated, clientReceiptDraftProblem, clientRefundNumberOf, counterAfter, deriveReceiptTotals, fromCents, invoiceRetention, invoiceTotals, isWholeCents, latestPostableReceiptDate, ledgerDocument, ledgerInvariantError, ledgerOwedCents, ledgerPosition, ledgerRefundableCents, ledgerRemainingCents, ledgerStateProblem, moveReceiptLedger, netReceivedCents, postedReceiptAllocations, postedReceiptUnallocatedCents, readLedger, readReceiptLedger, receiptAvailableCents, receiptBaselineSums, receiptLedgerProblem, receiptLedgerStateProblem, receiptOverAllocations, refundRequestProblem, requestCents, settlementInvariantError, storedLedgerProblem, storedReceiptAllocations, toCents, unlistedReceivedCents };

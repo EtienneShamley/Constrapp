@@ -6,7 +6,8 @@ import { invoiceRetention } from './clientInvoices'
 // ONE document per issued client invoice
 // (`…/projects/{projectId}/clientInvoiceLedgers/{invoiceId}`) holding the
 // running totals of everything posted AGAINST that invoice: client credit
-// notes and client retention releases.
+// notes, client retention releases and — since the final pass of ADR-89 — what
+// posted client receipts have allocated to it (`receivedCents`).
 //
 // ⚠️ THE LEDGER IS THE ENFORCEMENT DEVICE, NOT THE SOURCE OF FIGURES. A
 // cumulative cap needs one document every posting must pass through. The ledger
@@ -39,6 +40,11 @@ export const LEDGER_KIND = {
   RELEASE_VOID: 'release_void',
   RECEIPT:      'receipt',
   RECEIPT_VOID: 'receipt_void',
+  // Phase 2 step 5 (ADR-95): settlement of client money.
+  APPLICATION:      'application',       // a receipt's unallocated funds applied to this invoice
+  APPLICATION_VOID: 'application_void',  // that application corrected (an erroneous record)
+  REFUND:           'refund',            // money actually returned to the client from this invoice's overpayment
+  REFUND_VOID:      'refund_void',       // that refund record corrected — NOT a cash reversal
 }
 
 // ⚠️ RECEIVED (ADR-89, receipt dependency). `receivedCents` is what POSTED
@@ -68,12 +74,26 @@ export const LEDGER_TOTAL_KEYS = [
   'releasedRetentionCents', 'releasedRetentionGstCents',
 ]
 
+// ⚠️ REFUNDED (Phase 2 step 5, ADR-95). `refundedCents` is what has been
+// REFUNDED to the client out of this invoice's overpayment — money actually
+// returned, recorded by the trusted backend (`postClientRefund`, source
+// `invoice`). Receipts and their allocations are never rewritten: the net
+// received on the invoice is `receivedCents − refundedCents`. Like
+// `receivedCents` it is outside LEDGER_TOTAL_KEYS. It is written only once
+// some refund has touched the invoice (`refundedPresent`), so every ledger
+// that never had one keeps exactly the document it had before this step.
+// A receipt's unallocated funds applied to this invoice (`postClientReceipt
+// Application`) are a receipt allocation made later, so they move
+// `receivedCents`; the application document records which receipt paid.
+
 export const emptyLedger = () => ({
   seq: 0,
   creditedSubtotalCents: 0, creditedGstCents: 0,
   creditedRetentionCents: 0, creditedRetentionGstCents: 0,
   releasedRetentionCents: 0, releasedRetentionGstCents: 0,
   receivedCents: 0,
+  refundedCents: 0,
+  refundedPresent: false,
   lines: {},
 })
 
@@ -84,7 +104,7 @@ const int = (v) => (Number.isInteger(v) ? v : 0)
 const isLedgerCents = (v) => Number.isSafeInteger(v) && v >= 0
 
 // (a function, so a bundle that needs no ledger check carries none of this)
-const ledgerFigureKeys = () => ['seq', ...LEDGER_TOTAL_KEYS, 'receivedCents']
+const ledgerFigureKeys = () => ['seq', ...LEDGER_TOTAL_KEYS, 'receivedCents', 'refundedCents']
 const figureProblem = (key) => `The ledger figure ${key} is not a whole, non-negative number of cents.`
 
 // Why a STORED ledger document cannot be trusted, or null. `readLedger` reads
@@ -109,7 +129,9 @@ export function storedLedgerProblem(doc) {
 // a receipt's as well as a credit note's.
 export function ledgerStateProblem(ledger) {
   for (const key of ledgerFigureKeys()) {
-    if (!isLedgerCents(ledger?.[key])) return figureProblem(key)
+    // A state built before step 5 carries no `refundedCents`: that is zero.
+    const value = key === 'refundedCents' && ledger?.[key] === undefined ? 0 : ledger?.[key]
+    if (!isLedgerCents(value)) return figureProblem(key)
   }
   return null
 }
@@ -122,6 +144,8 @@ export function readLedger(doc) {
   out.seq = int(doc.seq)
   for (const key of LEDGER_TOTAL_KEYS) out[key] = int(doc[key])
   out.receivedCents = int(doc.receivedCents)
+  out.refundedCents = int(doc.refundedCents)
+  out.refundedPresent = doc.refundedCents !== undefined
   for (const [index, line] of Object.entries(doc.lines ?? {})) {
     out.lines[index] = { amountCents: int(line?.amountCents), gstCents: int(line?.gstCents) }
   }
@@ -449,10 +473,71 @@ export function applyReceiptVoid(ledgerState, allocatedCents, receiptId) {
   return next
 }
 
-// What the invoice is owed NOW less what posted receipts have allocated to it
-// (whole cents, signed). Negative = owed to the client.
+// What posted receipts (and applications) have allocated to the invoice, less
+// what has been refunded to the client out of it — the money the invoice
+// actually holds (whole cents).
+export const netReceivedCents = (ledgerState) => (ledgerState?.receivedCents ?? 0) - (ledgerState?.refundedCents ?? 0)
+
+// What the invoice is owed NOW less the money it holds (whole cents, signed).
+// Negative = owed to the client.
 export function ledgerRemainingCents(invoice, ledgerState) {
-  return ledgerPosition(invoice, ledgerState).receivableBasisCents - (ledgerState?.receivedCents ?? 0)
+  return ledgerPosition(invoice, ledgerState).receivableBasisCents - netReceivedCents(ledgerState)
+}
+
+// What the invoice is still OWED, never less than zero (whole cents) — the
+// most a receipt application may bring to it.
+export const ledgerOwedCents = (invoice, ledgerState) => Math.max(0, ledgerRemainingCents(invoice, ledgerState))
+
+// What may still be refunded to the client out of this invoice: its
+// overpayment, never less than zero (whole cents).
+export const ledgerRefundableCents = (invoice, ledgerState) => Math.max(0, -ledgerRemainingCents(invoice, ledgerState))
+
+// ── The settlement invariant (Phase 2 step 5, ADR-95) ────────────────────────
+//
+//   S1  A refund is justified only by an overpayment: once anything has been
+//       refunded out of an invoice, the money it still holds never falls below
+//       what is receivable on it —  refunded > 0  ⇒  received − refunded ≥ basis.
+//
+// Checked by the trusted backend on EVERY movement of an invoice ledger: a
+// credit-note void or a retention release (which raise what is receivable), a
+// receipt void or an application void (which lower what is received), and the
+// refund itself. A movement that would break it is REFUSED — the settlement it
+// would invalidate is corrected first (or the client pays again). Nothing is
+// clamped. With nothing refunded the condition is vacuous: an invoice that is
+// simply unpaid is not an exception.
+export function settlementInvariantError(invoice, ledgerState) {
+  if ((ledgerState?.refundedCents ?? 0) <= 0) return null
+  if (ledgerRemainingCents(invoice, ledgerState) > 0) {
+    return 'Money already refunded to the client out of this invoice would no longer be covered by what the invoice holds.'
+  }
+  return null
+}
+
+// An application of a receipt's unallocated funds to this invoice, and its
+// correction. Like a receipt allocation, never clamped.
+export function applyApplication(ledgerState, cents, applicationId) {
+  const next = step(ledgerState, LEDGER_KIND.APPLICATION, applicationId)
+  next.receivedCents = (ledgerState.receivedCents ?? 0) + cents
+  return next
+}
+export function applyApplicationVoid(ledgerState, cents, applicationId) {
+  const next = step(ledgerState, LEDGER_KIND.APPLICATION_VOID, applicationId)
+  next.receivedCents = (ledgerState.receivedCents ?? 0) - cents
+  return next
+}
+
+// A refund out of this invoice's overpayment, and the correction of its record.
+export function applyInvoiceRefund(ledgerState, cents, refundId) {
+  const next = step(ledgerState, LEDGER_KIND.REFUND, refundId)
+  next.refundedCents = (ledgerState.refundedCents ?? 0) + cents
+  next.refundedPresent = true
+  return next
+}
+export function applyInvoiceRefundVoid(ledgerState, cents, refundId) {
+  const next = step(ledgerState, LEDGER_KIND.REFUND_VOID, refundId)
+  next.refundedCents = (ledgerState.refundedCents ?? 0) - cents
+  next.refundedPresent = true
+  return next
 }
 
 export const applyRelease = (ledgerState, release) => moveRelease(ledgerState, release, 1, LEDGER_KIND.RELEASE)
@@ -467,6 +552,8 @@ export function ledgerDocument(ledgerState) {
     lastEntryId: ledgerState.lastEntryId, lastEntryKind: ledgerState.lastEntryKind }
   for (const key of LEDGER_TOTAL_KEYS) doc[key] = ledgerState[key]
   doc.receivedCents = ledgerState.receivedCents ?? 0
+  // Only once a refund has touched the invoice (see `refundedCents` above).
+  if (ledgerState.refundedPresent || (ledgerState.refundedCents ?? 0) !== 0) doc.refundedCents = ledgerState.refundedCents ?? 0
   return doc
 }
 

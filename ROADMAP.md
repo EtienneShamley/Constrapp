@@ -231,12 +231,16 @@ Bring documentation in line with the implemented system:
 *Note:* `clientInvoices`, `clientReceipts` and `supplierPayments` are the
 collections whose lifecycle transitions and post-commit immutability **are**
 rules-enforced — the intended future standard for purchase orders, claims,
-supplier invoices, and variations. The gap is not academic: because posted
-supplier invoices are **not** yet protected, a direct-SDK caller can cancel one a
-payment has already settled (surfaced as an allocation exception) or forge
-`status: 'paid'` on one (ADR-24).
+supplier invoices, and variations. **Corrected 27 November 2026: that standard
+has since been applied** — supplier invoices by ADR-40, purchase orders by
+ADR-57, progress claims by ADR-58 and variations by ADR-59, all live. A posted
+supplier invoice is terminal under the Rules: it cannot be cancelled, edited or
+moved to the reserved `paid` status by any client. *As written before ADR-40:*
+the gap is not academic: because posted supplier invoices are **not** yet
+protected, a direct-SDK caller can cancel one a payment has already settled
+(surfaced as an allocation exception) or forge `status: 'paid'` on one (ADR-24).
 
-**Other deferred foundations:** user management UI (invite, assign role/company), project edit/delete (currency is the only project field editable after creation), self-serve signup, `.firebaserc`, CI deployment, and Azure secret management for the production `VITE_FIREBASE_*` build values. **Firebase Hosting is configured** in `frontend/firebase.json` (`public: dist`, SPA rewrite) and was **first deployed by hand on 19 October 2026** (PULSE™ 1B release); CI deployment remains future work — see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) → Private-Beta Release Checklist.
+**Other deferred foundations:** user management UI (invite, assign role/company), project delete (**corrected 27 November 2026:** since ADR-39 a project's name, status, location, start date and progress are editable, each change carrying its directory entry since ADR-83; currency stays editable only until the project holds monetary data; delete is blocked), self-serve signup, `.firebaserc`, CI deployment, and Azure secret management for the production `VITE_FIREBASE_*` build values. **Firebase Hosting is configured** in `frontend/firebase.json` (`public: dist`, SPA rewrite) and was **first deployed by hand on 19 October 2026** (PULSE™ 1B release); CI deployment remains future work — see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) → Private-Beta Release Checklist.
 
 **Lint baseline — RESOLVED.** This paragraph recorded an accepted baseline of **17 errors, 0 warnings** with Azure running lint under `continueOnError: true`. Both are gone: the baseline is **0 errors, 0 warnings**, lint is **blocking** in CI, and the eleven legacy hooks were migrated in the bounded feature this paragraph predicted — **`feature/lint-zero-ci-hardening`** (see the completed entry above and **ADR-41**). Do not reintroduce an accepted baseline.
 
@@ -274,7 +278,7 @@ file and in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md); the table adds none.
 | 2 | **International infrastructure assessment** | **DONE — read-only assessment delivered and approved by the architect, 18 November 2026.** Decisions: retain the Sydney (`australia-southeast1`) infrastructure; no Firestore migration or duplication; Australian GST behaviour unchanged; international tax compliance deferred to a dedicated future milestone | **Complete.** One pre-customer operational requirement came out of it: **Firestore recovery protection** (PITR, daily backups, delete protection) — **ENABLED 18 November 2026 20:27 UTC; VERIFIED read-only 19 November 2026:** point-in-time recovery enabled (7-day window), a daily backup schedule with 14-day retention (`86b478d6…`), database delete protection enabled. **No backup existed yet at that check, so the first READY backup is UNVERIFIED, and the non-production restore test is PENDING** (procedure: DEPLOYMENT.md → *Firestore recovery protection*). **Status update (21 November 2026, NZ): two scheduled backups are READY — VERIFIED read-only** (`d05840df…`, snapshot 19 November 2026 16:51 UTC; `f6e32570…`, snapshot 20 November 2026 17:01 UTC; each retained 14 days). **Restoration verification SUCCESSFUL — recorded 21 November 2026 (REPORTED by the Lead Architect; counts for 44 collection groups / 211 documents and one sample hash matched; not every document's contents compared; record: DEPLOYMENT.md → *Restoration verification record*).** *As written before the run:* restoration verification PREPARED, NOT RUN (procedure: `ops/recovery/README.md`; L3 Stage 1). | The first READY backup and the restore test must be recorded before commercial customer onboarding | No ADR (no architecture change) | Recovery protection is a separate operational authorisation |
 | 3 | **L2 — Commercial Reports and Final Account** | **L2-A Commercial Report — LIVE and production-accepted (REPORTED by the Lead Architect, 19 November 2026; merged to `main` as `2d5787c`)**: a read-only, one-project, live report on the Reports tab (financial summary, cost-code breakdown, variations, cash position), CSV export and print / Save as PDF; composition of existing selectors only; no Rules, Functions, collection or write (TESTING.md §60) | L2-A complete. **L2-B Final Account:** **Stage A — Rules capacity recovery 3 (ADR-76) LIVE** since 18 November 2026 21:57 UTC (`main` `28e5c9f`; live ruleset verified 229,115 bytes, byte-identical to `main`, 19 November 2026). **Stage B — Final Account (ADR-77) DEPLOYED — PRODUCTION ACCEPTANCE PENDING** (REPORTED by the Product Owner and the Lead Architect, 20 November 2026: Firestore Rules, the `approveFinalAccount` callable and Hosting deployed; Azure CI green on `main` `c4b93e5`; merged from `feature/l2b-final-account`). The reconciliation correction — a readiness requirement against over-allocated client invoices and corrected live / draft wording — is DEPLOYED (REPORTED by the Lead Architect, 20 November 2026; merged to `main` as `891043a` — VERIFIED in Git): negative-readiness and reconciliation acceptance checks PASSED and browser screenshots verified; **positive approval, revision and export acceptance still PENDING**. As implemented 19 November 2026: revisions `draft → approved | withdrawn` under Commercial → Final Account; drafts and withdrawal through Rules; approval ONLY through the trusted `approveFinalAccount` callable, which recomputes every figure in one transaction; approved budget required, cost to complete zero, outstanding balances acknowledged; CSV and print for approved revisions (TESTING.md §62, §62a; DEPLOYMENT.md → *L2-B Stage B*). **Not production-accepted.** **L2-C Portfolio Reporting (ADR-78) — DEPLOYED; visual and export acceptance PASSED (REPORTED by the Lead Architect, 20 November 2026); remaining security, parity and performance checks OPEN** (merged to `main` as `93db6cc`; live Hosting bundle = the build of that commit, VERIFIED read-only 20 November 2026): a company-wide Portfolio page (`/portfolio`, financial roles) with one row per project taken from the L2-A Commercial Report model, grouped by project currency; subtotals within one currency only, in integer cents, shown only when every project in the group has a valid figure; aggregate margin; the five financial PULSE indicators; a one-shot, server-only loader bounded to three projects (no listener); CSV and print. No Rules, Functions, index, collection or write (TESTING.md §63). **GANTT core completion (ADR-79) — LIVE since 20 November 2026 08:52 UTC and Product Owner accepted** (merged as `9ce433d`; live bundle VERIFIED 21 November 2026; acceptance REPORTED): attention filter, programme CSV / print, last-change visibility; Hosting-only (TESTING.md §64). **L2-C: visual, CSV and PDF acceptance confirmed (REPORTED, 21 November 2026)** | GANTT core completion is released and accepted. Still open, as product acceptance items outside L3: the remaining L2-C checks (TESTING.md §63 — security, parity, performance) and the L2-B positive acceptance (TESTING.md §62 — approval, revisions, export). After GANTT: L3, then L4, L5; Constrap IQ and Quant AI later (Lead Architect's sequencing, 20 November 2026) | L2-A approved by the architect 18 November 2026; no ADR (no new pattern). ADR-76 (Stage A) and ADR-77 (Stage B — includes the narrowly scoped ADR-72 exception for the one financial callable) | L2-B Stage B implemented and deployed; the reconciliation correction REPORTED released 20 November 2026; L2-C released (ADR-78; REPORTED 20 November 2026). GANTT core completion implementation approved by the Lead Architect 20 November 2026 (ADR-79); its integration and release not yet approved |
 | 4 | **L3 — Production Reliability** | **CLOSED — REPORTED by the Lead Architect, 21 November 2026. Stage 2 (ADR-80) is LIVE:** merged to `main` as `b7f825f`, which is contained in `a30699e`, the `main` commit of the L4 Hosting release (ancestry VERIFIED in Git, 22 November 2026; the L4 production deployment REPORTED passed — *L4* row below). Its own browser acceptance (TESTING.md §66 E1–E10) is not recorded. *As written on 21 November 2026:* Stage 2 merged to `main` as `b7f825f` — VERIFIED in Git; its Hosting deploy and browser acceptance are NOT independently verified in this record. *As written while in progress:* **IN PROGRESS (21 November 2026).** Read-only assessment delivered and approved by the Lead Architect (GO for Stage 1). **Stage 1 — PREPARED on `chore/l3-recovery-monitoring` (uncommitted); nothing created in production and no restore run:** a Firestore restoration verification procedure with a read-only count script (`ops/recovery/`), an uptime check on `app.constrap.com` with its alert policy and an alert on `approveFinalAccount` server failures (`ops/monitoring/`, files only), an operations runbook (`ops/RUNBOOK.md`), and the documentation closeout. Two READY Firestore backups VERIFIED | Architect review and Git integration of Stage 1; then, each on its own Product Owner authorisation: create the uptime check and the two alert policies; run the restoration verification. **Status update (21 November 2026): Stage 1 CLOSED.** Monitoring CREATED and VERIFIED read-only: an uptime check on `app.constrap.com`, alert policies `15559930914799323534` (uptime) and `9683374685335961795` (Final Account failure), both enabled; the three DC46 policies preserved; alert delivery NOT tested (*as written* — tested 24 November 2026 UTC through a temporary policy on the Product Owner channel, C1-D). Restoration verification SUCCESSFUL (REPORTED by the Lead Architect): the 20 November backup restored into `restore-verify-20261120-2329`, unauthenticated request 403, 44 collection groups / 211 documents and the sample hash matched, temporary database removed, only `(default)` listed with delete protection enabled (listing VERIFIED); deletion time and mechanism not independently established; not every document's contents compared (DEPLOYMENT.md → *L3 Stage 1*). **Stage 2 — application error recovery (ADR-80) IMPLEMENTED on `fix/l3-application-error-recovery` (uncommitted), NOT DEPLOYED, Hosting-only:** the project route distinguishes loading, not found, access refused, read failure and an unconfirmed cached answer; one write-outcome helper (confirmed / failed / uncertain, never retries) applied to Client Invoices, Client Receipts and Supplier Payments; 58 older write sites remain (TESTING.md §66). *As written before Stage 2:* application error recovery, Hosting-only — the project loader showing *Project not found* when the projects read failed, and a shared write-error helper for the older registers. Assessed and NOT in L3: a CI deploy stage, general App Check enforcement, a client error-reporting service, route splitting, an availability monitor outside the production project | No ADR: Stage 1 follows the existing `ops/monitoring` convention and introduces no pattern. DEPLOYMENT.md → *L3 Stage 1*; TESTING.md §65 | Stage 1 implementation approved by the Lead Architect, 21 November 2026. No production action approved |
-| 5 | **L4 — BOQ-to-Approved-Budget integration** | BOQ foundation (ADR-32 Part 1); Approved Budget Versions (ADR-70) and Controlled Budget Adjustments (ADR-71). **L4 transfer (ADR-81) IMPLEMENTED on `feature/l4-boq-budget-transfer` (uncommitted), 21 November 2026 — NOT DEPLOYED:** *Transfer to budget* on the BOQ tab; a trusted `transferBoqToBudget` callable that recomputes the proposal in one transaction and creates or refreshes ONE working budget line per cost code, with first / latest transfer provenance; a Rules reservation of BOQ-sourced lines; the approved-budget model untouched (TESTING.md §67) | **CLOSED — LIVE and production-accepted, 22 November 2026 (REPORTED by the Lead Architect).** Azure CI and the production deployment passed (`main` `a30699e`); production financial acceptance passed in the retained *L4 Acceptance Sandbox* (`3OyBieoY4QHAfQsxBH8T`, which stays in production and contributes to the company Portfolio totals); the final confirmation-UX correction (`d90e21f`, `main` `74c2a6f`) passed; SHIELD versions 1 and 2 verified. **Browser gaps remain:** T9 server stale-review refusal not reproduced, T14 restricted-role check not performed, the Quant apply step of T16 not performed, real network disconnection not tested — the existing emulator coverage is retained as their evidence (TESTING.md §67 → *L4 closure record*). *As written before closure:* Architect review; Git integration; then, only after Azure `main` is green: Rules, ONLY the new callable, verify it, Hosting (DEPLOYMENT.md → *L4*); manual acceptance T1–T16. Emergency rollback keeps the L4 Rules and every working line. Browser behaviour NOT verified | Estimating (margin / overheads) is not built and is not part of L4. No frozen BOQ revision exists behind an approved version | ADR-81 | Architecture and the second financial Cloud Function approved by the Lead Architect, 21 November 2026. No production action approved |
+| 5 | **L4 — BOQ-to-Approved-Budget integration** | BOQ foundation (ADR-32 Part 1); Approved Budget Versions (ADR-70) and Controlled Budget Adjustments (ADR-71). **L4 transfer (ADR-81) — LIVE since 22 November 2026 (status column; corrected 27 November 2026 — this cell was written before the release).** *As written:* IMPLEMENTED on `feature/l4-boq-budget-transfer` (uncommitted), 21 November 2026 — NOT DEPLOYED: *Transfer to budget* on the BOQ tab; a trusted `transferBoqToBudget` callable that recomputes the proposal in one transaction and creates or refreshes ONE working budget line per cost code, with first / latest transfer provenance; a Rules reservation of BOQ-sourced lines; the approved-budget model untouched (TESTING.md §67) | **CLOSED — LIVE and production-accepted, 22 November 2026 (REPORTED by the Lead Architect).** Azure CI and the production deployment passed (`main` `a30699e`); production financial acceptance passed in the retained *L4 Acceptance Sandbox* (`3OyBieoY4QHAfQsxBH8T`, which stays in production and contributes to the company Portfolio totals); the final confirmation-UX correction (`d90e21f`, `main` `74c2a6f`) passed; SHIELD versions 1 and 2 verified. **Browser gaps remain:** T9 server stale-review refusal not reproduced, T14 restricted-role check not performed, the Quant apply step of T16 not performed, real network disconnection not tested — the existing emulator coverage is retained as their evidence (TESTING.md §67 → *L4 closure record*). *As written before closure:* Architect review; Git integration; then, only after Azure `main` is green: Rules, ONLY the new callable, verify it, Hosting (DEPLOYMENT.md → *L4*); manual acceptance T1–T16. Emergency rollback keeps the L4 Rules and every working line. Browser behaviour NOT verified | Estimating (margin / overheads) is not built and is not part of L4. No frozen BOQ revision exists behind an approved version | ADR-81 | Architecture and the second financial Cloud Function approved by the Lead Architect, 21 November 2026. No production action approved |
 | 6 | **L5 — Accounting integrations, Xero first** | Read-only architecture assessment delivered 22 November 2026 (`main` `74c2a6f`); nothing built | **ASSESSED — IMPLEMENTATION DEFERRED** (Product Owner, 22 November 2026; fourth in the *Approved development order (post-L4)* below). Proposed design preserved in ADR-82: one-way Constrap → Xero; explicit invoice export, as DRAFT Xero sales invoices first; a secure company-level OAuth connection; server-controlled tokens; durable idempotency and reconciliation; Xero keeps accounting authority and Constrap commercial authority; supplier bills and payment read-back later. *As written before:* Not started | **Product-market-fit validation** and a **separately approved integration strategy** (*Growth (later)*; *Anti-Goals*) — **NOT lifted**. A provider integration also needs server-side secrets and a trusted-backend ADR (ENGINEERING_STANDARDS.md §6). Known limitations recorded in ADR-82: Australian GST assumptions; incomplete international tax support; no BSD currency; jurisdiction-specific Xero mappings; Xero OAuth, API tier and certification requirements; supplier retention treatment unresolved | ADR-82 — PROPOSED, **NOT approved** | Not approved. No Xero registration, credential, secret, dependency or additional Cloud Function is authorised |
 | 7 | **Constrap IQ and AI capabilities** | Nothing. PULSE™, SHIELD™ and Quant™ shipped as deterministic, non-AI foundations | **DEFERRED** (Product Owner, 22 November 2026) until the core, international and integration foundations are sufficiently mature. Two future modules, both kept with their requirements: **Constrap IQ™** — project intelligence, forecasts, risk detection and decision support (fifth in the post-L4 order); **Quant™ AI** — drawing interpretation and automated quantity takeoff, accelerating the manual Quant™ pipeline that already exists (sixth). *As written before:* Not started. IQ™ has no screen | The AI Feature Placeholder Rule (AGENT.md) stays in force until an approved strategy lifts it; AI providers are server-side only (ENGINEERING_STANDARDS.md §6). Xero's developer terms forbid using its API data to train AI models (ADR-82) | *Development Order* items 6 and 9; no ADR | Not approved |
 | 8 | **Advanced construction modules** | Nothing under this name | Not started. **Unscoped future backlog item** — no features or priority assigned (22 November 2026) | Scope not recorded. *Development Order* items 9–10 list the remaining module work; every field module must state its commercial input or output | No scope, no ADR | Not approved |
@@ -455,7 +459,34 @@ of the work still to do:
     applies ADR-89 (complex commercial mutations in the trusted backend) and
     the permanent engineering principles (ENGINEERING_STANDARDS.md §9).
     - **Phase 1 — Commercial Finance: CLOSED** (above).
-    - **Phase 2 — Commercial Completion: NEXT, not started.**
+    - **Phase 2 — Commercial Completion: IN PROGRESS (authorised by the Lead
+      Architect, 27 November 2026 — REPORTED; ADR-92). ONE consolidated
+      programme with independently reviewable checkpoints and releases — this
+      replaces "each workstream needs its own brief" above for Phase 2. No
+      production deployment is authorised.** Planning identifiers: CC1 = item
+      1, CC2 = item 2, CC3 = item 3, CC4 = item 4, CC5 = item 5, **CC6 = the
+      supplier monetary precision work (D3 #35) carried inside item 5**, CC7 =
+      integrated acceptance.
+
+      **Progress register** (branch `feature/commercial-completion-phase-2`
+      from `main` `dfe3618`; uncommitted; evidence LOCAL / EMULATOR only):
+
+      | Step | Workstream | Content | State |
+      |---|---|---|---|
+      | 0 | — | Decisions recorded (ADR-90, ADR-91, ADR-92); environment safety (Functions acceptance on Node 22; emulator isolation guard) | **DONE** — emulator runs credential-isolated from 28 November 2026 (TESTING.md §84.2; tracker D3 #17 proposed closed for the suites, #40 open). *As written at the first checkpoint:* credential isolation PARTIAL, §83.9 |
+      | 1 | CC6 | Version-aware supplier calculation foundation (`lib/supplierCalc.js`, ADR-91) | **IMPLEMENTED** — foundation and variations only; PO, claim, invoice, credit-note and release formulas unchanged until steps 3–4 |
+      | 2 | CC5-A | Trusted variation processing (ADR-90 and its checkpoint correction): `createVariation`, `updateVariationDraft`, `approveVariation`, `applyVariationCommitment`; stored content verified at approval and at commitment application; variation counters backend-only; Rules 236,120 → 222,000 bytes | **IMPLEMENTED — NOT DEPLOYED**; architect review APPROVE WITH CORRECTIONS (REPORTED); corrections implemented and locally accepted 28 November 2026 (TESTING.md §84), awaiting the architect's closure decision |
+      | 3 | CC5-B | Trusted progress claims and supplier invoices (ADR-93): `progressClaimOperation`, `supplierInvoiceOperation`; per-PO claim ledger; ADR-91 versions through claims and invoices | **IMPLEMENTED — NOT DEPLOYED** (28 November 2026; TESTING.md §85) |
+      | 4 | CC4 | Supplier ledgers and historical baseline; credits on retained invoices (G1); cumulative caps (G2); dependency-safe voids (G3); payment protection (DC18) — `supplierSettlementOperation` (ADR-94) | **IMPLEMENTED — NOT DEPLOYED** (TESTING.md §85) |
+      | 5 | CC3 | Client refunds (`clientRefunds`) and receipt applications (`clientReceiptApplications`) as trusted facts; issued client invoice void moved to `voidClientInvoice` (D8); settlement invariant S1; Final Account blocks unsettled client money (ADR-95) | **IMPLEMENTED — NOT DEPLOYED** (TESTING.md §86); switch `CLIENT_SETTLEMENT_ENABLED` OFF in production |
+      | 6 | CC2 | Approval segregation as an operator-controlled company policy across the ADR-96 matrix; original contract value protected, corrected through `contractValueOperation` (G5) | **IMPLEMENTED — NOT DEPLOYED** (TESTING.md §87) |
+      | 7 | CC1 | Estimating as a pricing layer over the BOQ; immutable, self-contained estimate revisions in bounded chunks, built and approved by `estimateOperation`; markup / margin in basis points; estimate provenance on the ADR-81 handover; reviewed contract-value prefill (ADR-97) | **IMPLEMENTED — NOT DEPLOYED** (28 November 2026); switch `ESTIMATING_ENABLED` OFF in production |
+      | 8a | — | Release readiness: controlled company activation, D3 #46, D3 #47, baseline fence, monitoring and inventories (ADR-98) | **Done locally (28 Nov 2026) — awaiting architect.** TESTING.md §89 |
+      | 8 | CC7 | Integrated commercial acceptance; production cutover design | **Done locally (28 Nov 2026) — awaiting architect.** Emulator suites in one run (unit 6,330 · Rules 2,822 · Functions pure 288 · emulator 805), one-lifecycle oracle reconciliation, browser acceptance (TESTING.md §88), the complete cutover design (DEPLOYMENT.md). Not deployed; no production acceptance |
+
+      *Roadmap alignment (27 November 2026):* Phase 3 and Phase 4 are now
+      defined below; the earlier note that "Phase 4" was undefined is resolved.
+      *As written before the authorisation:* NEXT, not started.
       1. **Estimating** — the Estimate stage of the commercial lifecycle
          (between BOQ and Tender), on the cost-code spine.
       2. **Approval segregation** — separation of preparer and approver on
@@ -472,10 +503,52 @@ of the work still to do:
          claim-to-invoice pairing (ADR-89 Decision 9), each its own decision
          and release; the payable-side rounding correction (D3 #35,
          version-aware) rides with the second and third.
-    - **Phase 3 — scale and compliance (later):** production load testing
-      (ARCHITECTURE.md → *Capacity and load-test plan*); international tax
-      compliance, including the jurisdiction-specific treatment of credit
-      notes, retention and voids; CI/CD performance and cost optimisation.
+    - **Phase 3 — Production and SaaS readiness: PENDING (definition
+      confirmed by the Product Owner and Lead Architect, 27 November 2026 —
+      REPORTED). The commercial-launch and customer-onboarding readiness
+      gate. No Phase 3 implementation is authorised; its architecture and
+      sequencing are subject to a future assessment.** Scope:
+      - remaining security hardening, and the deferred onboarding controls
+        (tracker D1, D3; SECURITY.md → *Deferred Controls*);
+      - scalability and production load testing (ARCHITECTURE.md → *Capacity
+        and load-test plan*);
+      - company and customer onboarding (today: operator-only);
+      - subscription billing and feature entitlements (no pricing, tiers or
+        entitlement model is recorded — none is to be assumed);
+      - international readiness and supported-jurisdiction tax handling,
+        including the jurisdiction-specific treatment of credit notes,
+        retention and voids (currency support is not tax compliance);
+      - legal company identity and printable tax invoices (DC15);
+      - duplicate document numbering (DC6 / G6) and the client over-invoicing
+        policy (DC14 / G4);
+      - production monitoring, recovery and operational readiness;
+      - CI/CD performance and cost optimisation;
+      - the outstanding customer-readiness reliability and usability
+        findings (D3 #36, #39, the P2 external-role UI bundle, forecast-line
+        shape validation, and the items carried with every phase below).
+      *As written before this definition:* **Phase 3 — scale and compliance
+      (later):** production load testing; international tax compliance,
+      including the jurisdiction-specific treatment of credit notes, retention
+      and voids; CI/CD performance and cost optimisation. *(All three are
+      preserved in the scope above.)*
+    - **Phase 4 — Product expansion: DEFERRED (definition confirmed 27
+      November 2026 — REPORTED). Nothing is authorised.** Established order
+      (the post-L4 order of 22 November 2026, with onboarding readiness now in
+      Phase 3): (1) mobile and field experience — assess PWA and offline-first
+      capability BEFORE committing to a separate native application; (2) Xero
+      accounting integration — assessed and deferred, ADR-82 remains PROPOSED,
+      not approved; (3) Constrap IQ; (4) Quant AI — both deferred, the AI
+      placeholder rule (AGENT.md) stays in force; (5) the final comprehensive
+      production audit. **Essential customer-readiness security is never
+      deferred to Phase 4.**
+    - **International direction (27 November 2026 — REPORTED):** Australia,
+      the Bahamas and wider international markets. The Sydney
+      (`australia-southeast1`) infrastructure is retained pending evidence
+      that justifies a migration; international latency must be measured from
+      the relevant customer locations (only New Zealand has been measured).
+    - **Foundation and previous acceptance** (security, reliability,
+      reporting, GANTT, monitoring): CLOSED within their accepted scopes — the
+      *Strategic Development Sequence* table above and tracker section B.
     - **Carried with every phase:** D3 #36 and #39, alert coverage for the
       six client-finance callables, the outstanding Dashboard and browser
       acceptance limits listed above.
@@ -757,8 +830,9 @@ there. That is the honest prerequisite for genuinely serving those markets.
 **3b-i. Client Invoices / Accounts Receivable** — *foundation shipped (see Completed
 Foundations).* Client-side billing controlled against the Current Contract Sum and
 approved client variations, with read-time Available to Invoice, per-variation
-balances, and ageing by due date. **Remaining (deferred):** client retention,
-credit notes, client progress claims, revenue recognition, printable/PDF/email
+balances, and ageing by due date. **Remaining (deferred):** *(client retention and client credit notes
+shipped in Commercial Finance Phase 1, live 27 November 2026 — ADR-87, ADR-88)*
+client progress claims, revenue recognition, printable/PDF/email
 output, company legal & tax identity (the prerequisite for a compliant Australian
 Tax Invoice), and contract-level payment terms on the commercial baseline.
 
@@ -811,7 +885,7 @@ Flow shipped → Cash Flow visualisation shipped.** Remaining Cash Flow work is
 **date filtering** and **invoice retiming**.
 
 **4. BOQ and Estimating**
-Opens the preconstruction side. **4a — BOQ foundation: shipped** (see Completed Foundations): the measured Bill of Quantities against cost codes, with optional rates and a rules-enforced derived amount, plus the read-time BOQ-vs-budget comparison. **4b — BOQ → Budget transfer: LIVE, production-accepted 22 November 2026 (ADR-81, L4)** — one working budget line per cost code at a deterministic id, written only by the trusted `transferBoqToBudget` callable, so a double-transfer is structurally impossible; approval stays with SHIELD. **4c — Estimating: remaining**: margin/overheads producing an estimate.
+Opens the preconstruction side. **4a — BOQ foundation: shipped** (see Completed Foundations): the measured Bill of Quantities against cost codes, with optional rates and a rules-enforced derived amount, plus the read-time BOQ-vs-budget comparison. **4b — BOQ → Budget transfer: LIVE, production-accepted 22 November 2026 (ADR-81, L4)** — one working budget line per cost code at a deterministic id, written only by the trusted `transferBoqToBudget` callable, so a double-transfer is structurally impossible; approval stays with SHIELD. **4c — Estimating: IMPLEMENTED, NOT DEPLOYED (ADR-97, Phase 2 step 7)** — the Estimate tab: cost classification, explicit overheads and contingency, markup or margin, immutable approved revisions, estimate provenance on the budget handover.
 
 **5. Tender Packages, Subcontractor Invitations, and Bid Levelling**
 **Tender Foundation V1 shipped** (ADR-32 Part 2): tender packages (`TP-0001`,
@@ -847,10 +921,11 @@ released, so retained money finally has a route to becoming payable — via an
 ordinary Supplier Payment, with no change to the payment or allocation model.
 Supplier payments themselves moved forward to item 3b-iii and **shipped there**;
 **the `paid`/`paidAt` fields were deprecated in place, not activated** — see
-3b-iii and ADR-24. ⚠️ **Retained invoices still cannot receive credit notes**,
-even once their retention has been released — the ADR-31 boundary is unchanged
-by ADR-30. **Remaining (deferred):** client retention, client credit notes,
-retention due dates and defects-liability dates, contract-level retention
+3b-iii and ADR-24. ⚠️ **Retained SUPPLIER invoices still cannot receive credit
+notes**, even once their retention has been released — the ADR-31 boundary is
+unchanged by ADR-30; **closing it is Phase 2 step 4 (ADR-92 D10, gap G1).**
+**Remaining (deferred):** *(client retention and client credit notes shipped in
+Commercial Finance Phase 1 — ADR-87, ADR-88)* retention due dates and defects-liability dates, contract-level retention
 percentages/caps, first-half/second-half semantics as a first-class concept,
 retention credit notes, retention-paid attribution, final-account linkage, and
 release-due-date cash-flow timing (released retention currently ages from the

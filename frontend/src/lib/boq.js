@@ -7,7 +7,11 @@ import { CURRENCY_DISPLAY_LOCALE } from './currency'
 // A BOQ item is a MEASURED, cost-coded, optionally-priced line in the project's
 // Bill of Quantities: description, quantity, unit, and — once priced — a rate
 // and a derived amount. It is the provenance layer for the Approved Budget, not
-// a second budget: BOQ items feed NO financial figure anywhere in the app.
+// a second budget: BOQ items feed NO financial figure anywhere in the app
+// BY THEMSELVES. (Since ADR-81 a priced BOQ can be transferred into WORKING
+// budget lines — explicitly, by a person, through the trusted
+// `transferBoqToBudget` callable; lib/boqBudgetTransfer.js. Nothing here does
+// that, and an approved budget version is never touched by it.)
 // Budgeted, Committed, Actual, Invoiced, Forecast, Margin, and Cash Flow are
 // all computed exactly as before, from the same sources as before. The ONLY
 // output of this module beyond the register itself is a read-time comparison

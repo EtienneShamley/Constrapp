@@ -2,6 +2,7 @@ import { GST_RATE, roundMoney } from './purchaseOrders'
 import { safeAmount, toCents, isIsoDateShape } from './payments'
 import { SI_STATUS } from './supplierInvoices'
 import { isPayableInvoice, normaliseSupplierName, isLegacyNameMatch } from './supplierPayments'
+import { creditedRetentionByInvoice } from './supplierCreditNotes'
 
 // ── Supplier Retention (register) & Retention Release ────────────────────────
 //
@@ -132,7 +133,12 @@ export const voidRetentionReleases = (releases) =>
 //   Σ gstAmount    == roundMoney(retention × 10%) == invoice.retentionGst   EXACTLY
 //   Σ releaseTotal == retention + retentionGst    == invoice.retentionTotal EXACTLY
 //
-// for ANY number of partial releases and any drift-prone value. This is also the
+// for ANY number of partial releases and any drift-prone value — PROVIDED the
+// invoice's stored `retentionGst` is itself `roundMoney(retention × 10%)`. The
+// Rules also accept the exact half-up figure on a half-cent boundary (the GST
+// boundary pin), and for such an invoice these releases sum one cent short of
+// it. Releases move to an integer share of the STORED retention GST with the
+// supplier ledger (ADR-91 Decision 4; Phase 2 step 4). This is also the
 // exact formula Firestore rules re-derive per document (see firestore.rules →
 // retentionReleases), so a write the client considers valid is never rejected
 // there, and an arbitrary `gstAmount` is rejected outright rather than tolerated.
@@ -217,14 +223,19 @@ export const retentionInvoices = (invoices) =>
   (invoices ?? []).filter(inv => isPayableInvoice(inv) && toCents(safeAmount(inv.retentionTotal)) > 0)
 
 // One row per retention-holding invoice, all derived. Nothing here is stored.
-export function retentionInvoiceRows(invoices, releases) {
+// `creditNotes` (ADR-94, G1): the retained part of a posted credit note is
+// retention no longer held — the work it secured was credited. Defaults to
+// none, so every figure is unchanged for a project with no such credit.
+export function retentionInvoiceRows(invoices, releases, creditNotes = []) {
   const releasedGross = releasedByInvoiceId(releases)
   const releasedExGst = releasedExGstByInvoiceId(releases)
+  const creditedRetention = creditedRetentionByInvoice(creditNotes, invoices)
 
   return retentionInvoices(invoices).map((inv) => {
     const relTotal = roundMoney(safeAmount(releasedGross[inv.id]))
     const relExGst = roundMoney(safeAmount(releasedExGst[inv.id]))
     const retentionTotal = roundMoney(safeAmount(inv.retentionTotal))
+    const credited = creditedRetention[inv.id] ?? { exGst: 0, gross: 0 }
     return {
       id:                    inv.id,
       invoiceNumber:         inv.invoiceNumber,
@@ -241,9 +252,11 @@ export function retentionInvoiceRows(invoices, releases) {
       releasedGst:    roundMoney(relTotal - relExGst),
       releasedTotal:  relTotal,
       // Still held: not released, therefore not payable.
-      retentionHeld:  Math.max(0, roundMoney(retentionTotal - relTotal)),
-      remainingRetentionExGst: remainingRetentionExGst(inv, relExGst),
-      fullyReleased:  toCents(retentionTotal - relTotal) <= 0,
+      creditedRetentionExGst: credited.exGst,
+      creditedRetentionTotal: credited.gross,
+      retentionHeld:  Math.max(0, roundMoney(retentionTotal - relTotal - credited.gross)),
+      remainingRetentionExGst: remainingRetentionExGst(inv, roundMoney(relExGst + credited.exGst)),
+      fullyReleased:  toCents(retentionTotal - relTotal - credited.gross) <= 0,
       legacyNameMatch: isLegacyNameMatch(inv),
     }
   })
@@ -252,8 +265,8 @@ export function retentionInvoiceRows(invoices, releases) {
 // Groups the rows by supplier. Keys on supplierId when present, falling back to
 // the frozen supplierName for pre-Contacts (supplierId: null) invoices, which
 // are NEVER backfilled (ADR-15) — the supplierMatchesInvoice precedent.
-export function retentionBySupplier(invoices, releases) {
-  const rows = retentionInvoiceRows(invoices, releases)
+export function retentionBySupplier(invoices, releases, creditNotes = []) {
+  const rows = retentionInvoiceRows(invoices, releases, creditNotes)
   const groups = new Map()
 
   for (const row of rows) {
@@ -291,8 +304,8 @@ export function retentionBySupplier(invoices, releases) {
 // ⚠️ There is deliberately NO "released but unpaid" figure — see the module
 // header. `releasedToDate` is a CUMULATIVE statistic, never an outstanding,
 // unpaid, or forecast cash figure.
-export function retentionSummary(invoices, releases) {
-  const rows = retentionInvoiceRows(invoices, releases)
+export function retentionSummary(invoices, releases, creditNotes = []) {
+  const rows = retentionInvoiceRows(invoices, releases, creditNotes)
   let totalWithheld = 0
   let releasedToDate = 0
   let retentionHeld = 0
@@ -477,9 +490,9 @@ export const RETENTION_RELEASED_NOTICE =
   + 'authorisation, not a supplier invoice, tax invoice, credit note, or payment, and moves no cash by itself.'
 
 export const RETENTION_RELEASE_CONCURRENCY_NOTICE =
-  'Constrap blocks a release that exceeds the retention still available on an invoice, using the releases '
-  + 'loaded now. Firestore rules cannot sum sibling releases, so two people releasing the same retention at the '
-  + 'same moment can still both succeed — the register reports any over-release rather than hiding it.'
+  'Constrap checks every release against the invoice\'s settlement ledger when it is saved and again when it is '
+  + 'posted, so a release can never exceed the retention still held — not even when two people release the same '
+  + 'retention at the same moment (ADR-94). A release recorded before this check existed is reported if it over-released.'
 
 export const RETENTION_PAID_NOTICE =
   'Retention paid is not reported: a payment settles a supplier invoice balance as one balance, and nothing '

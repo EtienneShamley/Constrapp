@@ -1,0 +1,43 @@
+{
+  "displayName": "Phase 2 financial callables: request surge",
+  "combiner": "OR",
+  "enabled": true,
+  "severity": "WARNING",
+  "userLabels": {
+    "programme": "phase2",
+    "component": "financial-callables",
+    "policy": "request-surge"
+  },
+  "conditions": [
+    {
+      "displayName": "More than 300 requests to one Phase 2 financial callable service in 10 minutes",
+      "conditionThreshold": {
+        "filter": "metric.type=\"run.googleapis.com/request_count\" AND resource.type=\"cloud_run_revision\" AND resource.labels.service_name=one_of(\"createvariation\",\"updatevariationdraft\",\"approvevariation\",\"applyvariationcommitment\",\"progressclaimoperation\",\"supplierinvoiceoperation\",\"suppliersettlementoperation\",\"postclientrefund\",\"voidclientrefund\",\"postclientreceiptapplication\",\"voidclientreceiptapplication\",\"voidclientinvoice\",\"contractvalueoperation\",\"estimateoperation\",\"postclientcreditnote\",\"voidclientcreditnote\",\"postclientretentionrelease\",\"voidclientretentionrelease\",\"postclientreceipt\",\"voidclientreceipt\",\"transferboqtobudget\",\"approvefinalaccount\") AND resource.labels.location=\"australia-southeast1\"",
+        "aggregations": [
+          {
+            "alignmentPeriod": "600s",
+            "perSeriesAligner": "ALIGN_DELTA",
+            "crossSeriesReducer": "REDUCE_SUM",
+            "groupByFields": [
+              "resource.labels.service_name"
+            ]
+          }
+        ],
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 300,
+        "duration": "0s",
+        "trigger": {
+          "count": 1
+        }
+      }
+    }
+  ],
+  "alertStrategy": {
+    "autoClose": "3600s"
+  },
+  "documentation": {
+    "mimeType": "text/markdown",
+    "subject": "Phase 2: unusual request volume on one financial callable",
+    "content": "## What this means\n\nOne service received more than 300 requests in ten minutes (all response codes). A small contractor's normal use is a few requests a minute at most. Likely causes: a browser tab retrying in a loop, a scripted client using a member's session, or a test run in production.\n\n**Limits that stand regardless:** App Check, a signed-in active member of the company in a financial role, the company's activation, `maxInstances` (2–5 per service) and the default 80 concurrent requests per instance. There is no per-user rate limit.\n\n## Do this\n\n1. Logs Explorer (read only), the service from the incident, the last 15 minutes: group the `call refused` and success lines by `uid`.\n2. One `uid`: contact the company admin. If it continues, the family's brake, or deactivating the company (`set-commercial-completion.mjs --disable`), stops it for everyone of that family or that company. Deactivating the MEMBER (team management) stops that person at once.\n3. Cost: each request reads a fixed handful of documents, except a project's first supplier-finance or receipt operation (whole registers, once) and an estimate build (the whole BOQ). Estimate the reads from the request count before deciding.\n\nNever paste a log entry, an amount, a customer name or a token into a ticket or chat: give the service, the time, the project and document ids, and the code.\n\nRunbook: `ops/monitoring/phase2/README.md`. Cutover and recovery: `docs/DEPLOYMENT.md`, section *Phase 2 — the complete cutover*."
+  }
+}

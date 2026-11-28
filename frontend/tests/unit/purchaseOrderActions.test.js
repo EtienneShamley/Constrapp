@@ -159,6 +159,44 @@ describe('runTransitionPurchaseOrder — inside the transaction', () => {
   })
 })
 
+describe('runTransitionPurchaseOrder — D4: send approves the content the sender reviewed (ADR-96, D3 #46)', () => {
+  const ts = (ms) => ({ toMillis: () => ms })
+  const stamped = (status, by, ms) => ({ ...seen(status), lastMaterialEditBy: by, lastMaterialEditAt: ts(ms) })
+
+  it('STALE when a material edit by someone else landed after review — nothing written, message says review again', async () => {
+    const { runTransaction, writes } = fakeDb({ po1: stamped('draft', 'u_other', 9) })
+    const e = await expectKind(runTransitionPurchaseOrder(base({ runTransaction, seen: stamped('draft', 'u_creator', 5), nextStatus: PO_STATUS.SENT })), PO_WRITE_ERROR.STALE)
+    expect(e.message).toBe('PO-0001 was changed since you reviewed it. Reload the page and review it again before sending.')
+    expect(writes).toEqual([])
+  })
+  it('STALE when the same editor made a later material edit (the time moved), and when a stamp was established since a legacy review', async () => {
+    const later = fakeDb({ po1: stamped('draft', 'u_creator', 9) })
+    await expectKind(runTransitionPurchaseOrder(base({ runTransaction: later.runTransaction, seen: stamped('draft', 'u_creator', 5), nextStatus: PO_STATUS.SENT })), PO_WRITE_ERROR.STALE)
+    const established = fakeDb({ po1: stamped('draft', 'u_creator', 9) })
+    await expectKind(runTransitionPurchaseOrder(base({ runTransaction: established.runTransaction, seen: seen('draft'), nextStatus: PO_STATUS.SENT })), PO_WRITE_ERROR.STALE)
+    expect(later.writes).toEqual([])
+    expect(established.writes).toEqual([])
+  })
+  it('the status check still comes first — a PO sent underneath reports its status, not the material edit', async () => {
+    const { runTransaction } = fakeDb({ po1: stamped('sent', 'u_other', 9) })
+    const e = await expectKind(runTransitionPurchaseOrder(base({ runTransaction, seen: stamped('draft', 'u_creator', 5), nextStatus: PO_STATUS.SENT })), PO_WRITE_ERROR.STALE)
+    expect(e.message).toContain('is now Sent, not Draft')
+  })
+  it('an unchanged stamp (only cosmetic edits since review) sends, writing the transition update and NO stamp key', async () => {
+    const { runTransaction, writes } = fakeDb({ po1: { ...stamped('draft', 'u_creator', 5), notes: 'edited since' } })
+    await runTransitionPurchaseOrder(base({ runTransaction, seen: stamped('draft', 'u_creator', 5), nextStatus: PO_STATUS.SENT }))
+    expect(writes).toEqual([{ ref: 'po1', data: { status: 'sent', sentAt: NOW, sentBy: 'u_qs', updatedAt: NOW, updatedBy: 'u_qs' } }])
+  })
+  it('close and cancel do not apply the check — a moved stamp does not block them', async () => {
+    const close = fakeDb({ po1: stamped('sent', 'u_other', 9) })
+    await runTransitionPurchaseOrder(base({ runTransaction: close.runTransaction, seen: stamped('sent', 'u_creator', 5), nextStatus: PO_STATUS.CLOSED }))
+    expect(close.writes).toHaveLength(1)
+    const cancel = fakeDb({ po1: stamped('draft', 'u_other', 9) })
+    await runTransitionPurchaseOrder(base({ runTransaction: cancel.runTransaction, seen: stamped('draft', 'u_creator', 5), nextStatus: PO_STATUS.CANCELLED }))
+    expect(cancel.writes).toHaveLength(1)
+  })
+})
+
 describe('error mapping', () => {
   it('maps Firestore codes to kinds and wraps unknown failures', async () => {
     expect(poWriteErrorKind('permission-denied')).toBe(PO_WRITE_ERROR.PERMISSION)

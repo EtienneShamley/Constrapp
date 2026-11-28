@@ -2,15 +2,18 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import {
-  runCreateSupplierInvoice, runCancelSupplierInvoice, runLinkExistingInvoice,
-  buildSupplierInvoiceDocument, claimLinkUpdate, claimUnlinkUpdate, claimPairingError, existingInvoiceLinkError,
-  claimLinkReconciliation, CLAIM_LINK_ISSUE, CLAIM_LINK_ISSUE_LABELS, SI_ACTIVE_STATUSES,
-  SupplierInvoiceWriteError, SI_WRITE_ERROR, SI_WRITE_ERROR_MESSAGES, supplierInvoiceWriteErrorKind,
+  existingInvoiceLinkError, claimLinkReconciliation, CLAIM_LINK_ISSUE, CLAIM_LINK_ISSUE_LABELS, SI_ACTIVE_STATUSES,
+  SupplierInvoiceWriteError, SI_WRITE_ERROR, SI_WRITE_ERROR_MESSAGES,
 } from '../../src/lib/supplierInvoiceActions'
+// The historical client write shapes (ADR-40 / ADR-68 / ADR-58), kept as a fixture since ADR-93.
+import {
+  runCreateSupplierInvoice, runCancelSupplierInvoice, runLinkExistingInvoice,
+  buildSupplierInvoiceDocument, claimLinkUpdate, claimUnlinkUpdate, claimPairingError, supplierInvoiceWriteErrorKind,
+  transitionUpdate,
+} from '../fixtures/legacyClientWrites'
 import {
   CLAIM_INVOICE_LINK, CLAIM_LINK_INITIAL, claimInvoiceLink, isClaimInvoiceable, CLAIM_STATUS,
 } from '../../src/lib/progressClaims'
-import { transitionUpdate } from '../../src/lib/progressClaimActions'
 import { SI_STATUS, SI_SOURCE, invoiceTotals, invoicedClaimIds, claimHasActiveInvoice } from '../../src/lib/supplierInvoices'
 import { remainingCommitment } from '../../src/lib/commitment'
 import { actualClaimsByCostCode } from '../../src/lib/progressClaims'
@@ -100,8 +103,10 @@ describe('claimInvoiceLink — the key’s PRESENCE is the legacy discriminator'
   it('the new bundle initialises the three keys null at create and at approve', () => {
     expect(CLAIM_LINK_INITIAL).toEqual({ supplierInvoiceId: null, supplierInvoiceLinkedAt: null, supplierInvoiceLinkedBy: null })
     expect(Object.isFrozen(CLAIM_LINK_INITIAL)).toBe(true)
-    const hook = read('hooks/useProgressClaims.jsx')
-    expect(hook).toContain('...CLAIM_LINK_INITIAL,')
+    // ADR-93: claims are created and approved by the backend, from the shared
+    // processing module — it initialises the keys at create AND at approve.
+    const processing = read('lib/claimProcessing.js')
+    expect(processing.split('...CLAIM_LINK_INITIAL,').length - 1).toBe(2)
     const live = { ...approvedClaim({ status: 'submitted', approvedSubtotal: null, approvedGst: null, approvedTotal: null, revision: 1 }) }
     delete live.supplierInvoiceId; delete live.supplierInvoiceLinkedAt; delete live.supplierInvoiceLinkedBy
     const approve = transitionUpdate(live, CLAIM_STATUS.APPROVED, { approvedAmounts: [300] }, 'u_pm', NOW)
@@ -402,8 +407,12 @@ describe('runLinkExistingInvoice — reconcile a claim with no current link to O
     for (const rel of ['lib/supplierInvoiceActions.js', 'hooks/useProgressClaims.jsx', 'pages/project/ProjectProgressClaims.jsx']) {
       expect(read(rel), rel).not.toMatch(/confirmNoInvoice|markUninvoiced|attestUninvoiced|initialiseLink/)
     }
-    // The only claim write that sets the three keys to null is the UNLINK, and it requires a stored string id.
-    expect(read('../firestore.rules')).toContain("&& resource.data.get('supplierInvoiceId', null) is string\n              && linkUnlinked(request.resource.data)")
+    // ADR-93: no CLIENT write touches the three keys at all (the claims block admits only the content-free
+    // submit); the backend unlinks only when cancelling the invoice the stored link names.
+    const rules = read('../firestore.rules')
+    const claims = rules.slice(rules.indexOf('match /companies/{companyId}/projects/{projectId}/progressClaims/'), rules.indexOf('match /companies/{companyId}/projects/{projectId}/supplierInvoices/'))
+    expect(claims).not.toContain('supplierInvoiceId')
+    expect(read('../functions/src/supplierFinance/invoices.js')).toContain("if (transition === 'cancel' && claim && calc.claimInvoiceLinkOf(claim).invoiceId === live.id) {")
     // existingInvoiceLinkError is the only eligibility test and it requires an invoice.
     expect(existingInvoiceLinkError(legacyClaim, null)).toMatch(/no longer exists/)
   })

@@ -401,9 +401,11 @@ describe('availability', () => {
   })
 
   it('the report declares every snapshot source plus the four receivable-side sources', () => {
-    expect(REPORT_SOURCES).toEqual([...SNAPSHOT_SOURCES, 'clientInvoices', 'clientReceipts', 'clientCreditNotes', 'clientRetentionReleases'])
+    // Phase 2 step 5 adds the two settlement registers (refunds, receipt applications).
+    expect(REPORT_SOURCES).toEqual([...SNAPSHOT_SOURCES, 'clientInvoices', 'clientReceipts', 'clientCreditNotes', 'clientRetentionReleases', 'clientRefunds', 'clientReceiptApplications'])
     expect(REPORT_DEPENDENCIES.costCodeRows).toContain('progressClaims')
-    expect(REPORT_DEPENDENCIES.netCash).toEqual(['clientReceipts', 'supplierPayments'])
+    // Net cash = receipts − refunds − payments.
+    expect(REPORT_DEPENDENCIES.netCash).toEqual(['clientReceipts', 'clientRefunds', 'supplierPayments'])
   })
 })
 
@@ -478,7 +480,8 @@ describe('receivables follow the one receivable contract', () => {
     expect(cash(r, 'owedToClient').value).toBe(summary.owedToClient)
     const code = stripComments(read('lib/commercialReport.js'))
     expect(code).toContain('receivableContext(clientInvoices, clientCreditNotes, clientRetentionReleases)')
-    expect(code).toContain('receivablesSummary(clientInvoices, clientReceipts, positions)')
+    // Phase 2 step 5: the same selector, given the settlement registers.
+    expect(code).toContain('receivablesSummary(clientInvoices, clientReceipts, positions, settlement)')
   })
 
   it('a FAILED credit-note read makes the receivable figures Unavailable — never the figure "no credits" would give', () => {
@@ -511,8 +514,9 @@ describe('receivables follow the one receivable contract', () => {
   })
 
   it('dependencies: cash reads receipts and payments only; receivables read all four registers; held retention reads no receipt', () => {
-    expect(REPORT_DEPENDENCIES.cashIn).toEqual(['clientReceipts'])
-    expect(REPORT_DEPENDENCIES.receivables).toEqual(['clientInvoices', 'clientReceipts', 'clientCreditNotes', 'clientRetentionReleases'])
+    // Phase 2 step 5: cash in is net of refunds; what an invoice holds counts applications and refunds.
+    expect(REPORT_DEPENDENCIES.cashIn).toEqual(['clientReceipts', 'clientRefunds'])
+    expect(REPORT_DEPENDENCIES.receivables).toEqual(['clientInvoices', 'clientReceipts', 'clientCreditNotes', 'clientRetentionReleases', 'clientRefunds', 'clientReceiptApplications'])
     expect(REPORT_DEPENDENCIES.clientRetentionHeld).toEqual(['clientInvoices', 'clientCreditNotes', 'clientRetentionReleases'])
   })
 

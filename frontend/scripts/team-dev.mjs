@@ -25,11 +25,12 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { prepareIsolation, TEST_PROJECT_ID } from './emulatorIsolation.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const FRONTEND = resolve(HERE, '..')
 const HOST = '127.0.0.1'
-const PROJECT_ID = 'constrapp-rules-test'   // the emulator project; never production
+const PROJECT_ID = TEST_PROJECT_ID   // the ONE emulator project (a demo- project); never production
 const VITE_PORTS = [5173, 5174, 5175, 5176]
 
 const c = { dim: (s) => `\x1b[2m${s}\x1b[0m`, bold: (s) => `\x1b[1m${s}\x1b[0m`, green: (s) => `\x1b[32m${s}\x1b[0m`, red: (s) => `\x1b[31m${s}\x1b[0m`, cyan: (s) => `\x1b[36m${s}\x1b[0m` }
@@ -65,7 +66,12 @@ const PROBES = {
   auth: answers(`/emulator/v1/projects/${PROJECT_ID}/config`),
   firestore: answers('/'),
   functions: answers('/', (r) => r.status > 0),
+  storage: answers('/', (r) => r.status > 0),
 }
+
+// `--storage` (local acceptance of drawings / Quant only): also start the
+// Storage emulator and point the app at it. Same isolation, same demo project.
+const WITH_STORAGE = process.argv.includes('--storage')
 
 function spawnGroup(cmd, args, opts = {}) {
   const child = spawn(cmd, args, { cwd: FRONTEND, detached: true, stdio: ['ignore', 'pipe', 'pipe'], ...opts })
@@ -93,14 +99,18 @@ async function shutdown(code = 0) {
 }
 
 async function main() {
-  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) fail('GOOGLE_APPLICATION_CREDENTIALS is set. Unset it before local emulator testing.')
+  // The emulators, the Functions runtime and the bootstrap script run in an
+  // ISOLATED environment that holds no credential file, no CLI sign-in and no
+  // credential variable (scripts/emulatorIsolation.mjs; tracker D3 #17).
+  let isolation
+  try { isolation = prepareIsolation() } catch (err) { fail(err.message) }
   const firebaseBin = resolve(FRONTEND, 'node_modules/.bin/firebase')
   const viteBin = resolve(FRONTEND, 'node_modules/.bin/vite')
   if (!existsSync(firebaseBin) || !existsSync(viteBin)) fail('Run `npm install` in frontend/ first.')
   if (!existsSync(resolve(FRONTEND, 'functions/node_modules'))) fail('Run `npm install` in frontend/functions/ first.')
 
   const emu = JSON.parse(readFileSync(resolve(FRONTEND, 'firebase.json'), 'utf8')).emulators
-  const ports = { firestore: emu.firestore.port, auth: emu.auth.port, functions: emu.functions.port }
+  const ports = { firestore: emu.firestore.port, auth: emu.auth.port, functions: emu.functions.port, ...(WITH_STORAGE ? { storage: emu.storage.port } : {}) }
   for (const [name, port] of Object.entries(ports)) if (!(await portFree(port))) fail(`Port ${port} (${name}) is in use — another emulator is probably running.`)
   let vitePort = null
   for (const p of VITE_PORTS) if (await portFree(p)) { vitePort = p; break }
@@ -115,7 +125,7 @@ async function main() {
   console.log(c.dim('─'.repeat(64)))
 
   process.stdout.write(`  ${c.dim('1/3')} Starting Auth, Firestore and Functions emulators… `)
-  const emulator = spawnGroup(firebaseBin, ['emulators:start', '--only', 'auth,firestore,functions', '--project', PROJECT_ID])
+  const emulator = spawnGroup(firebaseBin, ['emulators:start', '--only', WITH_STORAGE ? 'auth,firestore,functions,storage' : 'auth,firestore,functions', '--project', PROJECT_ID], { env: isolation.env })
   let log = ''
   emulator.stdout.on('data', (d) => { log += d.toString() })
   emulator.stderr.on('data', (d) => { log += d.toString() })
@@ -124,7 +134,7 @@ async function main() {
   // before anything talks to them — one bounded deadline for the lot.
   const deadline = Date.now() + READY_TIMEOUT_MS
   const notReady = []
-  for (const name of ['auth', 'firestore', 'functions']) {
+  for (const name of ['auth', 'firestore', 'functions', ...(WITH_STORAGE ? ['storage'] : [])]) {
     if (!(await waitUntil(() => PROBES[name](ports[name]), deadline))) notReady.push(name)
   }
   if (notReady.length === 0 && !(await waitUntil(async () => log.includes('All emulators ready'), deadline))) notReady.push('emulator hub')
@@ -141,7 +151,7 @@ async function main() {
     '--apply', '--link-file', linkFile,
   ], {
     cwd: resolve(FRONTEND, 'functions'),
-    env: { ...process.env, FIRESTORE_EMULATOR_HOST: `${HOST}:${ports.firestore}`, FIREBASE_AUTH_EMULATOR_HOST: `${HOST}:${ports.auth}`, GOOGLE_APPLICATION_CREDENTIALS: '' },
+    env: { ...isolation.env, GCLOUD_PROJECT: PROJECT_ID, FIRESTORE_EMULATOR_HOST: `${HOST}:${ports.firestore}`, FIREBASE_AUTH_EMULATOR_HOST: `${HOST}:${ports.auth}` },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let bootOut = ''
@@ -166,6 +176,7 @@ async function main() {
       VITE_FIRESTORE_EMULATOR_PORT: String(ports.firestore),
       VITE_AUTH_EMULATOR_PORT: String(ports.auth),
       VITE_FUNCTIONS_EMULATOR_PORT: String(ports.functions),
+      ...(WITH_STORAGE ? { VITE_USE_STORAGE_EMULATOR: 'true', VITE_STORAGE_EMULATOR_HOST: HOST, VITE_STORAGE_EMULATOR_PORT: String(ports.storage) } : {}),
       VITE_FIREBASE_PROJECT_ID: PROJECT_ID,
       VITE_FIREBASE_API_KEY: 'emulator',
       VITE_FIREBASE_APP_ID: '1:1:web:emulator',

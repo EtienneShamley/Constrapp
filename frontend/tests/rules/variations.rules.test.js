@@ -8,7 +8,7 @@ import {
   assertFails,
 } from '@firebase/rules-unit-testing'
 import {
-  doc, getDoc, setDoc, updateDoc, deleteDoc, runTransaction, serverTimestamp, Timestamp,
+  doc, getDoc, deleteField, setDoc, updateDoc, deleteDoc, runTransaction, serverTimestamp, Timestamp,
 } from 'firebase/firestore'
 import {
   VARIATION_STATUS, TAX_CODE, gstForLine, variationTotals, buildApprovedLineItems,
@@ -19,7 +19,7 @@ import {
 import { computeMargin } from '../../src/lib/margin'
 import { poCancellationBlockers } from '../../src/lib/poCancellation'
 import {
-  runUpdateVariationDraft, runTransitionVariation, runApplyVariationCommitment, VariationWriteError, VARIATION_WRITE_ERROR,
+  runUpdateVariationDraft, runTransitionVariation, VariationWriteError, VARIATION_WRITE_ERROR,
 } from '../../src/lib/variationActions'
 import { isCommitmentApplied, appliedSupplierVariationAdjustments, unappliedSupplierVariationsByCostCode } from '../../src/lib/variations'
 import { remainingCommittedByCostCode } from '../../src/lib/purchaseOrders'
@@ -60,12 +60,37 @@ import { remainingCommittedByCostCode } from '../../src/lib/purchaseOrders'
 // describe block proves each of those, so the suite documents the security
 // CEILING as explicitly as the floor.
 //
+// ⚠️ ADR-90 (Phase 2, trusted variation processing). CREATING a variation,
+// APPROVING one and the one-time legacy APPLY / COMMIT NEW SCOPE are no longer
+// client writes: the block has `allow create: if false`, no approve branch and
+// no branch that admits a commitment stamp. Every test below whose subject was
+// one of those three now proves the OBSOLETE DIRECT PATH IS REFUSED — with the
+// payload the app used to write, for every financial role, and for every
+// forged variant the test already refused — and names where the supported
+// replacement is proven: tests/functions/variations.test.js (createVariation /
+// approveVariation / applyVariationCommitment). Where a test needs a document a
+// client used to create or approve, it is written with rules disabled in the
+// shape the old client write produced (`serverCreate` / `serverUpdate`).
+//
+// ⚠️ ADR-90, checkpoint-1 correction. The DRAFT EDIT is no longer a client write
+// either: the block has no draft-edit branch, so a draft admits NO client
+// content write — not a line, a header figure, a title, a reference, a date,
+// the notes or the ADR-34 originating-RFI link — and the two variation number
+// counters are backend-only. Every test whose subject was a client draft edit
+// now proves the raw write the app (or a direct-SDK caller) used to make is
+// REFUSED for every financial role with the stored draft unchanged; the
+// supported replacement is proven in tests/functions/variations.test.js
+// (updateVariationDraft). What stays with the Rules — read, delete, and the
+// three CONTENT-FREE transitions submit, reject and withdraw, each revision + 1
+// — is tested exactly as before; where a scenario needs an edited draft, the
+// edit is written with rules disabled (`editRefused(…, { thenStoreAs })`).
+//
 // SAFETY: this suite refuses to run unless FIRESTORE_EMULATOR_HOST is set.
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RULES_PATH = resolve(HERE, '../../firestore.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A  = 'companyA'   // baseCurrency NZD
 const COMPANY_B  = 'companyB'   // no baseCurrency
 const PROJECT_A  = 'projectA'   // Company A, currency AUD (explicit)
@@ -283,6 +308,49 @@ async function readVar(id) {
   return data
 }
 const readStatus = async (id) => (await readVar(id))?.status
+async function readVarAt(id, companyId, projectId) {
+  let data
+  await testEnv.withSecurityRulesDisabled(async (c) => {
+    const snap = await getDoc(doc(c.firestore(), varsPath(companyId, projectId), id))
+    data = snap.exists() ? { id: snap.id, ...snap.data() } : undefined
+  })
+  return data
+}
+
+// ADR-90 — what the TRUSTED BACKEND stores, written with rules disabled: the
+// document a client create used to produce, and the update a client approve or
+// legacy apply used to make (serverTimestamp sentinels resolve as they did).
+async function serverCreate(id, data, companyId = COMPANY_A, projectId = PROJECT_A) {
+  await testEnv.withSecurityRulesDisabled(async (c) => {
+    await setDoc(doc(c.firestore(), varsPath(companyId, projectId), id), data)
+  })
+}
+async function serverUpdate(id, data) {
+  await testEnv.withSecurityRulesDisabled(async (c) => {
+    await updateDoc(doc(c.firestore(), varsPath(), id), data)
+  })
+}
+// A client create is refused for EVERY financial role, and nothing is stored.
+async function createRefused(id, build, companyId = COMPANY_A, projectId = PROJECT_A) {
+  for (const user of FINANCIAL) await assertFails(setDoc(varRef(ctx(user), id, companyId, projectId), build(user)))
+  expect(await readVarAt(id, companyId, projectId)).toBeUndefined()
+}
+// A client update (approve / legacy apply) is refused for EVERY financial role,
+// and the stored document does not move.
+async function updateRefused(id, build) {
+  const before = await readVar(id)
+  for (const user of FINANCIAL) await assertFails(updateDoc(varRef(ctx(user), id), build(user)))
+  expect(await readVar(id)).toEqual(before)
+}
+
+// ADR-90 — a client DRAFT EDIT is refused for EVERY financial role and the
+// stored draft does not move. With `thenStoreAs`, the same write is then made
+// with rules disabled — standing for what the backend's updateVariationDraft
+// stores — so the rest of a scenario runs over the edited draft.
+async function editRefused(id, build, { thenStoreAs = null } = {}) {
+  await updateRefused(id, build)
+  if (thenStoreAs) await serverUpdate(id, build(thenStoreAs))
+}
 
 async function expectKind(promise, kind) {
   let caught
@@ -317,8 +385,10 @@ beforeEach(async () => {
     for (const u of Object.values(USERS)) {
       await setDoc(doc(db, 'users', u.uid), { role: u.role, companyId: u.companyId, name: u.uid })
     }
-    await setDoc(doc(db, 'companies', COMPANY_A), { name: 'Company A', countryCode: 'NZ', baseCurrency: 'NZD' })
-    await setDoc(doc(db, 'companies', COMPANY_B), { name: 'Company B' })
+    // ADR-98: the claim submit / variation lifecycle Rules require an ACTIVATED company.
+    await setDoc(doc(db, 'companies', COMPANY_A), { name: 'Company A', countryCode: 'NZ', baseCurrency: 'NZD', commercialCompletionEnabled: true })
+    // ADR-98: the claim submit / variation lifecycle Rules require an ACTIVATED company.
+    await setDoc(doc(db, 'companies', COMPANY_B), { name: 'Company B', commercialCompletionEnabled: true })
     await setDoc(doc(db, `companies/${COMPANY_A}/projects`, PROJECT_A), { name: 'Project A', currency: 'AUD', currencyLocked: true })
     await setDoc(doc(db, `companies/${COMPANY_A}/projects`, PROJECT_B), { name: 'Project B' })
     await setDoc(doc(db, `companies/${COMPANY_B}/projects`, PROJECT_C), { name: 'Project C' })
@@ -332,24 +402,68 @@ beforeEach(async () => {
 
 // ── Roles, membership & tenant isolation ─────────────────────────────────────
 
+describe('ADR-98 — variation submit / reject / withdraw: the Phase 2 lifecycle writes need an ACTIVATED company (Rules-enforced)', () => {
+  const setActivation = (value) => testEnv.withSecurityRulesDisabled(async (c) => {
+    const ref = doc(c.firestore(), 'companies', COMPANY_A)
+    if (value === undefined) await updateDoc(ref, { commercialCompletionEnabled: deleteField() })
+    else await updateDoc(ref, { commercialCompletionEnabled: value })
+  })
+  it('marker MISSING, false, or a non-boolean truthy value: submit, reject and withdraw are refused; the variation is unchanged', async () => {
+    for (const value of [undefined, false, 'true', 1]) {
+      await setActivation(value)
+      await seed('av-d', 'draft')
+      await seed('av-s', 'submitted')
+      await assertFails(updateDoc(varRef(ctx(USERS.qs), 'av-d'), submitWrite(USERS.qs)))
+      await assertFails(updateDoc(varRef(ctx(USERS.pm), 'av-s'), rejectWrite(USERS.pm)))
+      await assertFails(updateDoc(varRef(ctx(USERS.pm), 'av-s'), withdrawWrite(USERS.pm)))
+      await assertFails(updateDoc(varRef(ctx(USERS.pm), 'av-d'), withdrawWrite(USERS.pm)))
+      expect(await readStatus('av-d')).toBe('draft')
+      expect(await readStatus('av-s')).toBe('submitted')
+    }
+  })
+  it('marker TRUE: submit, reject and withdraw succeed', async () => {
+    await setActivation(true)
+    await seed('av-1', 'draft'); await seed('av-2', 'submitted'); await seed('av-3', 'draft')
+    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'av-1'), submitWrite(USERS.qs)))
+    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'av-2'), rejectWrite(USERS.pm)))
+    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'av-3'), withdrawWrite(USERS.pm)))
+  })
+  it('DEACTIVATED during use: refused after deactivation; reads still work', async () => {
+    await setActivation(true)
+    await seed('av-mid', 'draft')
+    const db = ctx(USERS.qs)
+    await assertSucceeds(getDoc(varRef(db, 'av-mid')))
+    await setActivation(false)
+    await assertFails(updateDoc(varRef(db, 'av-mid'), submitWrite(USERS.qs)))
+    await assertSucceeds(getDoc(varRef(db, 'av-mid')))
+  })
+})
+
 describe('roles, membership and tenant isolation', () => {
-  it('every financial role can create a draft supplier, PO-linked and client variation and read them', async () => {
+  // The supported create: tests/functions/variations.test.js → createVariation.
+  it('ADR-90 — a client create of a draft supplier, PO-linked or client variation is REFUSED from every client (every financial role); every financial role reads a backend-created one', async () => {
     for (const user of FINANCIAL) {
-      await assertSucceeds(setDoc(varRef(ctx(user), `s-${user.uid}`), payload(user)))
-      await assertSucceeds(setDoc(varRef(ctx(user), `p-${user.uid}`), poLinked(user)))
-      await assertSucceeds(setDoc(varRef(ctx(user), `c-${user.uid}`), clientPayload(user)))
+      await assertFails(setDoc(varRef(ctx(user), `s-${user.uid}`), payload(user)))
+      await assertFails(setDoc(varRef(ctx(user), `p-${user.uid}`), poLinked(user)))
+      await assertFails(setDoc(varRef(ctx(user), `c-${user.uid}`), clientPayload(user)))
+      for (const id of [`s-${user.uid}`, `p-${user.uid}`, `c-${user.uid}`]) expect(await readVar(id)).toBeUndefined()
+      await serverCreate(`s-${user.uid}`, payload(user))
       await assertSucceeds(getDoc(varRef(ctx(user), `s-${user.uid}`)))
     }
   })
 
-  it('every financial role can edit a draft, submit, approve, reject and withdraw', async () => {
+  // The supported approve: tests/functions/variations.test.js → approveVariation.
+  // The supported draft edit: tests/functions/variations.test.js → updateVariationDraft.
+  it('every financial role can submit, reject and withdraw; ADR-90 — a draft edit and approve are REFUSED from every client', async () => {
     for (const user of FINANCIAL) {
       await seed(`ed-${user.uid}`, 'draft')
-      await assertSucceeds(updateDoc(varRef(ctx(user), `ed-${user.uid}`), draftEdit(user)))
+      await assertFails(updateDoc(varRef(ctx(user), `ed-${user.uid}`), draftEdit(user)))
+      expect(await readVar(`ed-${user.uid}`)).toMatchObject({ status: 'draft', revision: 1, title: 'Additional steel' })
       await seed(`su-${user.uid}`, 'draft')
       await assertSucceeds(updateDoc(varRef(ctx(user), `su-${user.uid}`), submitWrite(user)))
       await seed(`ap-${user.uid}`, 'submitted')
-      await assertSucceeds(updateDoc(varRef(ctx(user), `ap-${user.uid}`), approveWrite(user)))
+      await assertFails(updateDoc(varRef(ctx(user), `ap-${user.uid}`), approveWrite(user)))
+      expect(await readVar(`ap-${user.uid}`)).toMatchObject({ status: 'submitted', revision: 1, approvedBy: null })
       await seed(`re-${user.uid}`, 'submitted')
       await assertSucceeds(updateDoc(varRef(ctx(user), `re-${user.uid}`), rejectWrite(user)))
       await seed(`wd-${user.uid}`, 'submitted')
@@ -386,8 +500,31 @@ describe('roles, membership and tenant isolation', () => {
     await assertFails(setDoc(varRef(ctx(USERS.other), 't2'), payload(USERS.other)))
     await assertFails(updateDoc(varRef(ctx(USERS.other), 't1'), draftEdit(USERS.other)))
     await assertFails(setDoc(varRef(ctx(USERS.admin), 't3', COMPANY_B, PROJECT_C), payload(USERS.admin)))
-    // …and the other company's own project takes its own admin's variation (currency resolves to AUD there).
-    await assertSucceeds(setDoc(varRef(ctx(USERS.other), 't4', COMPANY_B, PROJECT_C), payload(USERS.other)))
+    // ADR-90: …and the other company's own admin cannot create one directly in its own project either
+    // (its backend-created variations are its own to read: tests/functions/variations.test.js).
+    await assertFails(setDoc(varRef(ctx(USERS.other), 't4', COMPANY_B, PROJECT_C), payload(USERS.other)))
+    await serverCreate('t4', payload(USERS.other), COMPANY_B, PROJECT_C)
+    await assertSucceeds(getDoc(varRef(ctx(USERS.other), 't4', COMPANY_B, PROJECT_C)))
+    await assertFails(getDoc(varRef(ctx(USERS.admin), 't4', COMPANY_B, PROJECT_C)))
+  })
+
+  it('tenant isolation of the three REMAINING client transitions — a well-formed submit, reject and withdraw from another company’s admin are refused (the same requests succeed for a member, above), and nothing moves', async () => {
+    // Added after the independent review of the ADR-90 conversion: the draft-edit and apply
+    // denials that used to prove the tenant gate are now refused whatever the tenancy, so the
+    // gate is proven here with request shapes that ONLY the gate stops.
+    await seed('tx-d', 'draft')
+    await seed('tx-s', 'submitted')
+    await seed('tx-s2', 'submitted')
+    await assertFails(updateDoc(varRef(ctx(USERS.other), 'tx-d'), submitWrite(USERS.other)))
+    await assertFails(updateDoc(varRef(ctx(USERS.other), 'tx-s'), rejectWrite(USERS.other)))
+    await assertFails(updateDoc(varRef(ctx(USERS.other), 'tx-s2'), withdrawWrite(USERS.other)))
+    await assertFails(updateDoc(varRef(ctx(USERS.other), 'tx-d'), withdrawWrite(USERS.other)))
+    expect(await readVar('tx-d')).toMatchObject({ status: 'draft', revision: 1 })
+    expect(await readVar('tx-s')).toMatchObject({ status: 'submitted', revision: 1 })
+    expect(await readVar('tx-s2')).toMatchObject({ status: 'submitted', revision: 1 })
+    // Control: the identical shapes from a Company A member land.
+    await assertSucceeds(updateDoc(varRef(ctx(USERS.admin), 'tx-d'), submitWrite(USERS.admin)))
+    await assertSucceeds(updateDoc(varRef(ctx(USERS.admin), 'tx-s'), rejectWrite(USERS.admin)))
   })
 
   it('a variation cannot be created under a project that does not exist', async () => {
@@ -406,47 +543,61 @@ describe('delete', () => {
 })
 
 // ── Create ───────────────────────────────────────────────────────────────────
+//
+// ADR-90: NO client may create a variation — `allow create: if false`. Every
+// describe in this section used to separate the creates the Rules accepted from
+// the ones they refused; ALL of them are now refused, the app's own payload
+// included. What a valid create stores — number, stamps, currency, purchase-order
+// and RFI snapshots, signed whole-cent money — is derived and proven by the
+// trusted backend: tests/functions/variations.test.js → createVariation.
 
-describe('create — valid shapes the app writes', () => {
-  it('a manual-mode supplier variation, a PO-linked one against a SENT and a CLOSED PO, and a client variation', async () => {
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'c1'), payload(USERS.qs)))
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'c2'), poLinked(USERS.qs, PO.sent)))
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'c3'), poLinked(USERS.qs, PO.closed, { variationNumber: 'SV-0002' })))
-    await assertSucceeds(setDoc(varRef(ctx(USERS.pm), 'c4'), clientPayload(USERS.pm)))
-    const stored = await readVar('c2')
-    expect(stored).toMatchObject({ status: 'draft', revision: 1, poId: 'poSent', poNumber: 'PO-0001', supplierName: 'Steel Co', createdBy: USERS.qs.uid, updatedBy: USERS.qs.uid })
-    expect(stored.createdAt).toBeInstanceOf(Timestamp)
-    expect(stored.updatedAt).toBeInstanceOf(Timestamp)
+describe('create — the shapes the app used to write (ADR-90: REFUSED from every client)', () => {
+  // Positive behaviour: tests/functions/variations.test.js → createVariation.
+  it('ADR-90 — a manual-mode supplier variation, a PO-linked one against a SENT and a CLOSED PO, and a client variation are REFUSED from every client', async () => {
+    await assertFails(setDoc(varRef(ctx(USERS.qs), 'c1'), payload(USERS.qs)))
+    await assertFails(setDoc(varRef(ctx(USERS.qs), 'c2'), poLinked(USERS.qs, PO.sent)))
+    await assertFails(setDoc(varRef(ctx(USERS.qs), 'c3'), poLinked(USERS.qs, PO.closed, { variationNumber: 'SV-0002' })))
+    await assertFails(setDoc(varRef(ctx(USERS.pm), 'c4'), clientPayload(USERS.pm)))
+    for (const id of ['c1', 'c2', 'c3', 'c4']) expect(await readVar(id)).toBeUndefined()
+    await createRefused('c1', (user) => payload(user))
+    await createRefused('c2', (user) => poLinked(user, PO.sent))
+    await createRefused('c3', (user) => poLinked(user, PO.closed, { variationNumber: 'SV-0002' }))
+    await createRefused('c4', (user) => clientPayload(user))
   })
 
-  it('a PO-linked variation against a pre-Contacts PO (no supplierId key) with supplierId null', async () => {
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'c5'), poLinked(USERS.qs, PO.legacy)))
+  it('ADR-90 — a PO-linked variation against a pre-Contacts PO (no supplierId key), with supplierId null or forged, is REFUSED from every client', async () => {
+    await assertFails(setDoc(varRef(ctx(USERS.qs), 'c5'), poLinked(USERS.qs, PO.legacy)))
     await assertFails(setDoc(varRef(ctx(USERS.qs), 'c6'), poLinked(USERS.qs, PO.legacy, { supplierId: 'contactS1' })))
+    await createRefused('c5', (user) => poLinked(user, PO.legacy))
   })
 
-  it('SIGNED money — an all-negative credit, a zero-value variation, mixed tax codes and 200 lines', async () => {
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'c7'), payload(USERS.qs, { lines: [line(-5000), line(-0.01, { taxCode: TAX_CODE.INPUT_TAXED })] })))
-    expect(await readVar('c7')).toMatchObject({ submittedSubtotal: -5000.01, submittedGst: -500, submittedTotal: -5500.01 })
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'c8'), payload(USERS.qs, { lines: [line(0)] })))
+  it('ADR-90 — SIGNED money (an all-negative credit, a zero-value variation, mixed tax codes, 200 lines) is REFUSED from every client; nothing is stored', async () => {
+    await assertFails(setDoc(varRef(ctx(USERS.qs), 'c7'), payload(USERS.qs, { lines: [line(-5000), line(-0.01, { taxCode: TAX_CODE.INPUT_TAXED })] })))
+    expect(await readVar('c7')).toBeUndefined()
+    await assertFails(setDoc(varRef(ctx(USERS.qs), 'c8'), payload(USERS.qs, { lines: [line(0)] })))
     // mixed signs and tax codes: subtotal 0 with a positive GST is a REAL header (gst on +1000, gst_free on −1000)
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'c9'), payload(USERS.qs, { lines: [line(1000), line(-1000, { taxCode: TAX_CODE.GST_FREE })] })))
-    expect(await readVar('c9')).toMatchObject({ submittedSubtotal: 0, submittedGst: 100, submittedTotal: 100 })
+    await assertFails(setDoc(varRef(ctx(USERS.qs), 'c9'), payload(USERS.qs, { lines: [line(1000), line(-1000, { taxCode: TAX_CODE.GST_FREE })] })))
+    expect(await readVar('c9')).toBeUndefined()
     const many = Array.from({ length: 200 }, (_, i) => line(i % 2 ? 12.34 : -0.55))
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'c10'), payload(USERS.qs, { lines: many })))
+    await assertFails(setDoc(varRef(ctx(USERS.qs), 'c10'), payload(USERS.qs, { lines: many })))
+    for (const id of ['c8', 'c10']) expect(await readVar(id)).toBeUndefined()
   })
 
-  it('with an originating RFI (open / answered / closed), on both types, for every financial role (ADR-34)', async () => {
+  it('ADR-90 — a create with an originating RFI (open / answered / closed), on both types, is REFUSED from every client (ADR-34 create validation is the backend’s)', async () => {
     for (const [i, r] of [RFIS.open, RFIS.answered, RFIS.closed].entries()) {
-      await assertSucceeds(setDoc(varRef(ctx(USERS.admin), `r${i}`), payload(USERS.admin, link(r))))
+      await assertFails(setDoc(varRef(ctx(USERS.admin), `r${i}`), payload(USERS.admin, link(r))))
     }
-    await assertSucceeds(setDoc(varRef(ctx(USERS.pm), 'rc'), clientPayload(USERS.pm, link(RFIS.answered))))
+    await assertFails(setDoc(varRef(ctx(USERS.pm), 'rc'), clientPayload(USERS.pm, link(RFIS.answered))))
     for (const user of FINANCIAL) {
-      await assertSucceeds(setDoc(varRef(ctx(user), `r_${user.uid}`), payload(user, link(RFIS.open))))
+      await assertFails(setDoc(varRef(ctx(user), `r_${user.uid}`), payload(user, link(RFIS.open))))
     }
   })
 
-  it('the link never writes anything onto the RFI', async () => {
-    await assertSucceeds(setDoc(varRef(ctx(USERS.admin), 'rk'), payload(USERS.admin, link(RFIS.open))))
+  it('ADR-90 — the link never writes anything onto the RFI (a refused create, a refused client link on a draft, and the link the backend stores)', async () => {
+    await assertFails(setDoc(varRef(ctx(USERS.admin), 'rk'), payload(USERS.admin, link(RFIS.open))))
+    await seed('rk', 'draft')
+    await editRefused('rk', (user) => ({ ...link(RFIS.open), revision: 2, ...stamps(user) }), { thenStoreAs: USERS.admin })
+    expect(await readVar('rk')).toMatchObject(link(RFIS.open))
     await testEnv.withSecurityRulesDisabled(async (c) => {
       const data = (await getDoc(doc(c.firestore(), rfisPath(), RFIS.open.id))).data()
       expect(data.variationId).toBeUndefined()
@@ -457,7 +608,8 @@ describe('create — valid shapes the app writes', () => {
   })
 })
 
-describe('create — exact keys, born draft, stamps and reserved fields', () => {
+describe('create — exact keys, born draft, stamps and reserved fields (ADR-90: every variant REFUSED, the well-formed one included)', () => {
+  // Positive behaviour: tests/functions/variations.test.js → createVariation.
   it('refuses a missing key, an extra key, and a key renamed', async () => {
     for (const k of ['updatedAt', 'updatedBy', 'submittedBy', 'withdrawnBy', 'originRfiId', 'currency', 'revision', 'attachments', 'forecastAmount']) {
       const { [k]: _gone, ...missing } = payload(USERS.qs)   // eslint-disable-line no-unused-vars
@@ -502,20 +654,22 @@ describe('create — exact keys, born draft, stamps and reserved fields', () => 
     await assertFails(setDoc(varRef(ctx(USERS.qs), 'rf5'), payload(USERS.qs, { forecastAmount: 500 })))
   })
 
-  it('identity — the number pattern follows the type (CV for client, SV for supplier), the type is one of two', async () => {
+  it('ADR-90 — identity: every number / type combination is REFUSED from every client, a well-formed SV-12345 included (the number is the backend counter’s)', async () => {
     await assertFails(setDoc(varRef(ctx(USERS.qs), 'id1'), payload(USERS.qs, { variationNumber: 'CV-0001' })))            // supplier with a client number
     await assertFails(setDoc(varRef(ctx(USERS.qs), 'id2'), clientPayload(USERS.qs, { variationNumber: 'SV-0001' })))      // client with a supplier number
     for (const n of ['SV-001', 'SV0001', 'sv-0001', 'PO-0001', '', null, 1]) {
       await assertFails(setDoc(varRef(ctx(USERS.qs), 'id3'), payload(USERS.qs, { variationNumber: n })))
     }
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'id4'), payload(USERS.qs, { variationNumber: 'SV-12345' })))
+    await assertFails(setDoc(varRef(ctx(USERS.qs), 'id4'), payload(USERS.qs, { variationNumber: 'SV-12345' })))
+    await createRefused('id4', (user) => payload(user, { variationNumber: 'SV-12345' }))
     for (const variationType of ['internal', 'budget_adjustment', '', null]) {
       await assertFails(setDoc(varRef(ctx(USERS.qs), 'id5'), payload(USERS.qs, { variationType })))
     }
   })
 })
 
-describe('create — counterparty consistency between the two types', () => {
+describe('create — counterparty consistency between the two types (ADR-90: REFUSED from every client)', () => {
+  // Positive behaviour: tests/functions/variations.test.js → createVariation.
   it('a client variation carries no supplier block and no PO; a supplier variation carries no client block', async () => {
     for (const f of [{ supplierId: 'contactS1' }, { supplierName: 'Steel Co' }, { supplierRef: '' }, { poId: 'poSent', poNumber: 'PO-0001' }, { poNumber: 'PO-0001' }]) {
       await assertFails(setDoc(varRef(ctx(USERS.pm), 'cc1'), clientPayload(USERS.pm, f)))
@@ -525,9 +679,11 @@ describe('create — counterparty consistency between the two types', () => {
     }
   })
 
-  it('counterparty ids are null or non-empty strings; names and references are strings ≤ 200', async () => {
-    await assertSucceeds(setDoc(varRef(ctx(USERS.pm), 'cp0'), clientPayload(USERS.pm, { clientId: null })))    // a client without a contact id
-    await assertSucceeds(setDoc(varRef(ctx(USERS.pm), 'cp0b'), payload(USERS.pm, { supplierId: null })))
+  it('ADR-90 — counterparty ids, names and references: every shape is REFUSED from every client, a null client or supplier id included', async () => {
+    await assertFails(setDoc(varRef(ctx(USERS.pm), 'cp0'), clientPayload(USERS.pm, { clientId: null })))    // a client without a contact id
+    await assertFails(setDoc(varRef(ctx(USERS.pm), 'cp0b'), payload(USERS.pm, { supplierId: null })))
+    await createRefused('cp0', (user) => clientPayload(user, { clientId: null }))
+    await createRefused('cp0b', (user) => payload(user, { supplierId: null }))
     await assertFails(setDoc(varRef(ctx(USERS.pm), 'cp1'), clientPayload(USERS.pm, { clientId: '' })))
     await assertFails(setDoc(varRef(ctx(USERS.pm), 'cp2'), clientPayload(USERS.pm, { clientName: null })))
     await assertFails(setDoc(varRef(ctx(USERS.pm), 'cp3'), clientPayload(USERS.pm, { clientName: 'x'.repeat(201) })))
@@ -539,7 +695,8 @@ describe('create — counterparty consistency between the two types', () => {
   })
 })
 
-describe('create — source PO (a get() on the scalar poId; supplier variations only)', () => {
+describe('create — source PO (ADR-90: REFUSED from every client; the backend reads the PO in its transaction)', () => {
+  // Positive behaviour: tests/functions/variations.test.js → createVariation.
   it('a draft, pending-approval or cancelled PO is refused; a missing PO is refused', async () => {
     await assertFails(setDoc(varRef(ctx(USERS.qs), 'po1'), poLinked(USERS.qs, PO.draft)))
     await assertFails(setDoc(varRef(ctx(USERS.qs), 'po2'), poLinked(USERS.qs, PO.pending)))
@@ -547,10 +704,10 @@ describe('create — source PO (a get() on the scalar poId; supplier variations 
     await assertFails(setDoc(varRef(ctx(USERS.qs), 'po4'), poLinked(USERS.qs, { ...PO.sent, id: 'ghost' })))
   })
 
-  it('a PO from another project of the same company is refused — the path is this project’s', async () => {
+  it('ADR-90 — a PO from another project is refused, and so is the same document in the project that OWNS the PO: REFUSED from every client', async () => {
     await assertFails(setDoc(varRef(ctx(USERS.qs), 'po5'), poLinked(USERS.qs, PO_IN_PROJECT_B)))
-    // …and the same document is accepted in the project that owns the PO (currency NZD there).
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'po6', COMPANY_A, PROJECT_B), poLinked(USERS.qs, PO_IN_PROJECT_B, { currency: 'NZD' })))
+    // …and the same document was accepted in the project that owns the PO (currency NZD there) until ADR-90.
+    await createRefused('po6', (user) => poLinked(user, PO_IN_PROJECT_B, { currency: 'NZD' }), COMPANY_A, PROJECT_B)
   })
 
   it('the PO number and the supplier snapshot (name AND id) must be the PO’s', async () => {
@@ -568,22 +725,27 @@ describe('create — source PO (a get() on the scalar poId; supplier variations 
   })
 })
 
-describe('create — currency resolves exactly as lib/currency.js (project → company → AUD)', () => {
-  it('the project’s explicit currency, the company’s baseCurrency when the project has none, AUD when neither', async () => {
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'cu1'), payload(USERS.qs, { currency: 'AUD' })))
+describe('create — currency (ADR-90: REFUSED from every client; the backend resolves project → company → AUD)', () => {
+  // Positive behaviour: tests/functions/variations.test.js → createVariation.
+  it('ADR-90 — the right and the wrong currency alike are REFUSED from every client, in every project', async () => {
+    await assertFails(setDoc(varRef(ctx(USERS.qs), 'cu1'), payload(USERS.qs, { currency: 'AUD' })))
     await assertFails(setDoc(varRef(ctx(USERS.qs), 'cu2'), payload(USERS.qs, { currency: 'NZD' })))
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'cu3', COMPANY_A, PROJECT_B), payload(USERS.qs, { currency: 'NZD' })))
+    await assertFails(setDoc(varRef(ctx(USERS.qs), 'cu3', COMPANY_A, PROJECT_B), payload(USERS.qs, { currency: 'NZD' })))
     await assertFails(setDoc(varRef(ctx(USERS.qs), 'cu4', COMPANY_A, PROJECT_B), payload(USERS.qs, { currency: 'AUD' })))
-    await assertSucceeds(setDoc(varRef(ctx(USERS.other), 'cu5', COMPANY_B, PROJECT_C), payload(USERS.other, { currency: 'AUD' })))
+    await assertFails(setDoc(varRef(ctx(USERS.other), 'cu5', COMPANY_B, PROJECT_C), payload(USERS.other, { currency: 'AUD' })))
     await assertFails(setDoc(varRef(ctx(USERS.other), 'cu6', COMPANY_B, PROJECT_C), payload(USERS.other, { currency: 'NZD' })))
+    await createRefused('cu1', (user) => payload(user, { currency: 'AUD' }))
+    await createRefused('cu3', (user) => payload(user, { currency: 'NZD' }), COMPANY_A, PROJECT_B)
+    expect(await readVarAt('cu5', COMPANY_B, PROJECT_C)).toBeUndefined()
     for (const currency of ['aud', 'AU', 'AUDX', '', null, 36]) {
       await assertFails(setDoc(varRef(ctx(USERS.qs), 'cu7'), payload(USERS.qs, { currency })))
     }
   })
 })
 
-describe('create — content shape', () => {
-  it('title required (1–500), description ≤ 5000, reason from the enum, dates empty or YYYY-MM-DD, notes ≤ 5000, 1–200 lines', async () => {
+describe('create — content shape (ADR-90: REFUSED from every client; the same bounds are the backend’s contract)', () => {
+  // Positive behaviour: tests/functions/variations.test.js → createVariation.
+  it('ADR-90 — valid and invalid content alike (title, description, reason, dates, notes, 1–200 lines) is REFUSED from every client', async () => {
     await assertFails(setDoc(varRef(ctx(USERS.qs), 'cs1'), payload(USERS.qs, { title: '' })))
     await assertFails(setDoc(varRef(ctx(USERS.qs), 'cs2'), payload(USERS.qs, { title: 'x'.repeat(501) })))
     await assertFails(setDoc(varRef(ctx(USERS.qs), 'cs3'), payload(USERS.qs, { title: null })))
@@ -591,12 +753,14 @@ describe('create — content shape', () => {
     for (const reason of ['weather', 'DESIGN_CHANGE', null, 3]) {
       await assertFails(setDoc(varRef(ctx(USERS.qs), 'cs5'), payload(USERS.qs, { reason })))
     }
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'cs6'), payload(USERS.qs, { reason: 'error_omission' })))
+    await assertFails(setDoc(varRef(ctx(USERS.qs), 'cs6'), payload(USERS.qs, { reason: 'error_omission' })))
     for (const k of ['identifiedDate', 'submittedDate', 'responseDueDate', 'effectiveDate']) {
       await assertFails(setDoc(varRef(ctx(USERS.qs), `cs7-${k}`), payload(USERS.qs, { [k]: '10/10/2026' })))
       await assertFails(setDoc(varRef(ctx(USERS.qs), `cs8-${k}`), payload(USERS.qs, { [k]: null })))
-      await assertSucceeds(setDoc(varRef(ctx(USERS.qs), `cs9-${k}`), payload(USERS.qs, { [k]: '2026-12-31' })))
+      await assertFails(setDoc(varRef(ctx(USERS.qs), `cs9-${k}`), payload(USERS.qs, { [k]: '2026-12-31' })))
     }
+    await createRefused('cs6', (user) => payload(user, { reason: 'error_omission' }))
+    await createRefused('cs9-effectiveDate', (user) => payload(user, { effectiveDate: '2026-12-31' }))
     await assertFails(setDoc(varRef(ctx(USERS.qs), 'cs10'), payload(USERS.qs, { notes: 'x'.repeat(5001) })))
     await assertFails(setDoc(varRef(ctx(USERS.qs), 'cs11'), payload(USERS.qs, { lineItems: [] })))
     await assertFails(setDoc(varRef(ctx(USERS.qs), 'cs12'), payload(USERS.qs, { lineItems: 'none' })))
@@ -604,8 +768,9 @@ describe('create — content shape', () => {
   })
 })
 
-describe('create — SIGNED whole-cent header money', () => {
-  it('each header figure must be a number, whole cents, and subtotal + gst == total exactly', async () => {
+describe('create — SIGNED whole-cent header money (ADR-90: REFUSED from every client; the backend DERIVES the header)', () => {
+  // Positive behaviour: tests/functions/variations.test.js → createVariation.
+  it('ADR-90 — a wrong header and a correct one alike are REFUSED from every client', async () => {
     const t = variationTotals(LINES, 'submitted')   // 800 / 100 / 900
     for (const f of [
       { submittedSubtotal: '800' }, { submittedGst: null }, { submittedTotal: undefined },
@@ -619,17 +784,23 @@ describe('create — SIGNED whole-cent header money', () => {
     }
     // a one-cent total mismatch on a NEGATIVE header is refused too
     await assertFails(setDoc(varRef(ctx(USERS.qs), 'm2'), payload(USERS.qs, { lines: [line(-1000)], submittedTotal: -1099.99 })))
-    // large signed values with floating-point noise are fine (roundMoney output)
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'm3'), payload(USERS.qs, { lines: [line(1234567.89), line(-0.03, { taxCode: TAX_CODE.GST_FREE })] })))
+    // large signed values with floating-point noise were fine (roundMoney output) — refused like the rest
+    await assertFails(setDoc(varRef(ctx(USERS.qs), 'm3'), payload(USERS.qs, { lines: [line(1234567.89), line(-0.03, { taxCode: TAX_CODE.GST_FREE })] })))
+    await createRefused('m3', (user) => payload(user, { lines: [line(1234567.89), line(-0.03, { taxCode: TAX_CODE.GST_FREE })] }))
   })
 
-  it('negative variations are NOT clamped — a credit header is stored signed', async () => {
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'm4'), payload(USERS.qs, { lines: [line(-1234.5)] })))
+  it('ADR-90 — a signed credit header is REFUSED from every client, at create and on a draft edit; a negative variation is still never clamped once stored (a submit under the Rules keeps it signed)', async () => {
+    await createRefused('m4', (user) => payload(user, { lines: [line(-1234.5)] }))
+    await seed('m4', 'draft')
+    await editRefused('m4', (user) => draftEdit(user, { lines: [line(-1234.5)] }), { thenStoreAs: USERS.qs })
     expect(await readVar('m4')).toMatchObject({ submittedSubtotal: -1234.5, submittedGst: -123.45, submittedTotal: -1357.95 })
+    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'm4'), submitWrite(USERS.qs, { revision: 3 })))
+    expect(await readVar('m4')).toMatchObject({ status: 'submitted', submittedSubtotal: -1234.5, submittedGst: -123.45, submittedTotal: -1357.95 })
   })
 })
 
-describe('create — originating RFI (ADR-34, unchanged semantics)', () => {
+describe('create — originating RFI (ADR-34; ADR-90: REFUSED from every client — the link at create and on a draft edit is the backend’s)', () => {
+  // Positive behaviour: tests/functions/variations.test.js → createVariation.
   it('a draft, cancelled or nonexistent RFI, or one from another project / company, is refused', async () => {
     await assertFails(setDoc(varRef(ctx(USERS.admin), 'o1'), payload(USERS.admin, link(RFIS.draft))))
     await assertFails(setDoc(varRef(ctx(USERS.admin), 'o2'), payload(USERS.admin, link(RFIS.cancelled))))
@@ -668,31 +839,47 @@ describe('create — originating RFI (ADR-34, unchanged semantics)', () => {
 
 // ── Draft edit ───────────────────────────────────────────────────────────────
 
-describe('draft edit — the authored content, the re-derived header and the ADR-34 link', () => {
-  it('accepts the hook payload — content, SIGNED header, revision 2 and the audit stamps; the line count may change', async () => {
+// ADR-90: NO client may edit a draft — the block has no draft-edit branch. Every
+// test in this describe used to separate the edits the Rules accepted from the
+// ones they refused; ALL of them are now refused, the app's own payload
+// included, and the forged variants stay refused.
+describe('ADR-90 — draft edit: the authored content, the header and the ADR-34 link are REFUSED from every client', () => {
+  // Positive behaviour: tests/functions/variations.test.js → updateVariationDraft.
+  it('ADR-90 — the hook payload (content, SIGNED header, revision 2, the audit stamps; a changed line count) is REFUSED from every client', async () => {
     await seed('e1', 'draft')
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'e1'), draftEdit(USERS.qs)))
+    await editRefused('e1', (user) => draftEdit(user))
+    await editRefused('e1', (user) => draftEdit(user, { lines: [line(-50)] }))
+    await editRefused('e1', (user) => draftEdit(user, { lines: Array.from({ length: 200 }, () => line(1)) }))
+    expect(await readVar('e1')).toMatchObject({ title: 'Additional steel', submittedSubtotal: 800, submittedGst: 100, submittedTotal: 900, revision: 1, status: 'draft' })
+  })
+
+  it('what the backend stores for that edit is then submitted under the Rules unchanged — the signed header and the changed line count stand', async () => {
+    await seed('e1', 'draft')
+    await serverUpdate('e1', draftEdit(USERS.qs))
     const after = await readVar('e1')
     expect(after).toMatchObject({ title: 'Additional steel (revised)', reason: 'site_condition', supplierRef: 'Q-9', clientRef: null, submittedSubtotal: 1200, submittedGst: 150, submittedTotal: 1350, revision: 2, updatedBy: USERS.qs.uid, status: 'draft' })
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'e1'), draftEdit(USERS.qs, { lines: [line(-50)], revision: 3 })))
+    await serverUpdate('e1', draftEdit(USERS.qs, { lines: [line(-50)], revision: 3 }))
     expect(await readVar('e1')).toMatchObject({ submittedSubtotal: -50, submittedGst: -5, submittedTotal: -55, revision: 3 })
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'e1'), draftEdit(USERS.qs, { lines: Array.from({ length: 200 }, () => line(1)), revision: 4 })))
+    await serverUpdate('e1', draftEdit(USERS.qs, { lines: Array.from({ length: 200 }, () => line(1)), revision: 4 }))
+    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'e1'), submitWrite(USERS.qs, { revision: 5 })))
+    expect((await readVar('e1')).lineItems).toHaveLength(200)
   })
 
-  it('a client draft edits its clientRef; notes may be written; a partial edit (one field + revision + stamps) is fine', async () => {
+  it('ADR-90 — a client draft’s clientRef, its notes, and a partial edit (one field + revision + stamps) are REFUSED from every client', async () => {
     await seed('e2', 'draft', USERS.admin, {}, { base: clientPayload(USERS.admin) })
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'e2'), { clientRef: 'VO-8', supplierRef: null, notes: 'Agreed on site', revision: 2, ...stamps(USERS.pm) }))
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'e2'), { title: 'Retitled', revision: 3, ...stamps(USERS.pm) }))
-    expect(await readVar('e2')).toMatchObject({ clientRef: 'VO-8', notes: 'Agreed on site', title: 'Retitled', revision: 3 })
+    await editRefused('e2', (user) => ({ clientRef: 'VO-8', supplierRef: null, notes: 'Agreed on site', revision: 2, ...stamps(user) }))
+    await editRefused('e2', (user) => ({ title: 'Retitled', revision: 2, ...stamps(user) }))
+    await editRefused('e2', (user) => ({ notes: 'Agreed on site', revision: 2, ...stamps(user) }))
+    expect(await readVar('e2')).toMatchObject({ clientRef: 'VO-7', notes: '', title: 'Additional steel', revision: 1 })
   })
 
-  it('a LEGACY draft (no originRfi*, no audit stamps) edits and acquires the keys', async () => {
+  it('ADR-90 — a LEGACY draft (no originRfi*, no audit stamps) cannot be edited by a client either: REFUSED from every client, and it acquires no key', async () => {
     await seed('e3', 'draft', USERS.admin, {}, { legacy: true })
     expect((await readVar('e3')).updatedAt).toBeUndefined()
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'e3'), draftEdit(USERS.qs)))
+    await editRefused('e3', (user) => draftEdit(user))
     const after = await readVar('e3')
-    expect(after.revision).toBe(2)
-    expect(after.updatedBy).toBe(USERS.qs.uid)
+    expect(after.revision).toBe(1)
+    expect(after.updatedBy).toBeUndefined()
     expect(after.originRfiId).toBeUndefined()   // untouched — absent still reads as unlinked
   })
 
@@ -745,16 +932,18 @@ describe('draft edit — the authored content, the re-derived header and the ADR
     await assertFails(updateDoc(varRef(ctx(USERS.qs), 'e7'), draftEdit(USERS.qs, { supplierRef: null })))
   })
 
-  it('ADR-34 — add, change and remove the link on a draft (and a legacy draft); an unchanged or re-sent identical triple is never re-validated', async () => {
+  it('ADR-90 / ADR-34 — adding, changing and removing the link on a draft (and a legacy draft), and re-sending an identical triple with an edit, are REFUSED from every client', async () => {
     await seed('l1', 'draft')
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'l1'), { ...link(RFIS.open), revision: 2, ...stamps(USERS.qs) }))
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'l1'), { ...link(RFIS.answered), revision: 3, ...stamps(USERS.pm) }))
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.admin), 'l1'), { ...draftEdit(USERS.admin, { revision: 4 }), ...link(RFIS.answered) }))
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.admin), 'l1'), { ...UNLINKED, revision: 5, ...stamps(USERS.admin) }))
+    await editRefused('l1', (user) => ({ ...link(RFIS.open), revision: 2, ...stamps(user) }), { thenStoreAs: USERS.qs })                 // add
+    await editRefused('l1', (user) => ({ ...link(RFIS.answered), revision: 3, ...stamps(user) }), { thenStoreAs: USERS.pm })             // change
+    await editRefused('l1', (user) => ({ ...draftEdit(user, { revision: 4 }), ...link(RFIS.answered) }))                                // identical triple riding on an edit
+    await editRefused('l1', (user) => ({ ...UNLINKED, revision: 4, ...stamps(user) }))                                                   // remove
+    expect(await readVar('l1')).toMatchObject({ ...link(RFIS.answered), revision: 3 })
     await seed('l2', 'draft', USERS.admin, {}, { legacy: true })
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'l2'), { ...link(RFIS.closed), revision: 2, ...stamps(USERS.qs) }))
+    await editRefused('l2', (user) => ({ ...link(RFIS.closed), revision: 2, ...stamps(user) }))
     await seed('l3', 'draft', USERS.admin, {}, { legacy: true })
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'l3'), { ...draftEdit(USERS.qs), ...UNLINKED }))   // absent == null
+    await editRefused('l3', (user) => ({ ...draftEdit(user), ...UNLINKED }))   // absent == null
+    expect((await readVar('l2')).originRfiId).toBeUndefined()
   })
 
   it('ADR-34 — a draft, cancelled, nonexistent, other-project or other-company RFI, a mismatched snapshot and a partial change are refused', async () => {
@@ -771,13 +960,19 @@ describe('draft edit — the authored content, the re-derived header and the ADR
     await assertFails(updateDoc(varRef(ctx(USERS.admin), 'l4'), w({ originRfiId: null })))
   })
 
-  it('ADR-34 CRITICAL HISTORICAL CASE — a link survives its RFI’s later cancellation: unrelated edits and every transition still pass; only CHANGING to it is refused', async () => {
+  it('ADR-34 CRITICAL HISTORICAL CASE — a link survives its RFI’s later cancellation: submit, reject and withdraw still pass under the Rules (ADR-90: unrelated edits, the removal of the link and approve are REFUSED from every client; the backend’s edit and approval leave the link intact); only CHANGING to it is refused', async () => {
     await seed('h1', 'draft', USERS.admin, link(RFIS.open))
     await setRfiStatus(RFIS.open, 'cancelled')
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.admin), 'h1'), draftEdit(USERS.admin)))
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.admin), 'h1'), { ...draftEdit(USERS.admin, { revision: 3 }), ...link(RFIS.open) }))
+    // ADR-90: the unrelated edits are the backend's (tests/functions/variations.test.js → updateVariationDraft
+    // proves the link survives them); the client writes are refused and the stored link does not move.
+    await editRefused('h1', (user) => draftEdit(user), { thenStoreAs: USERS.admin })
+    await editRefused('h1', (user) => ({ ...draftEdit(user, { revision: 3 }), ...link(RFIS.open) }), { thenStoreAs: USERS.admin })
+    expect(await readVar('h1')).toMatchObject({ ...link(RFIS.open), status: 'draft', revision: 3 })
     await assertSucceeds(updateDoc(varRef(ctx(USERS.admin), 'h1'), submitWrite(USERS.admin, { revision: 4 })))
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'h1'), approveWrite(USERS.pm, { revision: 5, lines: draftEdit(USERS.admin).lineItems, amounts: [1500, -300] })))
+    // ADR-90: the client approve is refused; the approval is the backend's (tests/functions/variations.test.js → approveVariation).
+    await updateRefused('h1', (user) => approveWrite(user, { revision: 5, lines: draftEdit(USERS.admin).lineItems, amounts: [1500, -300] }))
+    expect(await readVar('h1')).toMatchObject({ ...link(RFIS.open), status: 'submitted', revision: 4 })
+    await serverUpdate('h1', approveWrite(USERS.pm, { revision: 5, lines: draftEdit(USERS.admin).lineItems, amounts: [1500, -300] }))
     const after = await readVar('h1')
     expect(after).toMatchObject({ ...link(RFIS.open), status: 'approved' })
     await seed('h2', 'draft', USERS.admin, link(RFIS.answered))
@@ -788,7 +983,9 @@ describe('draft edit — the authored content, the re-derived header and the ADR
     await assertSucceeds(updateDoc(varRef(ctx(USERS.admin), 'h3'), rejectWrite(USERS.admin)))
     await seed('h4', 'draft', USERS.admin, link(RFIS.answered))
     await assertFails(updateDoc(varRef(ctx(USERS.admin), 'h4'), { ...link(RFIS.open), revision: 2, ...stamps(USERS.admin) }))
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.admin), 'h4'), { ...UNLINKED, revision: 2, ...stamps(USERS.admin) }))   // removing a historical link stays allowed
+    // ADR-90: removing a historical link is a draft edit — the backend's; from a client it is refused like every other.
+    await editRefused('h4', (user) => ({ ...UNLINKED, revision: 2, ...stamps(user) }))
+    expect(await readVar('h4')).toMatchObject({ ...link(RFIS.answered), revision: 1 })
   })
 
   it('a non-draft document admits NO content edit — submitted, approved, rejected, withdrawn and under_review are frozen (the link included, for every role, legacy documents too)', async () => {
@@ -834,9 +1031,10 @@ describe('draft edit — the authored content, the re-derived header and the ADR
 describe('source PO link, counterparty and type — frozen from creation (every path, every status)', () => {
   const edit = (user, extra) => draftEdit(user, extra)
 
-  it('A → B → C: a legitimately created PO-linked variation cannot be re-pointed as a draft — every re-link, snapshot forgery and type flip is refused; it then submits and approves against its ORIGINAL PO', async () => {
-    // A. legitimate create against the sent PO, through the rules
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'fz1'), poLinked(USERS.qs, PO.sent)))
+  it('A → B → C: a legitimately created PO-linked variation cannot be re-pointed as a draft — every re-link, snapshot forgery and type flip is refused; it then submits (Rules) and is approved (ADR-90: by the backend only — REFUSED from every client) against its ORIGINAL PO', async () => {
+    // A. ADR-90: the create is the backend's (tests/functions/variations.test.js → createVariation); a client create is refused
+    await createRefused('fz1', (user) => poLinked(user, PO.sent))
+    await serverCreate('fz1', poLinked(USERS.qs, PO.sent))
     // B. every invalid (and every merely different) source change on the draft
     const relinks = [
       { poId: PO.cancelled.id, poNumber: PO.cancelled.poNumber },                                       // cancelled PO
@@ -864,14 +1062,18 @@ describe('source PO link, counterparty and type — frozen from creation (every 
     await assertFails(updateDoc(varRef(ctx(USERS.qs), 'fz1'), submitWrite(USERS.qs, { poId: PO.closed.id, poNumber: PO.closed.poNumber })))
     await assertFails(updateDoc(varRef(ctx(USERS.qs), 'fz1'), submitWrite(USERS.qs, { supplierName: 'Rival Co' })))
     expect(await readVar('fz1')).toMatchObject({ status: 'draft', poId: PO.sent.id, poNumber: PO.sent.poNumber, supplierName: PO.sent.supplierName, supplierId: PO.sent.supplierId, variationType: 'supplier', revision: 1 })
-    // C. the legitimate path still works: a content edit, submit and approve, identity intact throughout
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'fz1'), edit(USERS.qs)))
+    // C. the legitimate path still works: a content edit (ADR-90: the backend's — REFUSED from every client), submit and approve, identity intact throughout
+    await editRefused('fz1', (user) => edit(user), { thenStoreAs: USERS.qs })
     await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'fz1'), submitWrite(USERS.qs, { revision: 3 })))
     for (const f of relinks) await assertFails(updateDoc(varRef(ctx(USERS.pm), 'fz1'), { ...f, revision: 4, ...stamps(USERS.pm) }))
     await assertFails(updateDoc(varRef(ctx(USERS.pm), 'fz1'), approveWrite(USERS.pm, { revision: 4, lines: edit(USERS.qs).lineItems, amounts: [1500, -300], poId: PO.closed.id, poNumber: PO.closed.poNumber })))
     // Since ADR-62 / ADR-63 a PO-linked approve carries BOTH stamp pairs (the PO is sent); the plain form is a pre-M3-B1 bundle's and is denied by the FINAL rules.
     await assertFails(updateDoc(varRef(ctx(USERS.pm), 'fz1'), approveWrite(USERS.pm, { revision: 4, lines: edit(USERS.qs).lineItems, amounts: [1500, -300] })))
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'fz1'), approveWrite(USERS.pm, { revision: 4, lines: edit(USERS.qs).lineItems, amounts: [1500, -300], commitmentAppliedAt: serverTimestamp(), commitmentAppliedBy: USERS.pm.uid, scopeCommittedAt: serverTimestamp(), scopeCommittedBy: USERS.pm.uid })))
+    // ADR-90: the both-pairs approve the FINAL rules used to accept is refused from every client too; the backend writes it.
+    const approval = (user) => approveWrite(user, { revision: 4, lines: edit(USERS.qs).lineItems, amounts: [1500, -300], commitmentAppliedAt: serverTimestamp(), commitmentAppliedBy: user.uid, scopeCommittedAt: serverTimestamp(), scopeCommittedBy: user.uid })
+    await updateRefused('fz1', approval)
+    expect(await readVar('fz1')).toMatchObject({ status: 'submitted', revision: 3 })
+    await serverUpdate('fz1', approval(USERS.pm))
     const approved = await readVar('fz1')
     expect(approved).toMatchObject({ status: 'approved', poId: PO.sent.id, poNumber: PO.sent.poNumber, supplierName: PO.sent.supplierName, supplierId: PO.sent.supplierId, variationType: 'supplier', variationNumber: 'SV-0001', revision: 4 })
     for (const f of relinks) await assertFails(updateDoc(varRef(ctx(USERS.admin), 'fz1'), { ...f, revision: 5, ...stamps(USERS.admin) }))
@@ -880,16 +1082,20 @@ describe('source PO link, counterparty and type — frozen from creation (every 
     expect(poCancellationBlockers(PO.closed.id, { variations: [approved] })).toEqual([])
   })
 
-  it('manual-mode and PO-linked are fixed at creation in both directions; a client variation can never gain a PO; legitimate content edits on each still pass; a legacy link survives its PO’s cancellation', async () => {
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'fz2'), payload(USERS.qs)))            // manual mode
-    await assertSucceeds(setDoc(varRef(ctx(USERS.pm), 'fz3'), clientPayload(USERS.pm)))       // client
+  it('manual-mode and PO-linked are fixed at creation in both directions; a client variation can never gain a PO; ADR-90 — content edits on each are REFUSED from every client (the backend’s edit leaves identity intact); a legacy link survives its PO’s cancellation', async () => {
+    // ADR-90: both are created by the backend; the client creates are refused.
+    await createRefused('fz2', (user) => payload(user))
+    await createRefused('fz3', (user) => clientPayload(user))
+    await serverCreate('fz2', payload(USERS.qs))            // manual mode
+    await serverCreate('fz3', clientPayload(USERS.pm))       // client
     for (const f of [{ poId: PO.sent.id, poNumber: PO.sent.poNumber }, { poId: PO.sent.id }, { poNumber: PO.sent.poNumber }, { supplierId: PO.sent.supplierId, supplierName: PO.sent.supplierName, poId: PO.sent.id, poNumber: PO.sent.poNumber }]) {
       await assertFails(updateDoc(varRef(ctx(USERS.qs), 'fz2'), edit(USERS.qs, f)))          // manual → linked, even to a valid sent PO
       await assertFails(updateDoc(varRef(ctx(USERS.pm), 'fz3'), edit(USERS.pm, { ...f, clientRef: 'VO-7', supplierRef: null })))   // client → PO
     }
     await assertFails(updateDoc(varRef(ctx(USERS.pm), 'fz3'), edit(USERS.pm, { variationType: 'supplier', variationNumber: 'SV-0005', supplierId: PO.sent.supplierId, supplierName: PO.sent.supplierName, clientId: null, clientName: null, clientRef: null, supplierRef: '' })))
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'fz2'), edit(USERS.qs)))
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'fz3'), edit(USERS.pm, { clientRef: 'VO-8', supplierRef: null })))
+    // ADR-90: the legitimate content edits are the backend's; the client writes are refused and identity is intact after the stored edit
+    await editRefused('fz2', (user) => edit(user), { thenStoreAs: USERS.qs })
+    await editRefused('fz3', (user) => edit(user, { clientRef: 'VO-8', supplierRef: null }), { thenStoreAs: USERS.pm })
     expect(await readVar('fz2')).toMatchObject({ poId: null, poNumber: null, revision: 2 })
     expect(await readVar('fz3')).toMatchObject({ variationType: 'client', poId: null, clientId: 'contactC1', revision: 2 })
     // a legacy PO-linked draft keeps its link through the PO's later cancellation and still edits (the PO is read at create only)
@@ -897,7 +1103,7 @@ describe('source PO link, counterparty and type — frozen from creation (every 
     await testEnv.withSecurityRulesDisabled(async (c) => {
       await updateDoc(doc(c.firestore(), posPath(), PO.sent.id), { status: 'cancelled', cancelledAt: Timestamp.now(), cancelledBy: 'u_admin' })
     })
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'fz4'), edit(USERS.qs)))
+    await editRefused('fz4', (user) => edit(user), { thenStoreAs: USERS.qs })
     await assertFails(updateDoc(varRef(ctx(USERS.qs), 'fz4'), edit(USERS.qs, { poId: PO.closed.id, poNumber: PO.closed.poNumber, revision: 3 })))   // nor may the stale link be "repaired" to another PO
     expect(await readVar('fz4')).toMatchObject({ poId: PO.sent.id, poNumber: PO.sent.poNumber, revision: 2 })
   })
@@ -929,9 +1135,10 @@ describe('revision — exactly +1 on every update', () => {
     await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'rv3'), submitWrite(USERS.qs, { revision: 1 })))
   })
 
-  it('two assessors who both reviewed revision 1: the second plain update is refused (it carries 2 over a stored 2)', async () => {
+  it('ADR-90 — two assessors who both reviewed revision 1: the approve is REFUSED from every client; once the backend has approved for the first, the second’s plain update is refused (it carries 2 over a stored 2)', async () => {
     await seed('rv4', 'submitted')
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'rv4'), approveWrite(USERS.pm, { amounts: [1000, -200], assessmentNotes: '' })))
+    await updateRefused('rv4', (user) => approveWrite(user, { amounts: [1000, -200], assessmentNotes: '' }))
+    await serverUpdate('rv4', approveWrite(USERS.pm, { amounts: [1000, -200], assessmentNotes: '' }))
     await assertFails(updateDoc(varRef(ctx(USERS.qs), 'rv4'), approveWrite(USERS.qs, { amounts: [500, -200] })))
     await assertFails(updateDoc(varRef(ctx(USERS.qs), 'rv4'), rejectWrite(USERS.qs)))
     expect(await readVar('rv4')).toMatchObject({ approvedSubtotal: 800, revision: 2, approvedBy: USERS.pm.uid })
@@ -952,9 +1159,11 @@ describe('transitions — the legal matrix', () => {
     await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 't1c'), submitWrite(USERS.qs, { submittedDate: '' })))
   })
 
-  it('submitted → approved writes the certified lines, the SIGNED approved header, the notes, the dates and the stamps — and the document is then terminal', async () => {
+  // The supported approve: tests/functions/variations.test.js → approveVariation.
+  it('ADR-90 — submitted → approved is REFUSED from every client; the document the backend approves (certified lines, SIGNED approved header, notes, dates, stamps) is then terminal under the Rules', async () => {
     await seed('t2', 'submitted')
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 't2'), approveWrite(USERS.pm)))
+    await updateRefused('t2', (user) => approveWrite(user))
+    await serverUpdate('t2', approveWrite(USERS.pm))
     const after = await readVar('t2')
     expect(after).toMatchObject({ status: 'approved', approvedBy: USERS.pm.uid, approvedSubtotal: 700, approvedGst: 90, approvedTotal: 790, assessmentNotes: 'Negotiated', approvedDate: '2026-10-12', effectiveDate: '2026-10-12', revision: 2 })
     expect(after.lineItems.map(l => l.approvedAmount)).toEqual([900, -200])
@@ -964,10 +1173,12 @@ describe('transitions — the legal matrix', () => {
     await assertFails(updateDoc(varRef(ctx(USERS.pm), 't2'), { status: 'draft', revision: 3, ...stamps(USERS.pm) }))
   })
 
-  it('approval is UNBOUNDED against submitted — above, equal, zero and negative certified values are all accepted (never clamped)', async () => {
+  it('ADR-90 — an approval above, equal to, at zero or below the submitted value is REFUSED from every client whatever it certifies (the backend keeps approval UNBOUNDED and never clamps)', async () => {
     for (const [i, amounts] of [[5000, 2000], [1000, -200], [0, 0], [-1000, -5000]].entries()) {
       await seed(`t3-${i}`, 'submitted')
-      await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), `t3-${i}`), approveWrite(USERS.pm, { amounts })))
+      await updateRefused(`t3-${i}`, (user) => approveWrite(user, { amounts }))
+      // The stored shape the backend produces is unchanged: signed, never clamped.
+      await serverUpdate(`t3-${i}`, approveWrite(USERS.pm, { amounts }))
       const t = variationTotals(buildApprovedLineItems(LINES, amounts), 'approved')
       expect(await readVar(`t3-${i}`)).toMatchObject({ approvedSubtotal: t.subtotal, approvedGst: t.gst, approvedTotal: t.total })
     }
@@ -992,9 +1203,10 @@ describe('transitions — the legal matrix', () => {
     }
   })
 
-  it('a document already holding the reserved under_review can be approved, rejected or withdrawn (none is stranded), but nothing can ENTER it', async () => {
+  it('a document already holding the reserved under_review can be rejected or withdrawn through the Rules (none is stranded; ADR-90: its approval is the backend’s and is REFUSED from every client), but nothing can ENTER it', async () => {
     await seed('t8', 'under_review')
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 't8'), approveWrite(USERS.pm)))
+    await updateRefused('t8', (user) => approveWrite(user))
+    expect(await readStatus('t8')).toBe('under_review')
     await seed('t9', 'under_review')
     await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 't9'), rejectWrite(USERS.pm)))
     await seed('t10', 'under_review')
@@ -1024,8 +1236,9 @@ describe('transitions — the legal matrix', () => {
     await seed('t14', 'draft')
     await assertFails(updateDoc(varRef(ctx(USERS.pm), 't14'), approveWrite(USERS.pm)))
     await assertFails(updateDoc(varRef(ctx(USERS.pm), 't14'), rejectWrite(USERS.pm)))
-    // the ADR-57 PO precedent: a no-op "draft → draft" with only stamps and revision IS a (content-free) draft edit
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 't14'), { status: 'draft', revision: 2, ...stamps(USERS.pm) }))
+    // ADR-90: a no-op "draft → draft" with only stamps and revision used to be a (content-free) draft edit; with no
+    // draft-edit branch it is refused too — a draft's revision moves only by submit, withdraw or the backend.
+    await editRefused('t14', (user) => ({ status: 'draft', revision: 2, ...stamps(user) }))
     await seed('t15', 'submitted')
     await assertFails(updateDoc(varRef(ctx(USERS.pm), 't15'), { status: 'draft', submittedAt: null, submittedBy: null, revision: 2, ...stamps(USERS.pm) }))
     await assertFails(updateDoc(varRef(ctx(USERS.pm), 't15'), { status: 'submitted', revision: 2, ...stamps(USERS.pm) }))
@@ -1081,7 +1294,7 @@ describe('transition purity — stamps-only, actor == caller, time == request.ti
     }
   })
 
-  it('approve — the certified line COUNT is pinned to the stored count; the approved date is required; the dates and notes are bounded', async () => {
+  it('ADR-90 — approve: a wrong line count, a missing or malformed date, over-long or null notes AND the well-formed approval are all REFUSED from every client (the count, date and notes bounds are the backend’s contract)', async () => {
     await seed('p5', 'submitted')
     await assertFails(updateDoc(varRef(ctx(USERS.pm), 'p5'), approveWrite(USERS.pm, { lineItems: [buildApprovedLineItems(LINES, [900, -200])[0]] })))
     await assertFails(updateDoc(varRef(ctx(USERS.pm), 'p5'), approveWrite(USERS.pm, { lineItems: [...buildApprovedLineItems(LINES, [900, -200]), line(1)] })))
@@ -1092,8 +1305,9 @@ describe('transition purity — stamps-only, actor == caller, time == request.ti
     await assertFails(updateDoc(varRef(ctx(USERS.pm), 'p5'), approveWrite(USERS.pm, { assessmentNotes: 'x'.repeat(5001) })))
     await assertFails(updateDoc(varRef(ctx(USERS.pm), 'p5'), approveWrite(USERS.pm, { assessmentNotes: null })))
     await assertFails(updateDoc(varRef(ctx(USERS.pm), 'p5'), rejectWrite(USERS.pm, { assessmentNotes: 'x'.repeat(5001) })))
-    // an approval that leaves the effective date empty is fine (the hook always fills it; '' is a valid date value)
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'p5'), approveWrite(USERS.pm, { effectiveDate: '' })))
+    // an approval that leaves the effective date empty used to be fine — refused from every client like the rest
+    await updateRefused('p5', (user) => approveWrite(user, { effectiveDate: '' }))
+    expect(await readStatus('p5')).toBe('submitted')
   })
 
   it('submit — the stored draft must hold at least one line; the submitted date must be a date', async () => {
@@ -1105,8 +1319,9 @@ describe('transition purity — stamps-only, actor == caller, time == request.ti
   })
 })
 
-describe('approval money — SIGNED whole cents, total exact', () => {
-  it('refuses a non-number, a third-decimal value, and a total off by one cent in either direction; accepts the real buildApprovedLineItems header on every sign', async () => {
+describe('approval money — SIGNED whole cents, total exact (ADR-90: the approved header is DERIVED by the backend; REFUSED from every client)', () => {
+  // Positive behaviour: tests/functions/variations.test.js → approveVariation.
+  it('ADR-90 — a non-number, a third-decimal value, a total off by one cent AND the real buildApprovedLineItems header are all REFUSED from every client', async () => {
     await seed('am1', 'submitted')
     for (const f of [{ approvedSubtotal: '700' }, { approvedGst: null }, { approvedSubtotal: 700.001 }, { approvedGst: 90.005 }, { approvedTotal: 790.01 }, { approvedTotal: 789.99 }, { approvedGst: 91 }]) {
       await assertFails(updateDoc(varRef(ctx(USERS.pm), 'am1'), approveWrite(USERS.pm, f)))
@@ -1114,8 +1329,11 @@ describe('approval money — SIGNED whole cents, total exact', () => {
     const { approvedTotal: _t, ...noTotal } = approveWrite(USERS.pm)   // eslint-disable-line no-unused-vars
     await assertFails(updateDoc(varRef(ctx(USERS.pm), 'am1'), noTotal))
     expect(await readStatus('am1')).toBe('submitted')
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'am1'), approveWrite(USERS.pm, { amounts: [-333.33, 0.01] })))
-    expect(await readVar('am1')).toMatchObject({ approvedSubtotal: -333.32, approvedGst: -33.33, approvedTotal: -366.65 })
+    await updateRefused('am1', (user) => approveWrite(user, { amounts: [-333.33, 0.01] }))
+    expect(await readVar('am1')).toMatchObject({ status: 'submitted', approvedSubtotal: null, approvedGst: null, approvedTotal: null })
+    // The header that payload carried is still the real derivation (the backend runs the same module).
+    const real = approveWrite(USERS.pm, { amounts: [-333.33, 0.01] })
+    expect(real).toMatchObject({ approvedSubtotal: -333.32, approvedGst: -33.33, approvedTotal: -366.65 })
   })
 })
 
@@ -1181,15 +1399,15 @@ describe('direct-SDK bypasses that are now refused', () => {
 // ── Legacy documents ─────────────────────────────────────────────────────────
 
 describe('legacy documents (foundation shape — no originRfi*, no audit stamps) stay fully writable and acquire the keys', () => {
-  it('a legacy draft edits, submits and withdraws; a legacy submitted approves and rejects; each acquires updatedAt / updatedBy and revision 2', async () => {
+  it('a legacy draft edits, submits and withdraws; a legacy submitted rejects and withdraws; each acquires updatedAt / updatedBy and revision 2 (ADR-90: a legacy submitted is approved by the backend only — REFUSED from every client)', async () => {
     await seed('lg1', 'draft', USERS.admin, {}, { legacy: true })
     await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'lg1'), submitWrite(USERS.qs)))
     expect(await readVar('lg1')).toMatchObject({ status: 'submitted', revision: 2, submittedBy: USERS.qs.uid, updatedBy: USERS.qs.uid })
     await seed('lg2', 'draft', USERS.admin, {}, { legacy: true })
     await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'lg2'), withdrawWrite(USERS.qs)))
     await seed('lg3', 'submitted', USERS.admin, {}, { legacy: true })
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'lg3'), approveWrite(USERS.pm)))
-    expect(await readVar('lg3')).toMatchObject({ status: 'approved', approvedSubtotal: 700, revision: 2 })
+    await updateRefused('lg3', (user) => approveWrite(user))
+    expect(await readVar('lg3')).toMatchObject({ status: 'submitted', revision: 1 })
     await seed('lg4', 'submitted', USERS.admin, {}, { legacy: true })
     await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'lg4'), rejectWrite(USERS.pm)))
     await seed('lg5', 'submitted', USERS.admin, {}, { legacy: true })
@@ -1205,12 +1423,12 @@ describe('legacy documents (foundation shape — no originRfi*, no audit stamps)
     }
   })
 
-  it('a legacy PO-linked supplier variation whose PO has since been cancelled still edits, submits, rejects and withdraws — but since ADR-62 (Correction A) it can NOT be approved: approval is refused, with or without the commitment pair', async () => {
+  it('a legacy PO-linked supplier variation whose PO has since been cancelled still submits, rejects and withdraws (ADR-90: its edit is the backend’s — REFUSED from every client) — but since ADR-62 (Correction A) it can NOT be approved: approval is refused, with or without the commitment pair', async () => {
     await seed('lg7', 'draft', USERS.admin, {}, { legacy: true, base: poLinked(USERS.admin) })
     await testEnv.withSecurityRulesDisabled(async (c) => {
       await updateDoc(doc(c.firestore(), posPath(), PO.sent.id), { status: 'cancelled', cancelledAt: Timestamp.now(), cancelledBy: 'u_admin' })
     })
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'lg7'), draftEdit(USERS.qs)))
+    await editRefused('lg7', (user) => draftEdit(user), { thenStoreAs: USERS.qs })   // ADR-90: the edit is the backend's
     await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'lg7'), submitWrite(USERS.qs, { revision: 3 })))
     await assertFails(updateDoc(varRef(ctx(USERS.pm), 'lg7'), approveWrite(USERS.pm, { revision: 4, lines: draftEdit(USERS.qs).lineItems, amounts: [1500, -300] })))
     await assertFails(updateDoc(varRef(ctx(USERS.pm), 'lg7'), approveWrite(USERS.pm, { revision: 4, lines: draftEdit(USERS.qs).lineItems, amounts: [1500, -300], commitmentAppliedAt: serverTimestamp(), commitmentAppliedBy: USERS.pm.uid })))
@@ -1223,8 +1441,9 @@ describe('legacy documents (foundation shape — no originRfi*, no audit stamps)
 // ── Dependent figures ────────────────────────────────────────────────────────
 
 describe('downstream figures are unchanged — approval is still the only counting point, signed, never clamped', () => {
-  it('a supplier variation raised, submitted and approved through the new rules feeds Commitment Exposure exactly once, by cost code, signed; pending is exposure only', async () => {
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'f1'), poLinked(USERS.qs)))
+  it('a supplier variation raised (backend), submitted (Rules) and approved (backend) feeds Commitment Exposure exactly once, by cost code, signed; pending is exposure only — ADR-90: its create and approve are REFUSED from every client', async () => {
+    await createRefused('f1', (user) => poLinked(user))
+    await serverCreate('f1', poLinked(USERS.qs))
     let v = await readVar('f1')
     expect(approvedSupplierVariationsByCostCode([v])).toEqual({})
     expect(pendingSupplierVariationExposureByCostCode([v])).toEqual({ cc1: 1000, cc2: -200 })
@@ -1233,7 +1452,9 @@ describe('downstream figures are unchanged — approval is still the only counti
     await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'f1'), submitWrite(USERS.qs)))
     // ADR-62 / ADR-63: the PO-linked approve carries both stamp pairs (the PO is sent). The GROSS approved
     // figure below is unchanged by it; the lines carry no poLineIndex, so nothing matures (new scope).
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'f1'), approveWrite(USERS.pm, { revision: 3, amounts: [900, -500], commitmentAppliedAt: serverTimestamp(), commitmentAppliedBy: USERS.pm.uid, scopeCommittedAt: serverTimestamp(), scopeCommittedBy: USERS.pm.uid })))
+    const f1Approval = (user) => approveWrite(user, { revision: 3, amounts: [900, -500], commitmentAppliedAt: serverTimestamp(), commitmentAppliedBy: user.uid, scopeCommittedAt: serverTimestamp(), scopeCommittedBy: user.uid })
+    await updateRefused('f1', f1Approval)
+    await serverUpdate('f1', f1Approval(USERS.pm))
     v = await readVar('f1')
     expect(approvedSupplierVariationsByCostCode([v])).toEqual({ cc1: 900, cc2: -500 })
     expect(approvedSupplierVariationsTotal([v])).toBe(400)
@@ -1244,20 +1465,24 @@ describe('downstream figures are unchanged — approval is still the only counti
     expect(approvedSupplierVariationsByCostCode([legacyShape])).toEqual(approvedSupplierVariationsByCostCode([v]))
   })
 
-  it('a client variation approved through the new rules raises the Current Contract Sum (signed); a negative one lowers it; pending client exposure is separate', async () => {
-    await assertSucceeds(setDoc(varRef(ctx(USERS.pm), 'f2'), clientPayload(USERS.pm)))
+  it('an approved client variation raises the Current Contract Sum (signed); a negative one lowers it; pending client exposure is separate — ADR-90: its create and approve are the backend’s, REFUSED from every client', async () => {
+    await createRefused('f2', (user) => clientPayload(user))
+    await serverCreate('f2', clientPayload(USERS.pm))
     await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'f2'), submitWrite(USERS.pm)))
     const baseline = { originalContractValue: 100000 }
     let v = await readVar('f2')
     expect(pendingClientVariationExposureTotal([v])).toBe(800)
     expect(computeMargin({ baseline, variations: [v], forecastFinalCost: 80000 }).currentContractSum).toBe(100000)
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'f2'), approveWrite(USERS.pm, { revision: 3, amounts: [1000, -200], assessmentNotes: '' })))
+    await updateRefused('f2', (user) => approveWrite(user, { revision: 3, amounts: [1000, -200], assessmentNotes: '' }))
+    await serverUpdate('f2', approveWrite(USERS.pm, { revision: 3, amounts: [1000, -200], assessmentNotes: '' }))
     v = await readVar('f2')
     expect(approvedClientVariationsTotal([v])).toBe(800)
     expect(computeMargin({ baseline, variations: [v], forecastFinalCost: 80000 }).currentContractSum).toBe(100800)
-    await assertSucceeds(setDoc(varRef(ctx(USERS.pm), 'f3'), clientPayload(USERS.pm, { variationNumber: 'CV-0002', lines: [line(-3000)] })))
+    await createRefused('f3', (user) => clientPayload(user, { variationNumber: 'CV-0002', lines: [line(-3000)] }))
+    await serverCreate('f3', clientPayload(USERS.pm, { variationNumber: 'CV-0002', lines: [line(-3000)] }))
     await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'f3'), submitWrite(USERS.pm)))
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'f3'), approveWrite(USERS.pm, { revision: 3, lines: [line(-3000)], amounts: [-3000], assessmentNotes: '' })))
+    await updateRefused('f3', (user) => approveWrite(user, { revision: 3, lines: [line(-3000)], amounts: [-3000], assessmentNotes: '' }))
+    await serverUpdate('f3', approveWrite(USERS.pm, { revision: 3, lines: [line(-3000)], amounts: [-3000], assessmentNotes: '' }))
     const credit = await readVar('f3')
     expect(approvedClientVariationsTotal([v, credit])).toBe(-2200)
     expect(computeMargin({ baseline, variations: [v, credit], forecastFinalCost: 80000 }).currentContractSum).toBe(97800)
@@ -1278,7 +1503,8 @@ describe('downstream figures are unchanged — approval is still the only counti
   })
 
   it('the originating-RFI reverse view derives from the stored link and nothing on the RFI', async () => {
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'f6'), payload(USERS.qs, link(RFIS.open))))
+    await createRefused('f6', (user) => payload(user, link(RFIS.open)))   // ADR-90
+    await serverCreate('f6', payload(USERS.qs, link(RFIS.open)))
     await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'f6'), submitWrite(USERS.qs)))
     const v = await readVar('f6')
     expect(variationsForRfi([v], RFIS.open.id).map(x => x.id)).toEqual(['f6'])
@@ -1288,7 +1514,17 @@ describe('downstream figures are unchanged — approval is still the only counti
 
 // ── The REAL guarded transactions (lib/variationActions.js) ──────────────────
 
-describe('runUpdateVariationDraft / runTransitionVariation — the app’s own transactions against the real rules', () => {
+// ADR-90: the app's own transactions are now the DRAFT EDIT and SUBMIT / REJECT /
+// WITHDRAW only. Approval is a call to the trusted backend (lib/variationActions.js
+// → runApproveVariation; proven in tests/functions/variations.test.js →
+// approveVariation): runTransitionVariation refuses to approve before any read,
+// and the payload it used to write is refused by the Rules.
+// ADR-90, checkpoint-1 correction: runUpdateVariationDraft is no longer a
+// transaction either — it is a call to the trusted backend (proven in
+// tests/functions/variations.test.js → updateVariationDraft; its request and
+// error mapping in tests/unit/variationActions.test.js). The tests below that
+// drove it against the Rules now prove the raw write it used to make is refused.
+describe('runTransitionVariation — the app’s own transaction against the real rules (ADR-90: the draft edit and approve are server calls; their old writes are REFUSED)', () => {
   const qs = { db: null, uid: USERS.qs.uid }
   const pm = { db: null, uid: USERS.pm.uid }
   beforeEach(() => { qs.db = ctx(USERS.qs); pm.db = ctx(USERS.pm) })
@@ -1300,63 +1536,81 @@ describe('runUpdateVariationDraft / runTransitionVariation — the app’s own t
   }
   const run = (who, fn, args) => fn({ db: who.db, variationRef: varRef(who.db, args.id), uid: who.uid, runTransaction, serverTimestamp, ...args })
 
-  it('a draft edit from the reviewed copy writes the content, the signed header, revision 2 and the stamps', async () => {
+  // The write the old transaction made for `edit` (lib/variationActions.js → draftUpdate, since removed).
+  const oldEditWrite = (user, extra = {}) => draftEdit(user, { lines: edit.lineItems, description: 'More', ...extra })
+  // The app's draft edit is a server call now: it makes NO Firestore write, whatever the server answers.
+  const noCall = () => { const calls = []; return { calls, call: async (name, data) => { calls.push({ name, data }); return { variationId: data.variationId, alreadyApplied: false, calcVersion: 2 } } } }
+
+  it('ADR-90 — the write a draft edit from the reviewed copy used to make (content, signed header, revision 2, stamps) is REFUSED from every client; the app now sends a request instead and writes nothing', async () => {
     await seed('x1', 'draft')
     const seen = await readVar('x1')
-    await run(qs, runUpdateVariationDraft, { id: 'x1', seen, data: edit })
-    const after = await readVar('x1')
-    expect(after).toMatchObject({ title: 'Additional steel (revised)', supplierRef: 'Q-9', clientRef: null, submittedSubtotal: 1200, submittedGst: 150, submittedTotal: 1350, revision: 2, updatedBy: USERS.qs.uid, notes: '' })
-    expect(after.lineItems.map(l => l.approvedAmount)).toEqual([null, null])
+    await editRefused('x1', (user) => oldEditWrite(user))
+    const stub = noCall()
+    await runUpdateVariationDraft({ call: stub.call, projectId: PROJECT_A, seen, data: edit, uid: USERS.qs.uid })
+    expect(stub.calls).toHaveLength(1)
+    expect(stub.calls[0]).toMatchObject({ name: 'updateVariationDraft', data: { projectId: PROJECT_A, variationId: 'x1', expectedRevision: 1, title: 'Additional steel (revised)', supplierRef: 'Q-9', clientRef: null } })
+    expect(JSON.stringify(stub.calls[0].data)).not.toMatch(/submittedGst|submittedSubtotal|submittedTotal|approvedAmount|costCodeName/)
+    expect(await readVar('x1')).toMatchObject({ title: 'Additional steel', submittedSubtotal: 800, revision: 1 })
   })
 
-  it('a STALE copy (edited underneath — revision moved) is refused with nothing written; the fresh copy then saves', async () => {
+  it('ADR-90 — a STALE edit (edited underneath by the backend — revision moved) is REFUSED from every client at the stale AND at the fresh revision; the first edit stands (the stale check is the server’s: variation-stale)', async () => {
     await seed('x2', 'draft')
-    const seen = await readVar('x2')
-    await run(pm, runUpdateVariationDraft, { id: 'x2', seen, data: { ...edit, lineItems: [line(1200)] } })
-    const err = await expectKind(run(qs, runUpdateVariationDraft, { id: 'x2', seen, data: edit }), VARIATION_WRITE_ERROR.STALE)
-    expect(err.message).toMatch(/changed by another user/)
-    expect((await readVar('x2')).submittedSubtotal).toBe(1200)
-    await run(qs, runUpdateVariationDraft, { id: 'x2', seen: await readVar('x2'), data: edit })
-    expect((await readVar('x2')).revision).toBe(3)
+    await serverUpdate('x2', oldEditWrite(USERS.pm, { lines: [line(1200)] }))   // the other editor's save, revision 2
+    await editRefused('x2', (user) => oldEditWrite(user))                        // built over the stale copy: revision 2 again
+    await editRefused('x2', (user) => oldEditWrite(user, { revision: 3 }))       // built over the fresh copy
+    expect(await readVar('x2')).toMatchObject({ submittedSubtotal: 1200, revision: 2 })
   })
 
-  it('a STALE copy (submitted underneath — status moved) is refused for an edit and names the new status', async () => {
+  it('ADR-90 — an edit of a draft that was SUBMITTED underneath is REFUSED from every client (the status check is the server’s: variation-not-draft)', async () => {
     await seed('x3', 'draft')
     const seen = await readVar('x3')
     await run(qs, runTransitionVariation, { id: 'x3', seen, nextStatus: VARIATION_STATUS.SUBMITTED })
-    const err = await expectKind(run(pm, runUpdateVariationDraft, { id: 'x3', seen, data: edit }), VARIATION_WRITE_ERROR.STALE)
-    expect(err.message).toMatch(/now Submitted, not Draft/)
+    await editRefused('x3', (user) => oldEditWrite(user))
+    await editRefused('x3', (user) => oldEditWrite(user, { revision: 3 }))
+    expect(await readVar('x3')).toMatchObject({ status: 'submitted', revision: 2, title: 'Additional steel' })
+    // …and the app refuses to send an edit of a copy it can see is no longer a draft.
+    const stub = noCall()
+    await expectKind(runUpdateVariationDraft({ call: stub.call, projectId: PROJECT_A, seen: await readVar('x3'), data: edit, uid: USERS.pm.uid }), VARIATION_WRITE_ERROR.INVALID)
+    expect(stub.calls).toEqual([])
   })
 
-  it('an invalid edit (no title, no lines, a line without a cost code, an ineligible RFI) is refused before any read', async () => {
+  it('an invalid edit (no title, no lines, a line without a cost code, an ineligible RFI) is refused before any call', async () => {
     await seed('x4', 'draft')
     const seen = await readVar('x4')
+    const stub = noCall()
     for (const data of [{ ...edit, title: '' }, { ...edit, lineItems: [] }, { ...edit, lineItems: [line(1, { costCodeId: '' })] }, { ...edit, originRfi: { ...RFIS.draft } }]) {
-      await expectKind(run(qs, runUpdateVariationDraft, { id: 'x4', seen, data }), VARIATION_WRITE_ERROR.INVALID)
+      await expectKind(runUpdateVariationDraft({ call: stub.call, projectId: PROJECT_A, seen, data, uid: USERS.qs.uid }), VARIATION_WRITE_ERROR.INVALID)
     }
+    expect(stub.calls).toEqual([])   // ADR-90: refused before any CALL — nothing is sent, nothing is written
     expect((await readVar('x4')).revision).toBe(1)
   })
 
-  it('the draft edit links, re-links and unlinks the originating RFI through the transaction (the ADR-34 rule verifies each change)', async () => {
+  it('ADR-90 — the writes that linked, kept and unlinked the originating RFI through the old transaction are REFUSED from every client; the app sends the link as a request (set, keep, remove)', async () => {
     await seed('x5', 'draft')
-    await run(qs, runUpdateVariationDraft, { id: 'x5', seen: await readVar('x5'), data: { ...edit, originRfi: RFIS.open } })
+    await editRefused('x5', (user) => ({ ...oldEditWrite(user), ...link(RFIS.open) }), { thenStoreAs: USERS.qs })   // link
     expect(await readVar('x5')).toMatchObject(link(RFIS.open))
-    await run(qs, runUpdateVariationDraft, { id: 'x5', seen: await readVar('x5'), data: { ...edit } })   // undefined → preserved
-    expect(await readVar('x5')).toMatchObject(link(RFIS.open))
-    await run(qs, runUpdateVariationDraft, { id: 'x5', seen: await readVar('x5'), data: { ...edit, originRfi: null } })
-    expect(await readVar('x5')).toMatchObject(UNLINKED)
-    expect((await readVar('x5')).revision).toBe(4)
+    await editRefused('x5', (user) => oldEditWrite(user, { revision: 3 }))                                           // undefined → preserved
+    await editRefused('x5', (user) => ({ ...oldEditWrite(user, { revision: 3 }), ...UNLINKED }))                     // unlink
+    expect(await readVar('x5')).toMatchObject({ ...link(RFIS.open), revision: 2 })
+    const seen = await readVar('x5')
+    const stub = noCall()
+    await runUpdateVariationDraft({ call: stub.call, projectId: PROJECT_A, seen, data: { ...edit, originRfi: RFIS.answered }, uid: USERS.qs.uid })
+    await runUpdateVariationDraft({ call: stub.call, projectId: PROJECT_A, seen, data: { ...edit }, uid: USERS.qs.uid })
+    await runUpdateVariationDraft({ call: stub.call, projectId: PROJECT_A, seen, data: { ...edit, originRfi: null }, uid: USERS.qs.uid })
+    expect(stub.calls.map(c => [c.data.changeOriginRfi, c.data.originRfiId])).toEqual([[true, RFIS.answered.id], [false, null], [true, null]])
+    expect((await readVar('x5')).revision).toBe(2)
   })
 
-  it('submit, approve (certified amounts normalised to cents, notes required when differing) and reject / withdraw from the reviewed copies, each +1', async () => {
+  it('submit and reject / withdraw from the reviewed copies, each +1; ADR-90 — approve is no longer a transaction: runTransitionVariation refuses it before any read and its old payload is REFUSED from every client', async () => {
     await seed('x6', 'draft')
     await run(qs, runTransitionVariation, { id: 'x6', seen: await readVar('x6'), nextStatus: VARIATION_STATUS.SUBMITTED, today: '2026-10-27' })
     let live = await readVar('x6')
     expect(live).toMatchObject({ status: 'submitted', submittedBy: USERS.qs.uid, submittedDate: '2026-10-27', revision: 2 })
-    await run(pm, runTransitionVariation, { id: 'x6', seen: live, nextStatus: VARIATION_STATUS.APPROVED, extras: { approvedAmounts: ['899.999', -200], assessmentNotes: ' Negotiated ' }, today: '2026-10-27' })
-    live = await readVar('x6')
-    expect(live).toMatchObject({ status: 'approved', approvedBy: USERS.pm.uid, revision: 3, approvedSubtotal: 700, approvedGst: 90, approvedTotal: 790, assessmentNotes: 'Negotiated', approvedDate: '2026-10-27', effectiveDate: '2026-10-27' })
-    expect(live.lineItems[0].approvedAmount).toBe(900)
+    const refused = await expectKind(run(pm, runTransitionVariation, { id: 'x6', seen: live, nextStatus: VARIATION_STATUS.APPROVED, extras: { approvedAmounts: ['899.999', -200], assessmentNotes: ' Negotiated ' }, today: '2026-10-27' }), VARIATION_WRITE_ERROR.INVALID)
+    expect(refused.message).toMatch(/approved by the Constrap server/)
+    // …and the write that transaction used to make (amounts normalised to cents, trimmed notes) is refused by the Rules.
+    await updateRefused('x6', (user) => approveWrite(user, { amounts: [900, -200], assessmentNotes: 'Negotiated', approvedDate: '2026-10-27', effectiveDate: '2026-10-27', revision: 3 }))
+    expect(await readVar('x6')).toMatchObject({ status: 'submitted', revision: 2, approvedBy: null })
     await seed('x7', 'submitted')
     await run(pm, runTransitionVariation, { id: 'x7', seen: await readVar('x7'), nextStatus: VARIATION_STATUS.REJECTED, extras: { assessmentNotes: 'Not agreed' } })
     expect(await readVar('x7')).toMatchObject({ status: 'rejected', rejectedBy: USERS.pm.uid, revision: 2, assessmentNotes: 'Not agreed' })
@@ -1365,11 +1619,13 @@ describe('runUpdateVariationDraft / runTransitionVariation — the app’s own t
     expect(await readVar('x8')).toMatchObject({ status: 'withdrawn', withdrawnBy: USERS.qs.uid, revision: 2 })
   })
 
-  it('a STALE assessment (approved underneath) is refused with nothing written — the second assessor never overwrites the first', async () => {
+  it('a STALE assessment (approved underneath — by the backend, ADR-90) is refused with nothing written — the second assessor never overwrites the first', async () => {
     await seed('x9', 'submitted')
     const seen = await readVar('x9')
-    await run(pm, runTransitionVariation, { id: 'x9', seen, nextStatus: VARIATION_STATUS.APPROVED, extras: { approvedAmounts: [1000, -200] } })
-    await expectKind(run(qs, runTransitionVariation, { id: 'x9', seen, nextStatus: VARIATION_STATUS.APPROVED, extras: { approvedAmounts: [500, -200], assessmentNotes: 'less' } }), VARIATION_WRITE_ERROR.STALE)
+    await serverUpdate('x9', approveWrite(USERS.pm, { amounts: [1000, -200], assessmentNotes: '' }))
+    // The second assessor's approve: no transaction any more (INVALID before any read), and the raw payload is refused by the Rules.
+    await expectKind(run(qs, runTransitionVariation, { id: 'x9', seen, nextStatus: VARIATION_STATUS.APPROVED, extras: { approvedAmounts: [500, -200], assessmentNotes: 'less' } }), VARIATION_WRITE_ERROR.INVALID)
+    await updateRefused('x9', (user) => approveWrite(user, { amounts: [500, -200], assessmentNotes: 'less' }))
     await expectKind(run(qs, runTransitionVariation, { id: 'x9', seen, nextStatus: VARIATION_STATUS.REJECTED }), VARIATION_WRITE_ERROR.STALE)
     await expectKind(run(qs, runTransitionVariation, { id: 'x9', seen, nextStatus: VARIATION_STATUS.WITHDRAWN }), VARIATION_WRITE_ERROR.STALE)
     expect((await readVar('x9')).approvedSubtotal).toBe(800)
@@ -1384,7 +1640,9 @@ describe('runUpdateVariationDraft / runTransitionVariation — the app’s own t
     await expectKind(run(pm, runTransitionVariation, { id: 'x10', seen, nextStatus: VARIATION_STATUS.APPROVED, extras: { approvedAmounts: [900] } }), VARIATION_WRITE_ERROR.INVALID)
     await seed('x11', 'approved')
     await expectKind(run(pm, runTransitionVariation, { id: 'x11', seen: await readVar('x11'), nextStatus: VARIATION_STATUS.WITHDRAWN }), VARIATION_WRITE_ERROR.INVALID)
-    await expectKind(run(pm, runTransitionVariation, { id: 'gone', seen: { ...seen, id: 'gone' }, nextStatus: VARIATION_STATUS.APPROVED, extras: { approvedAmounts: [1000, -200] } }), VARIATION_WRITE_ERROR.MISSING)
+    // ADR-90: an approve never reaches a read, so the MISSING document is proven with a transition the browser still writes.
+    await expectKind(run(pm, runTransitionVariation, { id: 'gone', seen: { ...seen, id: 'gone' }, nextStatus: VARIATION_STATUS.APPROVED, extras: { approvedAmounts: [1000, -200] } }), VARIATION_WRITE_ERROR.INVALID)
+    await expectKind(run(pm, runTransitionVariation, { id: 'gone', seen: { ...seen, id: 'gone' }, nextStatus: VARIATION_STATUS.REJECTED }), VARIATION_WRITE_ERROR.MISSING)
     expect((await readVar('x10')).revision).toBe(1)
   })
 
@@ -1393,61 +1651,78 @@ describe('runUpdateVariationDraft / runTransitionVariation — the app’s own t
     const sub = { db: ctx(USERS.sub), uid: USERS.sub.uid }
     const seen = await readVar('x12')
     await expectKind(run(sub, runTransitionVariation, { id: 'x12', seen, nextStatus: VARIATION_STATUS.SUBMITTED }), VARIATION_WRITE_ERROR.PERMISSION)
-    await expectKind(run(sub, runUpdateVariationDraft, { id: 'x12', seen, data: edit }), VARIATION_WRITE_ERROR.PERMISSION)
-    expect(await readStatus('x12')).toBe('draft')
+    await assertFails(updateDoc(varRef(sub.db, 'x12'), oldEditWrite(USERS.sub)))   // ADR-90: the old edit write — refused for the denied role as for every other
+    expect(await readVar('x12')).toMatchObject({ status: 'draft', revision: 1 })
   })
 
-  it('a legacy draft (no stamps, no link keys) edits and submits through the transactions, acquiring the keys', async () => {
+  it('a legacy draft (no stamps, no link keys) submits through the transaction, acquiring the keys; ADR-90 — its edit write is REFUSED from every client', async () => {
     await seed('x13', 'draft', USERS.admin, {}, { legacy: true })
-    const seen = await readVar('x13')
-    await run(qs, runUpdateVariationDraft, { id: 'x13', seen, data: edit })
+    await editRefused('x13', (user) => oldEditWrite(user))
     await run(qs, runTransitionVariation, { id: 'x13', seen: await readVar('x13'), nextStatus: VARIATION_STATUS.SUBMITTED })
-    expect(await readVar('x13')).toMatchObject({ status: 'submitted', revision: 3, submittedBy: USERS.qs.uid, updatedBy: USERS.qs.uid })
+    expect(await readVar('x13')).toMatchObject({ status: 'submitted', revision: 2, submittedBy: USERS.qs.uid, updatedBy: USERS.qs.uid })
   })
 })
 
 // ── NOT enforced — the honest ceiling ────────────────────────────────────────
 
-describe('NOT ENFORCED by rules — proven, so the ceiling is documented (DC37)', () => {
-  it('lineItems CONTENTS are unverified — junk elements, a bogus cost code, a wrong tax code and an approved amount on a DRAFT line are ACCEPTED', async () => {
+// ADR-90 CLOSES this ceiling for client writes. At create, on a draft edit and at
+// approval the lines, the header, the notes rule and the numbering are the
+// trusted backend's (tests/functions/variations.test.js), and every client write
+// that used to slip through here is refused outright. What Rules still cannot
+// do — look inside a stored array — no longer matters for a client write,
+// because no client writes one; stored content is verified by the backend when
+// it is approved or applied.
+describe('DC37 — the former "NOT ENFORCED by rules" ceiling is CLOSED for client writes (ADR-90)', () => {
+  // Positive behaviour and the server's verification: tests/functions/variations.test.js.
+  it('ADR-90 — the lineItems ceiling is closed for client writes: junk elements, a bogus cost code, a wrong tax code and an approved amount on a DRAFT line are REFUSED from every client, at create and on a draft edit', async () => {
     const junk = [{ foo: 'bar' }, { costCodeId: 'ccX', submittedAmount: 'lots', taxCode: 'vat', approvedAmount: 99999, approvedGst: 9999 }]
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'n1'), payload(USERS.qs, { lines: junk, submittedSubtotal: 800, submittedGst: 100, submittedTotal: 900 })))
+    await createRefused('n1', (user) => payload(user, { lines: junk, submittedSubtotal: 800, submittedGst: 100, submittedTotal: 900 }))
+    await seed('n1', 'draft')
+    await editRefused('n1', (user) => ({ lineItems: junk, submittedSubtotal: 800, submittedGst: 100, submittedTotal: 900, revision: 2, ...stamps(user) }))
   })
 
-  it('the header GST is NOT pinned to the lines or the subtotal — a header unrelated to its lines is ACCEPTED when subtotal + gst == total', async () => {
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'n2'), payload(USERS.qs, { submittedSubtotal: 800, submittedGst: 800, submittedTotal: 1600 })))
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'n3'), payload(USERS.qs, { submittedSubtotal: 12345, submittedGst: -5, submittedTotal: 12340 })))
+  it('ADR-90 — the header ceiling is closed for client writes: a header unrelated to its lines (subtotal + gst == total) is REFUSED from every client, at create, on a draft edit and at approval', async () => {
+    await createRefused('n2', (user) => payload(user, { submittedSubtotal: 800, submittedGst: 800, submittedTotal: 1600 }))
+    await createRefused('n3', (user) => payload(user, { submittedSubtotal: 12345, submittedGst: -5, submittedTotal: 12340 }))
+    await seed('n2', 'draft')
+    await editRefused('n2', (user) => ({ submittedSubtotal: 800, submittedGst: 800, submittedTotal: 1600, revision: 2, ...stamps(user) }))
+    await seed('n3', 'draft')
+    await editRefused('n3', (user) => ({ submittedSubtotal: 12345, submittedGst: -5, submittedTotal: 12340, revision: 2, ...stamps(user) }))
     await seed('n4', 'submitted')
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'n4'), approveWrite(USERS.pm, { approvedSubtotal: 700, approvedGst: 700, approvedTotal: 1400 })))
+    await updateRefused('n4', (user) => approveWrite(user, { approvedSubtotal: 700, approvedGst: 700, approvedTotal: 1400 }))
   })
 
-  it('"assessment notes required when approved differs from submitted" is the client’s — an approval that differs with EMPTY notes is ACCEPTED', async () => {
+  it('ADR-90 — "assessment notes required when approved differs from submitted" is no longer the client’s: an approval that differs with EMPTY notes is REFUSED from every client (the backend enforces the rule)', async () => {
     await seed('n5', 'submitted')
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'n5'), approveWrite(USERS.pm, { amounts: [1, -1], assessmentNotes: '' })))
+    await updateRefused('n5', (user) => approveWrite(user, { amounts: [1, -1], assessmentNotes: '' }))
   })
 
-  it('creator == approver is ACCEPTED (self-approval permitted by decision); duplicate numbers and duplicate counterparty references are ACCEPTED (DC6 / DC9)', async () => {
+  it('ADR-90 — creator == approver through a direct write is REFUSED from every client (self-approval remains permitted by decision — through the backend); duplicate numbers and duplicate counterparty references can no longer be created by a client (DC6 / DC9: numbering is the backend counter’s)', async () => {
     await seed('n6', 'submitted', USERS.qs)
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'n6'), approveWrite(USERS.qs)))
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'n7'), payload(USERS.qs, { supplierRef: 'Q-1' })))
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'n8'), payload(USERS.qs, { supplierRef: 'Q-1' })))
+    await assertFails(updateDoc(varRef(ctx(USERS.qs), 'n6'), approveWrite(USERS.qs)))
+    expect(await readStatus('n6')).toBe('submitted')
+    await createRefused('n7', (user) => payload(user, { supplierRef: 'Q-1' }))
+    await createRefused('n8', (user) => payload(user, { supplierRef: 'Q-1' }))
   })
 
-  it('a direct-SDK caller who reads first and writes stored + 1 passes the revision rule — the stale guard is rules-ASSISTED, not rules-proven', async () => {
+  it('ADR-90 — a direct-SDK caller who reads first and writes stored + 1 can no longer overwrite another editor’s CONTENT: the edit is REFUSED from every client at any revision; the rules-ASSISTED stale guard now covers only the content-free transitions', async () => {
     await seed('n9', 'draft')
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'n9'), draftEdit(USERS.qs)))   // revision 2
+    await editRefused('n9', (user) => draftEdit(user), { thenStoreAs: USERS.qs })   // the first editor's save (the backend's), revision 2
     const live = await readVar('n9')
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'n9'), draftEdit(USERS.pm, { lines: [line(1200)], revision: live.revision + 1 })))
-    expect((await readVar('n9')).submittedSubtotal).toBe(1200)
+    await editRefused('n9', (user) => draftEdit(user, { lines: [line(1200)], revision: live.revision + 1 }))
+    expect(await readVar('n9')).toMatchObject({ submittedSubtotal: live.submittedSubtotal, revision: 2 })
+    // What remains rules-assisted: a transition written as stored + 1 by someone who did not review the latest copy is accepted.
+    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'n9'), submitWrite(USERS.pm, { revision: live.revision + 1 })))
+    expect(await readVar('n9')).toMatchObject({ status: 'submitted', revision: 3, submittedSubtotal: live.submittedSubtotal })
   })
 
-  it('the PO link is read at CREATE only — the supplier of a stored PO-linked variation is never re-compared to the PO afterwards, and a supplier variation’s cost codes are not checked against the PO’s lines', async () => {
+  it('the supplier of a stored PO-linked variation is never re-compared to the PO by the Rules afterwards; ADR-90 — a create whose lines name a cost code or PO line the order does not have is REFUSED from every client (the backend checks them)', async () => {
     await seed('n10', 'draft', USERS.admin, {}, { base: poLinked(USERS.admin) })
     await testEnv.withSecurityRulesDisabled(async (c) => {
       await updateDoc(doc(c.firestore(), posPath(), PO.sent.id), { supplierName: 'Renamed Co' })
     })
     await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'n10'), submitWrite(USERS.qs)))
-    await assertSucceeds(setDoc(varRef(ctx(USERS.qs), 'n11'), poLinked(USERS.qs, { ...PO.sent, supplierName: 'Renamed Co' }, { lines: [line(10, { costCodeId: 'ccNotOnPo', poLineIndex: 7 })] })))
+    await createRefused('n11', (user) => poLinked(user, { ...PO.sent, supplierName: 'Renamed Co' }, { lines: [line(10, { costCodeId: 'ccNotOnPo', poLineIndex: 7 })] }))
   })
 })
 
@@ -1485,14 +1760,26 @@ async function readPo(po) {
   })
   return data
 }
-const poRefFor = (db, po = PO.sent) => doc(db, posPath(), po.id)
+// ADR-90: every write in the rest of this file — an approve carrying the stamp
+// pair(s), and the legacy Apply / Commit new scope — is a TRUSTED-BACKEND
+// operation now (tests/functions/variations.test.js → approveVariation /
+// applyVariationCommitment). The Rules admit a commitment stamp from NO client
+// on ANY branch, so each test below proves the payload the Rules used to accept
+// is refused for every financial role with nothing written, keeps every forged
+// variant it already refused, and — where it went on to read derived figures —
+// reads them over the document the backend stores.
 
-describe('ADR-62 — approve WITH the commitment stamps (approval is the trigger)', () => {
-  it('every financial role approves a PO-linked supplier variation against a SENT PO with the stamps; the variation then adjusts that PO line', async () => {
+describe('ADR-62 — approve WITH the commitment stamps (ADR-90: REFUSED from every client; the backend approves and applies)', () => {
+  it('ADR-90 — a PO-linked supplier approve against a SENT PO with the stamps is REFUSED from every client (every financial role); the variation the backend approves then adjusts that PO line', async () => {
+    await seed('v1', 'submitted', USERS.admin, {}, { base: linkedBase(USERS.admin) })
+    await updateRefused('v1', (user) => approveApplied(user))
+    expect(await readVar('v1')).toMatchObject({ status: 'submitted', revision: 1 })
+    expect(isCommitmentApplied(await readVar('v1'))).toBe(false)
     for (const user of FINANCIAL) {
-      await seed('v1', 'submitted', USERS.admin, {}, { base: linkedBase(USERS.admin) })
-      await assertSucceeds(updateDoc(varRef(ctx(user), 'v1'), approveApplied(user)))
-      const v = await readVar('v1')
+      const id = `v1_${user.uid}`
+      await seed(id, 'submitted', USERS.admin, {}, { base: linkedBase(USERS.admin) })
+      await serverUpdate(id, approveApplied(user))
+      const v = await readVar(id)
       expect(v.status).toBe('approved')
       expect(v.commitmentAppliedBy).toBe(user.uid)
       expect(v.commitmentAppliedAt).toBeTruthy()
@@ -1502,35 +1789,28 @@ describe('ADR-62 — approve WITH the commitment stamps (approval is the trigger
       expect(adj.byPoLine).toEqual({ [PO.sent.id]: { 0: 900 } })
       expect(remainingCommittedByCostCode([po], {}, {}, adj.byPoLine)).toEqual({ cc1: 3400 })   // 2500 + 900
       expect(unappliedSupplierVariationsByCostCode([v], [po])).toEqual({})
-      await testEnv.clearFirestore()
-      await testEnv.withSecurityRulesDisabled(async (c) => {
-        const db = c.firestore()
-        for (const u of Object.values(USERS)) await setDoc(doc(db, 'users', u.uid), { role: u.role, companyId: u.companyId, name: u.uid })
-        await setDoc(doc(db, 'companies', COMPANY_A), { name: 'Company A', countryCode: 'NZ', baseCurrency: 'NZD' })
-        await setDoc(doc(db, `companies/${COMPANY_A}/projects`, PROJECT_A), { name: 'Project A', currency: 'AUD', currencyLocked: true })
-      })
-      for (const po of Object.values(PO)) await seedPo(po)
     }
   })
 
-  it('a CLOSED PO applies too', async () => {
+  it('ADR-90 — against a CLOSED PO too: REFUSED from every client', async () => {
     await seed('v1', 'submitted', USERS.admin, {}, { base: linkedBase(USERS.admin, PO.closed) })
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'v1'), approveApplied(USERS.qs)))
-    expect(isCommitmentApplied(await readVar('v1'))).toBe(true)
+    await updateRefused('v1', (user) => approveApplied(user))
+    expect(isCommitmentApplied(await readVar('v1'))).toBe(false)
   })
 
-  it('FINAL RULES — the pre-M3-B1 approve payload (no stamps; an old-bundle tab) is DENIED on a PO-linked supplier variation for every role, with nothing written; the same payload on a manual-mode variation still passes', async () => {
+  it('the pre-M3-B1 approve payload (no stamps; an old-bundle tab) is DENIED on a PO-linked supplier variation for every role, with nothing written; ADR-90 — so is the both-pairs payload, and the same payload on a manual-mode variation: REFUSED from every client', async () => {
     for (const user of FINANCIAL) {
       await seed(`v_${user.uid}`, 'submitted', USERS.admin, {}, { base: linkedBase(USERS.admin) })
       await assertFails(updateDoc(varRef(ctx(user), `v_${user.uid}`), approvePlain(user)))
       const v = await readVar(`v_${user.uid}`)
       expect(v.status).toBe('submitted')
       expect(v.revision).toBe(1)
-      // The old tab can still withdraw or reject; the new bundle approves with the pair.
-      await assertSucceeds(updateDoc(varRef(ctx(user), `v_${user.uid}`), approveApplied(user)))
+      // The old tab can still withdraw or reject; approval — with or without the pair — is the backend's.
+      await assertFails(updateDoc(varRef(ctx(user), `v_${user.uid}`), approveApplied(user)))
+      expect(await readVar(`v_${user.uid}`)).toMatchObject({ status: 'submitted', revision: 1 })
     }
     await seed('manual', 'submitted')
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'manual'), approveWrite(USERS.qs)))
+    await updateRefused('manual', (user) => approveWrite(user))
     expect(isCommitmentApplied(await readVar('manual'))).toBe(false)
   })
 
@@ -1548,7 +1828,7 @@ describe('ADR-62 — approve WITH the commitment stamps (approval is the trigger
     }
   })
 
-  it('Correction A — a MISSING PO and a PO from ANOTHER PROJECT refuse the approval (the PO path is this project\u2019s; wrong tenant / project never resolves)', async () => {
+  it('Correction A — a MISSING PO and a PO from ANOTHER PROJECT refuse the approval (the PO path is this project’s; wrong tenant / project never resolves); ADR-90 — a legacy approved unstamped document is applied by the backend only', async () => {
     await seed('gone', 'submitted', USERS.admin, {}, { base: poLinked(USERS.admin, { ...PO.sent, id: 'poGone', poNumber: 'PO-0099' }, { lineItems: PO_LINES }) })
     await assertFails(updateDoc(varRef(ctx(USERS.admin), 'gone'), approveApplied(USERS.admin)))
     await assertFails(updateDoc(varRef(ctx(USERS.admin), 'gone'), approvePlain(USERS.admin)))
@@ -1557,18 +1837,20 @@ describe('ADR-62 — approve WITH the commitment stamps (approval is the trigger
     await assertFails(updateDoc(varRef(ctx(USERS.admin), 'otherProj'), approvePlain(USERS.admin)))
     expect(await readStatus('gone')).toBe('submitted')
     expect(await readStatus('otherProj')).toBe('submitted')
-    // Legacy APPROVED unstamped documents stay readable and applicable when their PO is valid.
+    // Legacy APPROVED unstamped documents stay readable; applying one is the backend's.
     await seed('legacyOk', 'approved', USERS.admin, {}, { base: linkedBase(USERS.admin), legacy: true })
     expect((await readVar('legacyOk')).status).toBe('approved')
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'legacyOk'), applyWrite(USERS.qs)))
+    await assertSucceeds(getDoc(varRef(ctx(USERS.qs), 'legacyOk')))
+    await updateRefused('legacyOk', (user) => applyWrite(user))
   })
 
-  it('the stamps are REFUSED on a manual-mode supplier variation and on a client variation', async () => {
+  it('the stamps are REFUSED on a manual-mode supplier variation and on a client variation; ADR-90 — and so is the plain approve of either: REFUSED from every client', async () => {
     await seed('manual', 'submitted')
     await assertFails(updateDoc(varRef(ctx(USERS.admin), 'manual'), approveWrite(USERS.admin, { ...applied(USERS.admin) })))
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.admin), 'manual'), approveWrite(USERS.admin)))
+    await updateRefused('manual', (user) => approveWrite(user))
     await seed('client', 'submitted', USERS.admin, {}, { base: clientPayload(USERS.admin) })
     await assertFails(updateDoc(varRef(ctx(USERS.admin), 'client'), approveWrite(USERS.admin, { ...applied(USERS.admin) })))
+    await updateRefused('client', (user) => approveWrite(user, { assessmentNotes: 'Negotiated' }))
   })
 
   it('forged stamps are refused — another actor, a client clock, or only one half of the pair', async () => {
@@ -1586,12 +1868,12 @@ describe('ADR-62 — approve WITH the commitment stamps (approval is the trigger
     expect(await readStatus('v1')).toBe('submitted')
   })
 
-  it('the stamps cannot be born at CREATE — present, or present as null', async () => {
+  it('the stamps cannot be born at CREATE — present, or present as null; ADR-90 — nor can the same payload WITHOUT the pair: REFUSED from every client', async () => {
     const db = ctx(USERS.admin)
     await assertFails(setDoc(varRef(db, 'c1'), poLinked(USERS.admin, PO.sent, { lineItems: PO_LINES, ...applied(USERS.admin) })))
     await assertFails(setDoc(varRef(db, 'c2'), poLinked(USERS.admin, PO.sent, { lineItems: PO_LINES, commitmentAppliedAt: null, commitmentAppliedBy: null })))
-    // The same payload WITHOUT the pair is the ordinary create — accepted.
-    await assertSucceeds(setDoc(varRef(db, 'c3'), poLinked(USERS.admin, PO.sent, { lineItems: PO_LINES })))
+    // The same payload WITHOUT the pair was the ordinary create — refused since ADR-90.
+    await createRefused('c3', (user) => poLinked(user, PO.sent, { lineItems: PO_LINES }))
     expect(await readVar('c1')).toBeUndefined()
     expect(await readVar('c2')).toBeUndefined()
   })
@@ -1614,26 +1896,27 @@ describe('ADR-62 — approve WITH the commitment stamps (approval is the trigger
   })
 })
 
-describe('ADR-62 — the one-time legacy Apply (branch f)', () => {
-  it('every financial role applies an approved, unstamped PO-linked variation once: stamps + revision + audit, nothing else moves', async () => {
+describe('ADR-62 — the one-time legacy Apply (ADR-90: no client branch — REFUSED from every client; the backend applies)', () => {
+  // Positive behaviour: tests/functions/variations.test.js → applyVariationCommitment.
+  it('ADR-90 — the legacy Apply of an approved, unstamped PO-linked variation is REFUSED from every client (every financial role): no stamp, no revision, nothing moves', async () => {
     for (const user of FINANCIAL) {
       await seed(`a_${user.uid}`, 'approved', USERS.admin, {}, { base: linkedBase(USERS.admin) })
       const before = await readVar(`a_${user.uid}`)
-      await assertSucceeds(updateDoc(varRef(ctx(user), `a_${user.uid}`), applyWrite(user)))
+      await assertFails(updateDoc(varRef(ctx(user), `a_${user.uid}`), applyWrite(user)))
       const after = await readVar(`a_${user.uid}`)
-      expect(after.commitmentAppliedBy).toBe(user.uid)
-      expect(after.revision).toBe(2)
-      expect(after.updatedBy).toBe(user.uid)
+      expect(isCommitmentApplied(after)).toBe(false)
+      expect(after.revision).toBe(1)
       // Approved money, lines, PO link and every lifecycle stamp are untouched.
-      for (const k of ['status', 'lineItems', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'approvedBy', 'poId', 'poNumber', 'supplierId', 'assessmentNotes', 'approvedDate']) {
+      for (const k of ['status', 'lineItems', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'approvedBy', 'poId', 'poNumber', 'supplierId', 'assessmentNotes', 'approvedDate', 'updatedBy']) {
         expect(after[k], k).toEqual(before[k])
       }
     }
   })
 
-  it('a REPEAT is refused by the RULES — with the next revision, the same revision, or any revision — and the first stamps stand', async () => {
+  it('a REPEAT is refused by the RULES — with the next revision, the same revision, or any revision — and the first (backend-written) stamps stand', async () => {
     await seed('v1', 'approved', USERS.admin, {}, { base: linkedBase(USERS.admin) })
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.admin), 'v1'), applyWrite(USERS.admin)))
+    await updateRefused('v1', (user) => applyWrite(user))
+    await serverUpdate('v1', applyWrite(USERS.admin))
     const first = await readVar('v1')
     for (const revision of [3, 2, 1, 4]) {
       await assertFails(updateDoc(varRef(ctx(USERS.pm), 'v1'), applyWrite(USERS.pm, { revision })))
@@ -1644,7 +1927,7 @@ describe('ADR-62 — the one-time legacy Apply (branch f)', () => {
     expect(after.commitmentAppliedAt.isEqual(first.commitmentAppliedAt)).toBe(true)
   })
 
-  it('a document seeded with the stamps already set (approved through the new branch c) cannot be re-applied', async () => {
+  it('a document seeded with the stamps already set (approved by the backend) cannot be re-applied', async () => {
     await seed('v1', 'approved', USERS.admin, { commitmentAppliedAt: Timestamp.now(), commitmentAppliedBy: USERS.qs.uid }, { base: linkedBase(USERS.admin) })
     await assertFails(updateDoc(varRef(ctx(USERS.admin), 'v1'), applyWrite(USERS.admin)))
   })
@@ -1664,15 +1947,16 @@ describe('ADR-62 — the one-time legacy Apply (branch f)', () => {
     await assertFails(updateDoc(varRef(ctx(USERS.admin), 'client'), applyWrite(USERS.admin)))
   })
 
-  it('the PO must be sent or closed on the server: cancelled / draft refuse; closed passes', async () => {
+  it('a cancelled, draft or pending PO refuses the apply; ADR-90 — and so does a sent or closed one: REFUSED from every client (the backend reads the PO in its transaction)', async () => {
     await seed('v1', 'approved', USERS.admin, {}, { base: linkedBase(USERS.admin) })
     for (const status of ['cancelled', 'draft', 'pending_approval']) {
       await setPoStatus(PO.sent, status)
       await assertFails(updateDoc(varRef(ctx(USERS.admin), 'v1'), applyWrite(USERS.admin)))
     }
     await setPoStatus(PO.sent, 'sent')
+    await updateRefused('v1', (user) => applyWrite(user))
     await seed('v2', 'approved', USERS.admin, {}, { base: linkedBase(USERS.admin, PO.closed) })
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.admin), 'v2'), applyWrite(USERS.admin)))
+    await updateRefused('v2', (user) => applyWrite(user))
   })
 
   it('the apply may touch NOTHING but the pair, the revision and the audit stamps — bundled money, line, link or status changes fail the whole write', async () => {
@@ -1718,130 +2002,119 @@ describe('ADR-62 — the one-time legacy Apply (branch f)', () => {
     expect(isCommitmentApplied(await readVar('v1'))).toBe(false)
   })
 
-  it('a LEGACY approved document (no audit stamps, no link keys) applies and acquires them', async () => {
+  it('ADR-90 — a LEGACY approved document (no audit stamps, no link keys) is applied by the backend only: the legacy Apply is REFUSED from every client and the document acquires nothing', async () => {
     await seed('legacy', 'approved', USERS.admin, {}, { base: linkedBase(USERS.admin), legacy: true })
     const before = await readVar('legacy')
     expect(before).not.toHaveProperty('updatedAt')
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.qs), 'legacy'), applyWrite(USERS.qs)))
+    await updateRefused('legacy', (user) => applyWrite(user))
     const after = await readVar('legacy')
-    expect(after.commitmentAppliedBy).toBe(USERS.qs.uid)
-    expect(after.updatedBy).toBe(USERS.qs.uid)
-    expect(after.revision).toBe(2)
+    expect(isCommitmentApplied(after)).toBe(false)
+    expect(after).not.toHaveProperty('updatedAt')
+    expect(after.revision).toBe(1)
   })
 })
 
-describe('ADR-62 — the app’s transactions against the real rules', () => {
+// ADR-90: approval and the legacy Apply are CALLS to the trusted backend now
+// (lib/variationActions.js → runApproveVariation / runApplyVariationCommitment
+// take an injected `call`, not a Firestore transaction), proven in
+// tests/functions/variations.test.js. What is left to prove against the Rules
+// is that the writes those two transactions used to make are refused.
+describe('ADR-62 — the writes the app’s approve / apply transactions used to make (ADR-90: REFUSED from every client)', () => {
   const sdk = { runTransaction, serverTimestamp }
 
-  it('runTransitionVariation approves AND applies in one write when the PO is sent on the server', async () => {
+  it('ADR-90 — approve-and-apply in one write (PO sent on the server): runTransitionVariation refuses to approve before any read, and its old write is REFUSED from every client', async () => {
     await seed('v1', 'submitted', USERS.admin, {}, { base: linkedBase(USERS.admin) })
     const db = ctx(USERS.qs)
-    const out = await runTransitionVariation({
-      db, variationRef: varRef(db, 'v1'), poRef: poRefFor(db), seen: await readVar('v1'), nextStatus: VARIATION_STATUS.APPROVED,
+    await expectKind(runTransitionVariation({
+      db, variationRef: varRef(db, 'v1'), seen: await readVar('v1'), nextStatus: VARIATION_STATUS.APPROVED,
       extras: { approvedAmounts: [900], assessmentNotes: '' }, uid: USERS.qs.uid, ...sdk,
-    })
-    expect(out.commitmentApplied).toBe(true)
+    }), VARIATION_WRITE_ERROR.INVALID)
+    await updateRefused('v1', (user) => approveApplied(user))
     const v = await readVar('v1')
-    expect(v.status).toBe('approved')
-    expect(v.commitmentAppliedBy).toBe(USERS.qs.uid)
-    expect(v.revision).toBe(2)
+    expect(v.status).toBe('submitted')
+    expect(isCommitmentApplied(v)).toBe(false)
+    expect(v.revision).toBe(1)
   })
 
-  it('runTransitionVariation REFUSES the approval (PO_INVALID, nothing written, actionable message) when the server PO is cancelled or missing — Correction A', async () => {
+  it('ADR-90 — Correction A: with the server PO cancelled or missing the old approve write is REFUSED from every client, with and without the pair; nothing written', async () => {
     await seed('v1', 'submitted', USERS.admin, {}, { base: linkedBase(USERS.admin) })
     await setPoStatus(PO.sent, 'cancelled')
-    const db = ctx(USERS.qs)
-    const err = await expectKind(runTransitionVariation({
-      db, variationRef: varRef(db, 'v1'), poRef: poRefFor(db), seen: await readVar('v1'), nextStatus: VARIATION_STATUS.APPROVED,
-      extras: { approvedAmounts: [900], assessmentNotes: '' }, uid: USERS.qs.uid, ...sdk,
-    }), VARIATION_WRITE_ERROR.PO_INVALID)
-    expect(err.message).toMatch(/PO-0001 is Cancelled; a supplier variation can only be approved while its purchase order is sent or closed/)
+    await updateRefused('v1', (user) => approveApplied(user))
+    await updateRefused('v1', (user) => approvePlain(user))
     const v = await readVar('v1')
     expect(v.status).toBe('submitted')
     expect(v.revision).toBe(1)
     await setPoStatus(PO.sent, 'sent')
     await seed('gone', 'submitted', USERS.admin, {}, { base: poLinked(USERS.admin, { ...PO.sent, id: 'poGone', poNumber: 'PO-0099' }, { lineItems: PO_LINES }) })
-    const missing = await expectKind(runTransitionVariation({
-      db, variationRef: varRef(db, 'gone'), poRef: doc(db, posPath(), 'poGone'), seen: await readVar('gone'), nextStatus: VARIATION_STATUS.APPROVED,
-      extras: { approvedAmounts: [900], assessmentNotes: '' }, uid: USERS.qs.uid, ...sdk,
-    }), VARIATION_WRITE_ERROR.PO_INVALID)
-    expect(missing.message).toMatch(/could not be found in this project/)
+    await updateRefused('gone', (user) => approveApplied(user))
     expect(await readStatus('gone')).toBe('submitted')
   })
 
-  it('runApplyVariationCommitment applies once; a second attempt from the same reviewed copy is ALREADY_APPLIED with nothing written', async () => {
+  it('ADR-90 — the legacy Apply write: REFUSED from every client the first time and every time; nothing written', async () => {
     await seed('v1', 'approved', USERS.admin, {}, { base: linkedBase(USERS.admin) })
-    const db = ctx(USERS.pm)
-    const seen = await readVar('v1')
-    await runApplyVariationCommitment({ db, variationRef: varRef(db, 'v1'), poRef: poRefFor(db), seen, uid: USERS.pm.uid, ...sdk })
-    const once = await readVar('v1')
-    expect(once.commitmentAppliedBy).toBe(USERS.pm.uid)
-    await expectKind(runApplyVariationCommitment({ db, variationRef: varRef(db, 'v1'), poRef: poRefFor(db), seen, uid: USERS.pm.uid, ...sdk }), VARIATION_WRITE_ERROR.ALREADY_APPLIED)
-    const twice = await readVar('v1')
-    expect(twice.revision).toBe(2)
-    expect(twice.commitmentAppliedAt.isEqual(once.commitmentAppliedAt)).toBe(true)
-  })
-
-  it('TWO CONCURRENT applies by two users: exactly one lands; the loser is refused (already applied / stale / permission) and the winner’s stamps stand', async () => {
-    await seed('v1', 'approved', USERS.admin, {}, { base: linkedBase(USERS.admin) })
-    const seen = await readVar('v1')
-    const attempt = (user) => {
-      const db = ctx(user)
-      return runApplyVariationCommitment({ db, variationRef: varRef(db, 'v1'), poRef: poRefFor(db), seen, uid: user.uid, ...sdk })
-    }
-    const results = await Promise.allSettled([attempt(USERS.admin), attempt(USERS.pm)])
-    const ok = results.filter(r => r.status === 'fulfilled')
-    const failed = results.filter(r => r.status === 'rejected')
-    expect(ok).toHaveLength(1)
-    expect(failed).toHaveLength(1)
-    expect(failed[0].reason).toBeInstanceOf(VariationWriteError)
-    expect([VARIATION_WRITE_ERROR.ALREADY_APPLIED, VARIATION_WRITE_ERROR.STALE, VARIATION_WRITE_ERROR.PERMISSION]).toContain(failed[0].reason.kind)
+    await updateRefused('v1', (user) => applyWrite(user))
+    await updateRefused('v1', (user) => applyWrite(user))
     const v = await readVar('v1')
-    expect(v.revision).toBe(2)
-    expect([USERS.admin.uid, USERS.pm.uid]).toContain(v.commitmentAppliedBy)
+    expect(v.revision).toBe(1)
+    expect(isCommitmentApplied(v)).toBe(false)
   })
 
-  it('a STALE reviewed copy (revision moved underneath) is refused with nothing written; the fresh copy then applies', async () => {
+  it('ADR-90 — TWO CONCURRENT applies by two users: BOTH are refused by the Rules and no stamp lands (the backend serialises the supported operation)', async () => {
     await seed('v1', 'approved', USERS.admin, {}, { base: linkedBase(USERS.admin) })
-    const stale = await readVar('v1')
-    await testEnv.withSecurityRulesDisabled(async (c) => { await updateDoc(doc(c.firestore(), varsPath(), 'v1'), { revision: 2 }) })
-    const db = ctx(USERS.admin)
-    await expectKind(runApplyVariationCommitment({ db, variationRef: varRef(db, 'v1'), poRef: poRefFor(db), seen: stale, uid: USERS.admin.uid, ...sdk }), VARIATION_WRITE_ERROR.STALE)
-    expect(isCommitmentApplied(await readVar('v1'))).toBe(false)
-    await runApplyVariationCommitment({ db, variationRef: varRef(db, 'v1'), poRef: poRefFor(db), seen: await readVar('v1'), uid: USERS.admin.uid, ...sdk })
-    expect((await readVar('v1')).revision).toBe(3)
+    const attempt = (user) => updateDoc(varRef(ctx(user), 'v1'), applyWrite(user))
+    const results = await Promise.allSettled([attempt(USERS.admin), attempt(USERS.pm)])
+    expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(0)
+    for (const r of results) expect(r.reason?.code).toBe('permission-denied')
+    const v = await readVar('v1')
+    expect(v.revision).toBe(1)
+    expect(isCommitmentApplied(v)).toBe(false)
   })
 
-  it('a cancelled PO on the server refuses the apply as INVALID; a denied role is refused by the RULES as PERMISSION', async () => {
+  it('ADR-90 — a STALE and a FRESH reviewed copy alike: the legacy Apply write is REFUSED from every client at either revision', async () => {
+    await seed('v1', 'approved', USERS.admin, {}, { base: linkedBase(USERS.admin) })
+    await testEnv.withSecurityRulesDisabled(async (c) => { await updateDoc(doc(c.firestore(), varsPath(), 'v1'), { revision: 2 }) })
+    await updateRefused('v1', (user) => applyWrite(user))                    // built over the stale revision 1
+    await updateRefused('v1', (user) => applyWrite(user, { revision: 3 }))   // built over the fresh revision 2
+    expect(isCommitmentApplied(await readVar('v1'))).toBe(false)
+    expect((await readVar('v1')).revision).toBe(2)
+  })
+
+  it('a cancelled PO on the server refuses the apply write; a denied role is refused by the RULES; ADR-90 — and with the PO sent again it is still REFUSED from every client', async () => {
     await seed('v1', 'approved', USERS.admin, {}, { base: linkedBase(USERS.admin) })
     await setPoStatus(PO.sent, 'cancelled')
-    const db = ctx(USERS.admin)
-    const err = await expectKind(runApplyVariationCommitment({ db, variationRef: varRef(db, 'v1'), poRef: poRefFor(db), seen: await readVar('v1'), uid: USERS.admin.uid, ...sdk }), VARIATION_WRITE_ERROR.INVALID)
-    expect(err.message).toMatch(/not sent or closed/)
+    await updateRefused('v1', (user) => applyWrite(user))
     await setPoStatus(PO.sent, 'sent')
-    const subDb = ctx(USERS.sub)
-    await expectKind(runApplyVariationCommitment({ db: subDb, variationRef: varRef(subDb, 'v1'), poRef: poRefFor(subDb), seen: await readVar('v1'), uid: USERS.sub.uid, ...sdk }), VARIATION_WRITE_ERROR.PERMISSION)
+    await assertFails(updateDoc(varRef(ctx(USERS.sub), 'v1'), applyWrite(USERS.sub)))
+    await updateRefused('v1', (user) => applyWrite(user))
     expect(isCommitmentApplied(await readVar('v1'))).toBe(false)
   })
 })
 
 // ═════════════════════════════════════════════════════════════════════════════
-// M3-B2 (ADR-63) — the new-scope commitment pair: required with the applied
-// pair on a PO-linked approve (FINAL), written once by the legacy branch (f)
-// per pair, never on a client / manual-mode variation, never at create.
+// M3-B2 (ADR-63) — the new-scope commitment pair. Since ADR-90 it is written by
+// the trusted backend only: with the applied pair on a PO-linked approve, or
+// once by the legacy apply; never on a client / manual-mode variation, never
+// at create — and never by a client.
 // ═════════════════════════════════════════════════════════════════════════════
 
-describe('ADR-63 — the scope pair on approve (FINAL ruleset)', () => {
-  it('a PO-linked approve carrying BOTH pairs is accepted for every financial role; the M3-B1 payload (applied pair only — an un-reloaded old tab) is DENIED with nothing written', async () => {
+describe('ADR-63 — the scope pair on approve (ADR-90: REFUSED from every client)', () => {
+  // Positive behaviour: tests/functions/variations.test.js → approveVariation.
+  it('ADR-90 — a PO-linked approve carrying BOTH pairs is REFUSED from every client (every financial role), exactly as the M3-B1 payload (applied pair only — an un-reloaded old tab) is; nothing written', async () => {
     for (const user of FINANCIAL) {
       await seed(`v_${user.uid}`, 'submitted', USERS.admin, {}, { base: linkedBase(USERS.admin) })
       await assertFails(updateDoc(varRef(ctx(user), `v_${user.uid}`), approveB1(user)))
       expect(await readStatus(`v_${user.uid}`)).toBe('submitted')
-      await assertSucceeds(updateDoc(varRef(ctx(user), `v_${user.uid}`), approveApplied(user)))
+      await assertFails(updateDoc(varRef(ctx(user), `v_${user.uid}`), approveApplied(user)))
       const v = await readVar(`v_${user.uid}`)
-      expect(v.commitmentAppliedBy).toBe(user.uid)
-      expect(v.scopeCommittedBy).toBe(user.uid)
-      expect(v.scopeCommittedAt.isEqual(v.commitmentAppliedAt)).toBe(true)
+      expect(v.status).toBe('submitted')
+      expect(v).not.toHaveProperty('commitmentAppliedBy')
+      expect(v).not.toHaveProperty('scopeCommittedBy')
+      // What the backend stores for the same approval: both pairs, one instant.
+      await serverUpdate(`v_${user.uid}`, approveApplied(user))
+      const stored = await readVar(`v_${user.uid}`)
+      expect(stored.commitmentAppliedBy).toBe(user.uid)
+      expect(stored.scopeCommittedBy).toBe(user.uid)
+      expect(stored.scopeCommittedAt.isEqual(stored.commitmentAppliedAt)).toBe(true)
     }
   })
 
@@ -1859,11 +2132,11 @@ describe('ADR-63 — the scope pair on approve (FINAL ruleset)', () => {
     expect(await readStatus('v1')).toBe('submitted')
   })
 
-  it('the scope pair is refused on a manual-mode supplier and on a client variation, at create (present or null), and on a draft edit, submit, reject or withdraw', async () => {
+  it('the scope pair is refused on a manual-mode supplier and on a client variation (ADR-90: as is the plain approve of either), at create (present or null), and on a draft edit, submit, reject or withdraw', async () => {
     await seed('manual', 'submitted')
     await assertFails(updateDoc(varRef(ctx(USERS.admin), 'manual'), approveWrite(USERS.admin, { ...scoped(USERS.admin) })))
     await assertFails(updateDoc(varRef(ctx(USERS.admin), 'manual'), approveWrite(USERS.admin, { ...bothPairs(USERS.admin) })))
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.admin), 'manual'), approveWrite(USERS.admin)))
+    await updateRefused('manual', (user) => approveWrite(user))
     await seed('client', 'submitted', USERS.admin, {}, { base: clientPayload(USERS.admin) })
     await assertFails(updateDoc(varRef(ctx(USERS.admin), 'client'), approveWrite(USERS.admin, { ...scoped(USERS.admin) })))
     const db = ctx(USERS.admin)
@@ -1878,15 +2151,18 @@ describe('ADR-63 — the scope pair on approve (FINAL ruleset)', () => {
   })
 })
 
-describe('ADR-63 — branch (f): per-pair, one-time legacy writes', () => {
-  it('a variation applied under M3-B1 (applied pair stored, no scope pair) takes the SCOPE pair alone once; a repeat and a rewrite of the applied pair are refused; nothing else moves', async () => {
+describe('ADR-63 — the per-pair, one-time legacy writes (ADR-90: no client branch — REFUSED from every client)', () => {
+  // Positive behaviour: tests/functions/variations.test.js → applyVariationCommitment.
+  it('ADR-90 — a variation applied under M3-B1 (applied pair stored, no scope pair): the SCOPE pair alone and the full Apply payload are both REFUSED from every client; once the backend has written it, a repeat and a rewrite are refused and nothing else moves', async () => {
     for (const user of FINANCIAL) {
       const id = `b1_${user.uid}`
       await seed(id, 'approved', USERS.admin, { commitmentAppliedAt: Timestamp.now(), commitmentAppliedBy: USERS.qs.uid }, { base: linkedBase(USERS.admin) })
       const before = await readVar(id)
       // The full legacy Apply payload rewrites the applied pair → refused.
       await assertFails(updateDoc(varRef(ctx(user), id), applyWrite(user)))
-      await assertSucceeds(updateDoc(varRef(ctx(user), id), scopeWrite(user)))
+      await assertFails(updateDoc(varRef(ctx(user), id), scopeWrite(user)))
+      expect(await readVar(id)).toEqual(before)
+      await serverUpdate(id, scopeWrite(user))
       const after = await readVar(id)
       expect(after.scopeCommittedBy).toBe(user.uid)
       expect(after.commitmentAppliedBy).toBe(USERS.qs.uid)
@@ -1901,9 +2177,10 @@ describe('ADR-63 — branch (f): per-pair, one-time legacy writes', () => {
     }
   })
 
-  it('a never-applied approved variation takes BOTH pairs in one write (the legacy Apply); afterwards neither pair can be written again', async () => {
+  it('ADR-90 — a never-applied approved variation: BOTH pairs in one write (the legacy Apply) is REFUSED from every client; once the backend has written them neither pair can be written again', async () => {
     await seed('v1', 'approved', USERS.admin, {}, { base: linkedBase(USERS.admin) })
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.pm), 'v1'), applyWrite(USERS.pm)))
+    await updateRefused('v1', (user) => applyWrite(user))
+    await serverUpdate('v1', applyWrite(USERS.pm))
     const v = await readVar('v1')
     expect(v.commitmentAppliedBy).toBe(USERS.pm.uid)
     expect(v.scopeCommittedBy).toBe(USERS.pm.uid)
@@ -1932,26 +2209,28 @@ describe('ADR-63 — branch (f): per-pair, one-time legacy writes', () => {
     expect((await readVar('v1'))).not.toHaveProperty('scopeCommittedAt')
   })
 
-  it('the app’s runApplyVariationCommitment writes only the MISSING pair against the real rules, and refuses a fully stamped copy as ALREADY_APPLIED', async () => {
-    const sdk = { runTransaction, serverTimestamp }
+  it('ADR-90 — the write the app’s apply used to make for a MISSING scope pair (positive new scope present) is REFUSED from every client, and a fully stamped copy cannot be touched either', async () => {
     const newScopeLines = [line(900, { poLineIndex: 0 }), line(400, { poLineIndex: null, costCodeId: 'cc2', costCodeName: '05-200 — Steel' })]
     await seed('b1', 'approved', USERS.admin, { commitmentAppliedAt: Timestamp.now(), commitmentAppliedBy: USERS.qs.uid }, { base: poLinked(USERS.admin, PO.sent, { lineItems: newScopeLines }) })
-    const db = ctx(USERS.pm)
-    const out = await runApplyVariationCommitment({ db, variationRef: varRef(db, 'b1'), poRef: poRefFor(db), seen: await readVar('b1'), uid: USERS.pm.uid, ...sdk })
-    expect(out).toMatchObject({ applied: false, scopeCommitted: true })
+    await updateRefused('b1', (user) => scopeWrite(user))
+    expect(await readVar('b1')).not.toHaveProperty('scopeCommittedBy')
+    await serverUpdate('b1', scopeWrite(USERS.pm))
     const v = await readVar('b1')
     expect(v.scopeCommittedBy).toBe(USERS.pm.uid)
     expect(v.commitmentAppliedBy).toBe(USERS.qs.uid)
     expect(v.revision).toBe(2)
-    await expectKind(runApplyVariationCommitment({ db, variationRef: varRef(db, 'b1'), poRef: poRefFor(db), seen: v, uid: USERS.pm.uid, ...sdk }), VARIATION_WRITE_ERROR.ALREADY_APPLIED)
+    await updateRefused('b1', (user) => scopeWrite(user, { revision: 3 }))
+    await updateRefused('b1', (user) => applyWrite(user, { revision: 3 }))
   })
 })
 
 describe('ADR-62 — NOT enforced by rules (documented ceiling)', () => {
-  it('the stamps say nothing about the LINES: an applied variation whose poLineIndex is out of range or whose cost code mismatches is ACCEPTED by rules — the client classifies it as an exception', async () => {
+  it('the stamps say nothing about the LINES: a stored applied variation whose poLineIndex is out of range or whose cost code mismatches is classified by the client as an exception — ADR-90: a client can no longer write such an approval (REFUSED from every client)', async () => {
     const badLines = [line(900, { poLineIndex: 7 }), line(100, { poLineIndex: 0, costCodeId: 'cc9', costCodeName: 'Wrong' })]
     await seed('v1', 'submitted', USERS.admin, {}, { base: poLinked(USERS.admin, PO.sent, { lineItems: badLines }) })
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.admin), 'v1'), approveWrite(USERS.admin, { amounts: [900, 100], lines: badLines, assessmentNotes: '', ...bothPairs(USERS.admin) })))
+    const approval = (user) => approveWrite(user, { amounts: [900, 100], lines: badLines, assessmentNotes: '', ...bothPairs(user) })
+    await updateRefused('v1', approval)
+    await serverUpdate('v1', approval(USERS.admin))
     const v = await readVar('v1')
     const adj = appliedSupplierVariationAdjustments([v], [await readPo(PO.sent)])
     expect(adj.byPoLine).toEqual({})
@@ -1959,9 +2238,9 @@ describe('ADR-62 — NOT enforced by rules (documented ceiling)', () => {
     expect(unappliedSupplierVariationsByCostCode([v], [await readPo(PO.sent)])).toEqual({ cc1: 900, cc9: 100 })
   })
 
-  it('the PO is read at apply time only — cancelling it afterwards leaves the stamps in place (the client reports the exception)', async () => {
+  it('the PO is read at apply time only — cancelling it afterwards leaves the (backend-written) stamps in place (the client reports the exception)', async () => {
     await seed('v1', 'approved', USERS.admin, {}, { base: linkedBase(USERS.admin) })
-    await assertSucceeds(updateDoc(varRef(ctx(USERS.admin), 'v1'), applyWrite(USERS.admin)))
+    await serverUpdate('v1', applyWrite(USERS.admin))
     await setPoStatus(PO.sent, 'cancelled')
     const v = await readVar('v1')
     expect(isCommitmentApplied(v)).toBe(true)
@@ -1969,5 +2248,250 @@ describe('ADR-62 — NOT enforced by rules (documented ceiling)', () => {
     expect(adj.byPoLine).toEqual({})
     expect(adj.exceptions[0].issue).toBe('po_not_committed')
     await setPoStatus(PO.sent, 'sent')
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ADR-90 / ADR-91 — a BACKEND-CREATED variation carries `calcVersion: 2`. It is
+// drafted, submitted, rejected and withdrawn under the same Rules as any other;
+// and neither that key nor a commitment key can be added, changed or removed
+// by any client write on any branch.
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe('ADR-90/ADR-91 — calcVersion and the commitment keys are unwritable by any client', () => {
+  const V2 = { calcVersion: 2 }
+  const COMMITMENT_FORGERIES = (user) => [
+    { calcVersion: 1 }, { calcVersion: 2 }, { calcVersion: 3 }, { calcVersion: null }, { calcVersion: '2' },
+    { commitmentAppliedAt: serverTimestamp(), commitmentAppliedBy: user.uid },
+    { commitmentAppliedAt: serverTimestamp() }, { commitmentAppliedBy: user.uid },
+    { commitmentAppliedAt: null, commitmentAppliedBy: null },
+    { scopeCommittedAt: serverTimestamp(), scopeCommittedBy: user.uid },
+    { scopeCommittedAt: serverTimestamp() }, { scopeCommittedBy: user.uid },
+    { scopeCommittedAt: null, scopeCommittedBy: null },
+  ]
+
+  it('a version-2 draft submits, rejects and withdraws under the Rules for every financial role and keeps calcVersion 2 throughout; ADR-90 — its edit and its RFI link are REFUSED from every client (the backend’s edit is stored and then submitted)', async () => {
+    for (const user of FINANCIAL) {
+      const u = user.uid
+      await seed(`e-${u}`, 'draft', USERS.admin, V2)
+      await editRefused(`e-${u}`, (who) => draftEdit(who), { thenStoreAs: user })
+      await editRefused(`e-${u}`, (who) => ({ ...link(RFIS.open), revision: 3, ...stamps(who) }), { thenStoreAs: user })
+      await assertSucceeds(updateDoc(varRef(ctx(user), `e-${u}`), submitWrite(user, { revision: 4 })))
+      expect(await readVar(`e-${u}`)).toMatchObject({ status: 'submitted', calcVersion: 2, revision: 4, submittedSubtotal: 1200, ...link(RFIS.open) })
+      await assertSucceeds(updateDoc(varRef(ctx(user), `e-${u}`), rejectWrite(user, { revision: 5 })))
+      expect(await readVar(`e-${u}`)).toMatchObject({ status: 'rejected', calcVersion: 2 })
+      await seed(`w-${u}`, 'submitted', USERS.admin, V2)
+      await assertSucceeds(updateDoc(varRef(ctx(user), `w-${u}`), withdrawWrite(user)))
+      expect(await readVar(`w-${u}`)).toMatchObject({ status: 'withdrawn', calcVersion: 2 })
+      await seed(`d-${u}`, 'draft', USERS.admin, V2, { base: poLinked(USERS.admin) })
+      await assertSucceeds(updateDoc(varRef(ctx(user), `d-${u}`), withdrawWrite(user)))
+      await assertSucceeds(getDoc(varRef(ctx(user), `d-${u}`)))
+    }
+  })
+
+  it.each([['a legacy-shaped draft', {}], ['a version-2 draft', V2]])(
+    'ADR-90 — a draft admits NO client content write: lineItems, each submitted header figure, title, description, reason, references, dates, notes and the originRfi triple are each REFUSED for every financial role — on %s',
+    async (_name, extra) => {
+      await seed('nc', 'draft', USERS.admin, extra)
+      await seed('ncc', 'draft', USERS.admin, extra, { base: clientPayload(USERS.admin) })
+      const before = await readVar('nc')
+      const beforeClient = await readVar('ncc')
+      const dbs = new Map(FINANCIAL.map(u => [u.uid, ctx(u)]))
+      const CONTENT = [
+        { lineItems: [line(1)] }, { lineItems: [...LINES, line(1)] }, { lineItems: [] },
+        { submittedSubtotal: 801 }, { submittedGst: 101 }, { submittedTotal: 901 },
+        { lineItems: [line(500)], submittedSubtotal: 500, submittedGst: 50, submittedTotal: 550 },
+        { title: 'Retitled' }, { description: 'More' }, { reason: 'site_condition' },
+        { supplierRef: 'Q-1' }, { clientRef: 'VO-1' },
+        { identifiedDate: '2026-10-02' }, { responseDueDate: '2026-10-30' }, { effectiveDate: '2026-11-01' }, { submittedDate: '2026-10-11' },
+        { notes: 'A note' }, { assessmentNotes: 'x' },
+        link(RFIS.open), { originRfiId: RFIS.open.id }, { originRfiNumber: 'RFI-0001' }, { originRfiTitle: 'Forged' },
+      ]
+      for (const user of FINANCIAL) {
+        for (const change of CONTENT) {
+          // alone, and riding on a submit or a withdraw (a transition may carry no content)
+          await assertFails(updateDoc(varRef(dbs.get(user.uid), 'nc'), { ...change, revision: 2, ...stamps(user) }))
+          await assertFails(updateDoc(varRef(dbs.get(user.uid), 'ncc'), { ...change, revision: 2, ...stamps(user) }))
+          if (!('submittedDate' in change)) await assertFails(updateDoc(varRef(dbs.get(user.uid), 'nc'), submitWrite(user, change)))
+          await assertFails(updateDoc(varRef(dbs.get(user.uid), 'nc'), withdrawWrite(user, change)))
+        }
+        // a stamps-only write, and a whole-document replacement with one field changed
+        await assertFails(updateDoc(varRef(dbs.get(user.uid), 'nc'), { revision: 2, ...stamps(user) }))
+        const replacement = { ...before, title: 'Replaced', revision: 2, ...stamps(user) }
+        delete replacement.id
+        await assertFails(setDoc(varRef(dbs.get(user.uid), 'nc'), replacement))
+      }
+      expect(await readVar('nc')).toEqual(before)
+      expect(await readVar('ncc')).toEqual(beforeClient)
+      // …while the content-free submit still passes on the untouched draft.
+      await assertSucceeds(updateDoc(varRef(dbs.get(USERS.qs.uid), 'nc'), submitWrite(USERS.qs)))
+    }, 120000)
+
+  it('a version-2 variation cannot be created, approved or applied by a client either — REFUSED from every client', async () => {
+    await createRefused('c2', (user) => payload(user, V2))
+    await createRefused('c2p', (user) => poLinked(user, PO.sent, V2))
+    await seed('a2', 'submitted', USERS.admin, V2)
+    await updateRefused('a2', (user) => approveWrite(user))
+    await seed('a2p', 'submitted', USERS.admin, V2, { base: linkedBase(USERS.admin) })
+    await updateRefused('a2p', (user) => approveApplied(user))
+    await seed('ap2', 'approved', USERS.admin, V2, { base: linkedBase(USERS.admin) })
+    await updateRefused('ap2', (user) => applyWrite(user))
+  })
+
+  // One test per stored shape. QS (the widest-reaching non-approver role) tries
+  // every forgery on every branch the status has; admin and PM try each forgery
+  // alone. One Firestore handle per user per test.
+  it.each([['a legacy-shaped document (no calcVersion key)', {}], ['a version-1 document', { calcVersion: 1 }], ['a version-2 document', V2]])(
+    'calcVersion and the commitment keys cannot be ADDED, CHANGED or REMOVED on any branch — alone, or riding on a draft edit, submit, reject or withdraw — on %s',
+    async (_name, extra) => {
+      const alone = (user, x) => ({ revision: 2, ...stamps(user), ...x })
+      const dbs = new Map(FINANCIAL.map(u => [u.uid, ctx(u)]))
+      for (const [status, rides] of [
+        ['draft', [draftEdit, submitWrite, withdrawWrite]],
+        ['submitted', [rejectWrite, withdrawWrite]],
+        ['approved', []], ['rejected', []], ['withdrawn', []],
+      ]) {
+        const id = `k-${status}`
+        await seed(id, status, USERS.admin, extra, { base: linkedBase(USERS.admin) })
+        const before = await readVar(id)
+        for (const user of FINANCIAL) {
+          const writes = user === USERS.qs ? [alone, ...rides] : [alone]
+          for (const forged of COMMITMENT_FORGERIES(user)) {
+            // re-sending the stored calcVersion unchanged is not a change — skip that single no-op
+            if ('calcVersion' in forged && forged.calcVersion === before.calcVersion) continue
+            for (const write of writes) {
+              await assertFails(updateDoc(varRef(dbs.get(user.uid), id), write(user, forged)))
+            }
+          }
+        }
+        expect(await readVar(id), id).toEqual(before)
+      }
+    }, 120000)
+
+  it('a stored commitment pair cannot be changed or stripped, and a whole-document replacement cannot smuggle calcVersion or a pair in', async () => {
+    await seed('st', 'approved', USERS.admin, { ...V2, commitmentAppliedAt: Timestamp.now(), commitmentAppliedBy: USERS.qs.uid, scopeCommittedAt: Timestamp.now(), scopeCommittedBy: USERS.qs.uid }, { base: linkedBase(USERS.admin) })
+    const { id: _id, ...stored } = await readVar('st')   // eslint-disable-line no-unused-vars
+    for (const user of FINANCIAL) {
+      for (const forged of [
+        { commitmentAppliedBy: user.uid }, { commitmentAppliedAt: serverTimestamp() }, { commitmentAppliedAt: null, commitmentAppliedBy: null },
+        { scopeCommittedBy: user.uid }, { scopeCommittedAt: serverTimestamp() }, { scopeCommittedAt: null, scopeCommittedBy: null },
+        { calcVersion: 1 }, { calcVersion: null },
+      ]) {
+        await assertFails(updateDoc(varRef(ctx(user), 'st'), { ...forged, revision: 2, ...stamps(user) }))
+        await assertFails(setDoc(varRef(ctx(user), 'st'), { ...stored, ...forged, revision: 2, ...stamps(user) }))
+      }
+      // …nor by dropping the keys in a replacement
+      const { calcVersion: _c, commitmentAppliedAt: _a, commitmentAppliedBy: _b, ...stripped } = stored   // eslint-disable-line no-unused-vars
+      await assertFails(setDoc(varRef(ctx(user), 'st'), { ...stripped, revision: 2, ...stamps(user) }))
+    }
+    expect((await readVar('st'))).toMatchObject({ calcVersion: 2, commitmentAppliedBy: USERS.qs.uid, scopeCommittedBy: USERS.qs.uid, revision: 1 })
+    // a draft replaced whole, with the key added
+    await seed('dr', 'draft')
+    const { id: _i2, ...draft } = await readVar('dr')   // eslint-disable-line no-unused-vars
+    await assertFails(setDoc(varRef(ctx(USERS.qs), 'dr'), { ...draft, calcVersion: 2, revision: 2, ...stamps(USERS.qs) }))
+    await assertFails(setDoc(varRef(ctx(USERS.qs), 'dr'), { ...draft, commitmentAppliedAt: serverTimestamp(), commitmentAppliedBy: USERS.qs.uid, revision: 2, ...stamps(USERS.qs) }))
+    expect(await readVar('dr')).not.toHaveProperty('calcVersion')
+  })
+})
+
+// ── ADR-90 — the variation number counters ───────────────────────────────────
+//
+// `companies/{c}/counters/variationsClient` and `…/variationsSupplier` are read
+// and advanced ONLY by the trusted backend (createVariation). A client could
+// previously set either to any value (Deferred Control 6): roll it back to
+// reuse numbers, push it out of range, or store a non-number that refuses the
+// next create. No client reads or writes them now. Every OTHER counter id keeps
+// exactly the behaviour it had — the client transactions that number purchase
+// orders, claims, invoices, receipts and the rest still depend on it (DC6 stays
+// open for them). Numbering itself: tests/functions/variations.test.js.
+describe('ADR-90 — the variation counters are backend-only', () => {
+  const counter = (db, id, companyId = COMPANY_A) => doc(db, `companies/${companyId}/counters`, id)
+  const seedCounter = async (id, data, companyId = COMPANY_A) => {
+    await testEnv.withSecurityRulesDisabled(async (c) => { await setDoc(counter(c.firestore(), id, companyId), data) })
+  }
+  const readCounter = async (id, companyId = COMPANY_A) => {
+    let data
+    await testEnv.withSecurityRulesDisabled(async (c) => { const s = await getDoc(counter(c.firestore(), id, companyId)); data = s.exists() ? s.data() : undefined })
+    return data
+  }
+  const VARIATION_COUNTERS = ['variationsClient', 'variationsSupplier']
+
+  it.each(VARIATION_COUNTERS)('%s — a create is REFUSED from every client: no financial role can start the sequence, at 1 or anywhere else', async (id) => {
+    for (const user of FINANCIAL) {
+      for (const data of [{ next: 1 }, { next: 2 }, { next: 500 }, { next: 'x' }, {}]) {
+        await assertFails(setDoc(counter(ctx(user), id), data))
+        await assertFails(setDoc(counter(ctx(user), id), data, { merge: true }))
+      }
+    }
+    expect(await readCounter(id)).toBeUndefined()
+  })
+
+  it.each(VARIATION_COUNTERS)('%s — a read, an advance, a rollback, a jump, an invalid value and a removal of the field are REFUSED from every client; the stored value does not move', async (id) => {
+    await seedCounter(id, { next: 7 })
+    for (const user of FINANCIAL) {
+      await assertFails(getDoc(counter(ctx(user), id)))
+      for (const next of [8, 1, 6, 7, 999999, 0, -1, 1.5, 'x', null]) {
+        await assertFails(updateDoc(counter(ctx(user), id), { next }))
+        await assertFails(setDoc(counter(ctx(user), id), { next }, { merge: true }))
+        await assertFails(setDoc(counter(ctx(user), id), { next }))
+      }
+      await assertFails(setDoc(counter(ctx(user), id), {}))
+      await assertFails(deleteDoc(counter(ctx(user), id)))
+      // the old client transaction — read, then write next + 1 — fails as a whole
+      const db = ctx(user)
+      await assertFails(runTransaction(db, async (tx) => {
+        const snap = await tx.get(counter(db, id))
+        tx.set(counter(db, id), { next: (snap.exists() ? snap.data().next : 1) + 1 }, { merge: true })
+      }))
+    }
+    expect(await readCounter(id)).toEqual({ next: 7 })
+  })
+
+  it('non-financial roles, another tenant, an orphan account and an anonymous caller are refused on the variation counters as on every other', async () => {
+    for (const id of [...VARIATION_COUNTERS, 'purchaseOrders']) {
+      await seedCounter(id, { next: 3 })
+      for (const db of [...NON_MEMBERS.map(ctx), ctx(USERS.other), testEnv.authenticatedContext(ORPHAN_UID).firestore(), anon()]) {
+        await assertFails(getDoc(counter(db, id)))
+        await assertFails(setDoc(counter(db, id), { next: 4 }, { merge: true }))
+      }
+      expect(await readCounter(id)).toEqual({ next: 3 })
+    }
+  })
+
+  it('EVERY OTHER counter is untouched: a financial role still reads, creates and advances it (and can still set it to anything — DC6 stays open there); delete stays blocked', async () => {
+    // ADR-93 / ADR-94 closed the progressClaims, supplierInvoices and supplierPayments counters too
+    // (tests/rules/{progressClaims,supplierInvoices,supplierPayments}.rules.test.js prove the refusals).
+    for (const id of ['purchaseOrders', 'clientInvoices', 'clientReceipts', 'tenderPackages']) {
+      for (const user of FINANCIAL) {
+        const fresh = `${id}`
+        await testEnv.withSecurityRulesDisabled(async (c) => { await deleteDoc(counter(c.firestore(), fresh)) })
+        await assertSucceeds(setDoc(counter(ctx(user), fresh), { next: 2 }, { merge: true }))   // first number taken
+        await assertSucceeds(getDoc(counter(ctx(user), fresh)))
+        await assertSucceeds(updateDoc(counter(ctx(user), fresh), { next: 3 }))
+        // the app's own numbering transaction, exactly as the hooks run it
+        const db = ctx(user)
+        await assertSucceeds(runTransaction(db, async (tx) => {
+          const snap = await tx.get(counter(db, fresh))
+          tx.set(counter(db, fresh), { next: snap.data().next + 1 }, { merge: true })
+        }))
+        expect(await readCounter(fresh)).toEqual({ next: 4 })
+        // DC6, unchanged and still open for these registers: any value is accepted
+        await assertSucceeds(updateDoc(counter(ctx(user), fresh), { next: 1 }))
+        await assertFails(deleteDoc(counter(ctx(user), fresh)))
+      }
+    }
+  })
+
+  it('a name that merely resembles a variation counter is an ordinary counter — the restriction is the two exact ids, in the caller’s own company only', async () => {
+    for (const id of ['variations', 'variationsclient', 'variationsClient2', 'VariationsSupplier', 'supplierVariations']) {
+      await assertSucceeds(setDoc(counter(ctx(USERS.qs), id), { next: 2 }, { merge: true }))
+    }
+    // another company's admin on Company A's variation counter, and Company A's member on Company B's
+    await seedCounter('variationsClient', { next: 5 })
+    await seedCounter('variationsClient', { next: 9 }, COMPANY_B)
+    await assertFails(getDoc(counter(ctx(USERS.other), 'variationsClient')))
+    await assertFails(getDoc(counter(ctx(USERS.other), 'variationsClient', COMPANY_B)))      // its own company's is backend-only too
+    await assertFails(setDoc(counter(ctx(USERS.admin), 'variationsClient', COMPANY_B), { next: 1 }))
+    expect(await readCounter('variationsClient', COMPANY_B)).toEqual({ next: 9 })
   })
 })

@@ -8,6 +8,9 @@ import {
   dataOf, invoiceRef, ledgerRef, receiptRef, readStoredLedger, writeLedger, stampReceiptPosted, stampVoid,
 } from './persistence.js'
 
+// Phase 2 step 5: the server-only per-receipt settlement ledger (settlement.js).
+const receiptLedgerRef = (projectRef, receiptId) => projectRef.collection('clientReceiptLedgers').doc(receiptId)
+
 // ── Posting and voiding client receipts (ADR-89) ─────────────────────────────
 //
 // A client receipt becomes POSTED, and a posted one VOID, only here. WHY: a
@@ -184,6 +187,14 @@ export async function voidClientReceipt(deps, { uid, projectId, entryId: receipt
       targets = parsed.allocations.map(a => ({ ...a, ledgerRef: ledgerRef(ctx.projectRef, a.clientInvoiceId) }))
     }
     const snaps = targets.length > 0 ? await tx.getAll(...targets.map(t => t.ledgerRef)) : []
+    // Phase 2 step 5 (D6): refunds and applications made from this receipt's
+    // unallocated money depend on it — its receipt ledger is read, so a
+    // concurrent refund or application is ordered against this void.
+    const receiptLedgerSnap = wasPosted ? await tx.get(receiptLedgerRef(ctx.projectRef, receiptId)) : null
+    // The invoices whose ledgers record a refund: S1 needs the invoice itself.
+    const refundedTargets = targets.filter((t, i) => (snaps[i].exists ? (snaps[i].data().refundedCents ?? 0) : 0) > 0)
+    const refundedInvoiceSnaps = refundedTargets.length > 0 ? await tx.getAll(...refundedTargets.map(t => invoiceRef(ctx.projectRef, t.clientInvoiceId))) : []
+    const invoicesById = Object.fromEntries(refundedInvoiceSnaps.map(s => [s.id, dataOf(s)]))
     if (hooks.afterRead) await hooks.afterRead({ attempt: attempts })
 
     if (receipt.status === STATUS.VOID) {
@@ -192,6 +203,13 @@ export async function voidClientReceipt(deps, { uid, projectId, entryId: receipt
       fail(CODE.CLIENT_ENTRY_NOT_POSTED, { entryStatus: receipt.status })
     }
     if (!wasPosted && receipt.status !== STATUS.DRAFT) fail(CODE.CLIENT_ENTRY_INVALID, { entryStatus: receipt.status ?? null })
+
+    if (receiptLedgerSnap?.exists) {
+      const used = receiptLedgerSnap.data()
+      if ((used.appliedCents ?? 0) > 0 || (used.refundedCents ?? 0) > 0) {
+        fail(CODE.CLIENT_RECEIPT_SETTLED, { number: receipt.receiptNumber ?? null, appliedCents: used.appliedCents ?? 0, refundedCents: used.refundedCents ?? 0 })
+      }
+    }
 
     const allocated = []
     // Decide for EVERY ledger before writing any.
@@ -206,7 +224,13 @@ export async function voidClientReceipt(deps, { uid, projectId, entryId: receipt
           number: receipt.receiptNumber ?? null,
         })
       }
-      return { t, snap: snaps[i], before, next: calc.applyReceiptVoid(before, t.cents, receiptId) }
+      const next = calc.applyReceiptVoid(before, t.cents, receiptId)
+      if (next.refundedCents > 0) {
+        const invoice = invoicesById[t.clientInvoiceId]
+        const unsettled = invoice ? calc.settlementInvariantError(invoice, next) : 'The invoice cannot be read, and money has been refunded out of it.'
+        if (unsettled) fail(CODE.CLIENT_REFUNDS_DEPEND, { invariant: unsettled, invoiceId: t.clientInvoiceId, invoiceNumber: t.invoiceNumber, number: receipt.receiptNumber ?? null })
+      }
+      return { t, snap: snaps[i], before, next }
     })
     for (const { t, snap, before, next } of moves) {
       writeLedger(tx, t.ledgerRef, snap, next, uid)

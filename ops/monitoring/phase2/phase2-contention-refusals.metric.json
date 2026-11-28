@@ -1,0 +1,11 @@
+{
+  "name": "phase2_contention_refusals",
+  "description": "Phase 2 cutover: one count per refusal with a contention code (…-busy, estimate-build-superseded) written by a Phase 2 financial callable. Counts only; extracts nothing from the log entry. Read by phase2-contention-repeated.policy.json.",
+  "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.location=\"australia-southeast1\" AND resource.labels.service_name=(\"createvariation\" OR \"updatevariationdraft\" OR \"approvevariation\" OR \"applyvariationcommitment\" OR \"progressclaimoperation\" OR \"supplierinvoiceoperation\" OR \"suppliersettlementoperation\" OR \"postclientrefund\" OR \"voidclientrefund\" OR \"postclientreceiptapplication\" OR \"voidclientreceiptapplication\" OR \"voidclientinvoice\" OR \"contractvalueoperation\" OR \"estimateoperation\" OR \"postclientcreditnote\" OR \"voidclientcreditnote\" OR \"postclientretentionrelease\" OR \"voidclientretentionrelease\" OR \"postclientreceipt\" OR \"voidclientreceipt\" OR \"transferboqtobudget\" OR \"approvefinalaccount\") AND log_id(\"run.googleapis.com/stdout\") AND jsonPayload.message=(\"variation call refused\" OR \"supplier-finance call refused\" OR \"client finance call refused\" OR \"contract-value call refused\" OR \"estimate call refused\" OR \"boq transfer call refused\" OR \"final account call refused\") AND jsonPayload.code=(\"boq-transfer-busy\" OR \"client-finance-busy\" OR \"estimate-build-superseded\" OR \"estimate-busy\" OR \"final-account-busy\" OR \"supplier-finance-busy\" OR \"variation-busy\")",
+  "metricDescriptor": {
+    "metricKind": "DELTA",
+    "valueType": "INT64",
+    "unit": "1",
+    "displayName": "Phase 2 contention refusals"
+  }
+}

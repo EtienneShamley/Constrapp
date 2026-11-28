@@ -25,6 +25,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
+import { assertRealAuthLauncherAllowed } from './realAuthLauncherGuard.mjs'
 
 const FRONTEND = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -69,6 +70,8 @@ if (missing.length) {
 // The emulator namespaces data BY PROJECT ID, and the app connects using this
 // same value — seeding under any other id would write data the app cannot see.
 const PROJECT_ID = readEnv('VITE_FIREBASE_PROJECT_ID')
+// D3 #40: real project id + real Auth — never started by accident.
+assertRealAuthLauncherAllowed({ projectId: PROJECT_ID, launcher: 'test:credit-notes' })
 
 // ── Resolve the firebase CLI without requiring a global install ──────────────
 const localBin = resolve(FRONTEND, 'node_modules/.bin', process.platform === 'win32' ? 'firebase.cmd' : 'firebase')

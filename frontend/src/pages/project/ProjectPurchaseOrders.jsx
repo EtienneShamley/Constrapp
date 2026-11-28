@@ -5,6 +5,9 @@ import Btn from '../../components/Btn'
 import Badge from '../../components/Badge'
 import { formatCurrency } from '../../lib/formatters'
 import { usePurchaseOrders } from '../../hooks/usePurchaseOrders'
+import { useAuth } from '../../hooks/useAuth'
+import { useApprovalPolicy } from '../../hooks/useApprovalPolicy'
+import { APPROVAL_ACTION, SEGREGATION_NOTE, segregationNote, describeApprovalRefusal } from '../../lib/approvalSegregation'
 import { useProgressClaims } from '../../hooks/useProgressClaims'
 import { useSupplierInvoices } from '../../hooks/useSupplierInvoices'
 import { useVariations } from '../../hooks/useVariations'
@@ -397,17 +400,28 @@ function PurchaseOrderEditorModal({ po = null, costCodes, contacts, projectId, c
 // confirm dialog (ADR-57): a blocked PO shows its reason instead of a prompt.
 // The button stays enabled and the reason is shown on tap — never a hover-only
 // tooltip on a disabled control.
-function RowActions({ po, onTransition, onCancel, onEdit }) {
-  const confirmThen = (label, nextStatus) => () => {
-    if (window.confirm(`${label} ${po.poNumber}?`)) onTransition(po, nextStatus)
+//
+// Send under APPROVAL SEGREGATION (`sendNote`, from segregationNote): when the
+// Rules would refuse this viewer (they prepared the PO, or its preparer was
+// never recorded), Send is disabled and the reason is shown beside it, in the
+// row — visible, not a tooltip. An independent sender is told so in the
+// confirmation. UX only; the Rules enforce it.
+function RowActions({ po, onTransition, onCancel, onEdit, sendNote }) {
+  const confirmThen = (label, nextStatus, note = null) => () => {
+    if (window.confirm(`${label} ${po.poNumber}?${note ? `\n\n${note}` : ''}`)) onTransition(po, nextStatus)
   }
 
   if (po.status === PO_STATUS.DRAFT) {
+    const sendBlocked = sendNote?.kind === SEGREGATION_NOTE.BLOCKED
+    const independentNote = sendNote?.kind === SEGREGATION_NOTE.INDEPENDENT ? sendNote.text : null
     return (
-      <div className="flex gap-1.5 justify-end">
-        <Btn sm variant="ghost" onClick={() => onEdit(po)}>Edit</Btn>
-        <Btn sm variant="success" onClick={confirmThen('Send', PO_STATUS.SENT)}>Send</Btn>
-        <Btn sm variant="ghost" onClick={() => onCancel(po)}>Cancel</Btn>
+      <div className="flex flex-col items-end gap-1">
+        <div className="flex gap-1.5 justify-end">
+          <Btn sm variant="ghost" onClick={() => onEdit(po)}>Edit</Btn>
+          <Btn sm variant="success" onClick={confirmThen('Send', PO_STATUS.SENT, independentNote)} disabled={sendBlocked}>Send</Btn>
+          <Btn sm variant="ghost" onClick={() => onCancel(po)}>Cancel</Btn>
+        </div>
+        {sendBlocked && <p className="m-0 max-w-[320px] text-right text-[11px] text-brand-amber" role="status">{sendNote.text}</p>}
       </div>
     )
   }
@@ -443,6 +457,14 @@ export default function ProjectPurchaseOrders() {
   const { variations, variationsLoading, variationsError } = useVariations(projectId)
   const { costCodes, costCodesLoading, costCodesError } = useCostCodes()
   const { contacts, contactsError, createContact } = useContacts()
+  // Approval segregation for Send (UX mirror; the Rules enforce it). Loading or
+  // unreadable ⇒ not known: Send is not blocked and nothing is claimed.
+  const { user } = useAuth()
+  const { approvalPolicy, approvalPolicyKnown } = useApprovalPolicy()
+  const sendContext = (po) => ({
+    policy: approvalPolicy, uid: user?.uid, createdBy: po?.createdBy, lastMaterialEditBy: po?.lastMaterialEditBy,
+    requireStamp: true, action: APPROVAL_ACTION.PO_SEND,
+  })
   const [editing, setEditing]         = useState(null)   // 'new' | draft PO | null
   const [actionError, setActionError] = useState(null)
 
@@ -469,7 +491,10 @@ export default function ProjectPurchaseOrders() {
     try {
       await transitionStatus(po, nextStatus, linked)
     } catch (err) {
-      reportActionError(err)
+      // A send refused by approval segregation is explained, not "no permission".
+      const refusal = nextStatus === PO_STATUS.SENT ? describeApprovalRefusal(err, sendContext(po)) : null
+      if (refusal) setActionError(refusal.message)
+      else reportActionError(err)
     }
   }
 
@@ -598,7 +623,10 @@ export default function ProjectPurchaseOrders() {
                       <Badge label={PO_STATUS_LABELS[po.status] ?? po.status} variant={PO_BADGE_VARIANTS[po.status]} sm />
                     </td>
                     <td className="px-3.5 py-3">
-                      <RowActions po={po} onTransition={handleTransition} onCancel={handleCancel} onEdit={setEditing} />
+                      <RowActions
+                        po={po} onTransition={handleTransition} onCancel={handleCancel} onEdit={setEditing}
+                        sendNote={segregationNote({ ...sendContext(po), policyKnown: approvalPolicyKnown })}
+                      />
                     </td>
                   </tr>
                 ))}

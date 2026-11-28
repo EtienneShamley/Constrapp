@@ -6,6 +6,8 @@ import { createClientFinanceHandlers, CLIENT_FINANCE_HANDLER_NAMES } from '../sr
 import {
   CLIENT_FINANCE_ROLES, VOID_REASON_MAX, parsePostClientCreditNote, parseVoidClientCreditNote,
   parsePostClientRetentionRelease, parseVoidClientRetentionRelease, parsePostClientReceipt, parseVoidClientReceipt,
+  parsePostClientRefund, parseVoidClientRefund, parsePostClientReceiptApplication, parseVoidClientReceiptApplication,
+  parseVoidClientInvoice,
 } from '../src/clientFinance/contracts.js'
 import { invoiceInconsistency, invoiceProblem, invoiceRangeProblem, deriveCreditNote, deriveRetentionRelease } from '../src/clientFinance/agreement.js'
 import { attachBlockers } from '../src/clientFinance/blocking.js'
@@ -26,26 +28,30 @@ import * as calc from '../src/generated/clientFinanceCalc.js'
 // request contract or a generated file that is missing or not self-contained.
 
 const src = (rel) => readFileSync(fileURLToPath(new URL(`../src/${rel}`, import.meta.url)), 'utf8')
-const deps = (over = {}) => ({ db: null, now: () => new Date('2026-11-26T00:00:00Z'), log: { info() {}, warn() {}, error() {} }, config: () => ({ finance: true, receipts: true }), ...over })
+const deps = (over = {}) => ({ db: null, now: () => new Date('2026-11-26T00:00:00Z'), log: { info() {}, warn() {}, error() {} }, config: () => ({ finance: true, receipts: true, settlement: true }), ...over })
 const refused = async (promise, code) => {
   try { await promise } catch (e) { expect(isTeamError(e, code), `${e?.details?.code ?? e?.message}`).toBe(true); return }
   throw new Error('no throw')
 }
 const without = (obj, ...keys) => Object.fromEntries(Object.entries(obj).filter(([k]) => !keys.includes(k)))
 const FINANCE_NAMES = ['postClientCreditNote', 'voidClientCreditNote', 'postClientRetentionRelease', 'voidClientRetentionRelease']
-const RECEIPT_NAMES = ['postClientReceipt', 'voidClientReceipt']
-const NAMES = [...FINANCE_NAMES, ...RECEIPT_NAMES]
+// Phase 2 step 5: the trusted void of an ISSUED invoice belongs to the receipt
+// workflow (its switch); refunds and applications have their own switch.
+const RECEIPT_NAMES = ['postClientReceipt', 'voidClientReceipt', 'voidClientInvoice']
+const SETTLEMENT_NAMES = ['postClientRefund', 'voidClientRefund', 'postClientReceiptApplication', 'voidClientReceiptApplication']
+const NAMES = [...FINANCE_NAMES, ...RECEIPT_NAMES.slice(0, 2), ...SETTLEMENT_NAMES, RECEIPT_NAMES[2]]
 const ANY = { projectId: 'p', creditNoteId: 'c', releaseId: 'r', receiptId: 'x', reason: 'x', acknowledgeOverAllocation: false }
 
 describe('handler gates before any data access', () => {
-  it('exactly six handlers', () => {
+  it('exactly eleven handlers (six of ADR-89, five of Phase 2 step 5)', () => {
     expect(CLIENT_FINANCE_HANDLER_NAMES).toEqual(NAMES)
     const h = createClientFinanceHandlers(deps())
     for (const n of NAMES) expect(typeof h[n], n).toBe('function')
   })
   it.each(NAMES)('%s: its kill switch answers first; then authentication; then validation — db is never touched (it is null)', async (name) => {
-    const disabled = RECEIPT_NAMES.includes(name) ? CODE.CLIENT_RECEIPT_DISABLED : CODE.CLIENT_FINANCE_DISABLED
-    const off = createClientFinanceHandlers(deps({ config: () => ({ finance: false, receipts: false }) }))
+    const disabled = RECEIPT_NAMES.includes(name) ? CODE.CLIENT_RECEIPT_DISABLED
+      : SETTLEMENT_NAMES.includes(name) ? CODE.CLIENT_SETTLEMENT_DISABLED : CODE.CLIENT_FINANCE_DISABLED
+    const off = createClientFinanceHandlers(deps({ config: () => ({ finance: false, receipts: false, settlement: false }) }))
     await refused(off[name]({ auth: { uid: 'u' }, data: {} }), disabled)
     await refused(off[name]({ auth: null, data: {} }), disabled)
     const h = createClientFinanceHandlers(deps())
@@ -62,6 +68,16 @@ describe('handler gates before any data access', () => {
     const unset = createClientFinanceHandlers(deps({ config: () => ({}) }))
     for (const n of FINANCE_NAMES) await refused(unset[n]({ auth: { uid: 'u' }, data: {} }), CODE.CLIENT_FINANCE_DISABLED)
     for (const n of RECEIPT_NAMES) await refused(unset[n]({ auth: { uid: 'u' }, data: {} }), CODE.CLIENT_RECEIPT_DISABLED)
+    for (const n of SETTLEMENT_NAMES) await refused(unset[n]({ auth: { uid: 'u' }, data: {} }), CODE.CLIENT_SETTLEMENT_DISABLED)
+  })
+  it('Phase 2 step 5: the settlement switch is independent of both others, and only an explicit true opens it', async () => {
+    for (const settlement of [false, 'true', 1, null, undefined]) {
+      const h = createClientFinanceHandlers(deps({ config: () => ({ finance: true, receipts: true, settlement }) }))
+      for (const n of SETTLEMENT_NAMES) await refused(h[n]({ auth: null, data: {} }), CODE.CLIENT_SETTLEMENT_DISABLED)
+      for (const n of [...FINANCE_NAMES, ...RECEIPT_NAMES]) await refused(h[n]({ auth: null, data: {} }), CODE.UNAUTHENTICATED)
+    }
+    const onlySettlement = createClientFinanceHandlers(deps({ config: () => ({ settlement: true }) }))
+    for (const n of SETTLEMENT_NAMES) await refused(onlySettlement[n]({ auth: null, data: {} }), CODE.UNAUTHENTICATED)
   })
 })
 
@@ -266,7 +282,17 @@ describe('the generated domain shipped with the functions', () => {
     expect(calc.CCN_STATUS).toEqual({ DRAFT: 'draft', POSTED: 'posted', VOID: 'void' })
     expect(calc.CRR_STATUS).toEqual({ DRAFT: 'draft', POSTED: 'posted', VOID: 'void' })
     expect([calc.CCN_DOC_TYPE, calc.CRR_DOC_TYPE]).toEqual(['credit_note', 'client_retention_release'])
-    expect(calc.LEDGER_KIND).toEqual({ CREDIT: 'credit', CREDIT_VOID: 'credit_void', RELEASE: 'release', RELEASE_VOID: 'release_void', RECEIPT: 'receipt', RECEIPT_VOID: 'receipt_void' })
+    expect(calc.LEDGER_KIND).toEqual({
+      CREDIT: 'credit', CREDIT_VOID: 'credit_void', RELEASE: 'release', RELEASE_VOID: 'release_void', RECEIPT: 'receipt', RECEIPT_VOID: 'receipt_void',
+      // Phase 2 step 5.
+      APPLICATION: 'application', APPLICATION_VOID: 'application_void', REFUND: 'refund', REFUND_VOID: 'refund_void',
+    })
+    for (const name of ['netReceivedCents', 'ledgerRemainingCents', 'ledgerOwedCents', 'ledgerRefundableCents', 'settlementInvariantError',
+      'applyApplication', 'applyApplicationVoid', 'applyInvoiceRefund', 'applyInvoiceRefundVoid', 'refundRequestProblem', 'applicationRequestProblem',
+      'requestCents', 'postedReceiptUnallocatedCents', 'receiptLedgerProblem', 'readReceiptLedger', 'receiptAvailableCents', 'moveReceiptLedger',
+      'receiptLedgerStateProblem', 'buildClientRefund', 'buildReceiptApplication', 'clientRefundNumberOf', 'clientApplicationNumberOf', 'counterAfter']) {
+      expect(typeof calc[name], name).toBe('function')
+    }
     expect(calc.CLIENT_RECEIPT_KEYS).toHaveLength(28)
     expect(calc.CLIENT_RECEIPT_ALLOCATION_KEYS).toEqual(['clientInvoiceId', 'invoiceNumber', 'allocatedAmount'])
     expect(calc.LEDGER_TOTAL_KEYS).toHaveLength(6)
@@ -280,10 +306,10 @@ describe('the generated domain shipped with the functions', () => {
 
 describe('surface', () => {
   const index = src('index.js')
-  const FILES = ['contracts.js', 'agreement.js', 'persistence.js', 'transactions.js', 'receipts.js', 'blocking.js', 'handlers.js', 'baseline.js']
+  const FILES = ['contracts.js', 'agreement.js', 'persistence.js', 'transactions.js', 'receipts.js', 'blocking.js', 'handlers.js', 'baseline.js', 'settlement.js']
   const code = (rel) => src(rel).split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
 
-  it('six more callables: App Check enforced, the one region, no secret, no service account, two kill switches', () => {
+  it('eleven callables: App Check enforced, the one region, no secret, no service account, three kill switches', () => {
     for (const n of NAMES) expect(index).toMatch(new RegExp(`^export const ${n}\\s+= clientFinanceCall\\('${n}'\\)$`, 'm'))
     const opts = index.slice(index.indexOf('export const CLIENT_FINANCE_CALL_OPTIONS'), index.indexOf('let clientFinanceHandlers'))
     expect(opts).toMatch(/enforceAppCheck:\s*true/)
@@ -296,8 +322,12 @@ describe('surface', () => {
     expect((index.match(/CLIENT_FINANCE_POSTING_ENABLED/g) || []).length).toBe(2)   // the import and the one config()
     expect((index.match(/CLIENT_RECEIPT_POSTING_ENABLED/g) || []).length).toBe(2)
     expect((index.match(/CLIENT_RECEIPT_ALL_COMPANIES/g) || []).length).toBe(2)
-    expect(index).toContain('config: () => ({ finance: CLIENT_FINANCE_POSTING_ENABLED.value(), receipts: CLIENT_RECEIPT_POSTING_ENABLED.value(), receiptsAllCompanies: CLIENT_RECEIPT_ALL_COMPANIES.value() })')
-    expect((index.match(/onCall\(/g) || []).length).toBe(4)   // the team wrapper, approveFinalAccount, transferBoqToBudget, the client-finance wrapper
+    // Phase 2 step 5 adds the settlement switch to the same config().
+    expect(index).toContain('config: () => ({ finance: CLIENT_FINANCE_POSTING_ENABLED.value(), receipts: CLIENT_RECEIPT_POSTING_ENABLED.value(), receiptsAllCompanies: CLIENT_RECEIPT_ALL_COMPANIES.value(), settlement: CLIENT_SETTLEMENT_ENABLED.value() })')
+    expect((index.match(/CLIENT_SETTLEMENT_ENABLED/g) || []).length).toBe(2)
+    // The wrappers: team, approveFinalAccount, transferBoqToBudget, client finance, variations (ADR-90),
+    // the supplier-finance wrapper (ADR-93 / ADR-94), contractValueOperation (ADR-96) and estimateOperation (ADR-97).
+    expect((index.match(/onCall\(/g) || []).length).toBe(8)   // + estimateOperation (ADR-97)
     // The existing surface is untouched.
     expect((index.match(/wrap\('/g) || []).length).toBe(8)
     expect((index.match(/onSchedule\(/g) || []).length).toBe(1)
@@ -321,11 +351,13 @@ describe('surface', () => {
     expect(tx).toContain('const companyId = profile.companyId')
     for (const f of FILES) expect(code(`clientFinance/${f}`), f).not.toMatch(/companyId\s*[:=]\s*(request|data|input)\b/)
     // Every .get( in the operation is tx.get / tx.getAll.
-    for (const f of ['transactions.js', 'receipts.js', 'persistence.js', 'agreement.js']) expect(code(`clientFinance/${f}`).match(/[^x.]\.get\(/g), f).toBeNull()
+    for (const f of ['transactions.js', 'receipts.js', 'persistence.js', 'agreement.js', 'settlement.js']) expect(code(`clientFinance/${f}`).match(/[^x.]\.get\(/g), f).toBeNull()
     expect((tx.match(/db\.runTransaction\(/g) || []).length).toBe(1)
     expect(code('clientFinance/receipts.js')).not.toMatch(/runTransaction\(/)   // the same guarded runner
     // NO operation queries a collection: every transactional read is a document.
-    for (const f of ['transactions.js', 'receipts.js', 'persistence.js']) expect(code(`clientFinance/${f}`), f).not.toMatch(/\.where\(|\.limit\(|\.orderBy\(/)
+    for (const f of ['transactions.js', 'receipts.js', 'persistence.js', 'settlement.js']) expect(code(`clientFinance/${f}`), f).not.toMatch(/\.where\(|\.limit\(|\.orderBy\(/)
+    // Phase 2 step 5: settlement.js takes the company from the membership it reads in the transaction.
+    expect(code('clientFinance/settlement.js')).toContain('const companyId = profile.companyId')
     // The only queries are the blocking lookups — outside any transaction, equality filters, capped.
     const blocking = code('clientFinance/blocking.js')
     expect(blocking).not.toMatch(/tx\.|runTransaction/)
@@ -357,7 +389,9 @@ describe('surface', () => {
 
   it('a release void reads NO receipt: the received figure is in the invoice ledger, and no read limit exists', () => {
     const tx = code('clientFinance/transactions.js')
-    expect(tx).toContain('if (receivableBasisAfterCents < next.receivedCents) {')
+    // Phase 2 step 5: the money the invoice HOLDS — received less refunded (= received until a refund exists).
+    expect(tx).toContain('const heldCents = calc.netReceivedCents(next)')
+    expect(tx).toContain('if (receivableBasisAfterCents < heldCents) {')
     expect(tx).toContain('calc.ledgerPosition(invoice, next).receivableBasisCents')
     for (const f of FILES) expect(src(`clientFinance/${f}`), f).not.toMatch(/POSTED_RECEIPT_READ_LIMIT|receivedByInvoice|readPostedReceipts|REGISTER_TOO_LARGE/)
     expect(Object.keys(CODE)).not.toContain('CLIENT_REGISTER_TOO_LARGE')
@@ -538,7 +572,7 @@ describe('release safety', () => {
 
   it('the switch DEFAULTS TO OFF in code (fail closed) and every project env file states it explicitly', () => {
     expect(src('lib/params.js')).toContain("export const CLIENT_FINANCE_POSTING_ENABLED = defineBoolean('CLIENT_FINANCE_POSTING_ENABLED', { default: false })")
-    expect(envFiles).toEqual(expect.arrayContaining(['.env.constrapp-69b5d', '.env.constrapp-rules-test']))
+    expect(envFiles).toEqual(expect.arrayContaining(['.env.constrapp-69b5d', '.env.demo-constrap-test']))
     // A non-interactive deploy refuses a parameter with no dotenv value.
     for (const f of envFiles) expect(['true', 'false'], f).toContain(valueOf(f, 'CLIENT_FINANCE_POSTING_ENABLED'))
     expect(src('lib/params.js')).toContain("export const CLIENT_RECEIPT_POSTING_ENABLED = defineBoolean('CLIENT_RECEIPT_POSTING_ENABLED', { default: false })")
@@ -551,9 +585,9 @@ describe('release safety', () => {
     expect(valueOf('.env.constrapp-69b5d', 'CLIENT_FINANCE_POSTING_ENABLED')).toBe('true')
     // … and receipts, once switched on, are scoped to operator-activated companies until told otherwise.
     expect(valueOf('.env.constrapp-69b5d', 'CLIENT_RECEIPT_ALL_COMPANIES')).toBe('true')
-    expect(valueOf('.env.constrapp-rules-test', 'CLIENT_RECEIPT_ALL_COMPANIES')).toBe('true')
-    expect(valueOf('.env.constrapp-rules-test', 'CLIENT_RECEIPT_POSTING_ENABLED')).toBe('true')
-    expect(valueOf('.env.constrapp-rules-test', 'CLIENT_FINANCE_POSTING_ENABLED')).toBe('true')
+    expect(valueOf('.env.demo-constrap-test', 'CLIENT_RECEIPT_ALL_COMPANIES')).toBe('true')
+    expect(valueOf('.env.demo-constrap-test', 'CLIENT_RECEIPT_POSTING_ENABLED')).toBe('true')
+    expect(valueOf('.env.demo-constrap-test', 'CLIENT_FINANCE_POSTING_ENABLED')).toBe('true')
     // The order is written where the switches are defined.
     const params = src('lib/params.js')
     expect(params).toContain('CUTOVER ORDER (production starts with BOTH switches off)')
@@ -574,11 +608,54 @@ describe('release safety', () => {
   })
   it('every typed refusal has a status and a message', () => {
     const keys = Object.keys(CODE).filter(k => k.startsWith('CLIENT_'))
-    expect(keys).toHaveLength(22)
+    expect(keys).toHaveLength(32)   // 22 of ADR-89 + 10 of Phase 2 step 5
     for (const key of keys) {
       const err = new TeamError(CODE[key])
       expect(isTeamError(err, CODE[key]), key).toBe(true)
       expect(err.message.length, key).toBeGreaterThan(10)
     }
+  })
+})
+
+// ── Phase 2 step 5 (ADR-STEP5) — refund, application and invoice-void contracts ─
+describe('settlement request contracts — authored content and identifiers, nothing derived', () => {
+  const invalid = (fn, data) => { try { fn(data); return false } catch (e) { return isTeamError(e, CODE.INVALID_ARGUMENT) } }
+  const refundOk = { projectId: 'p1', refundId: 'f1', source: 'receipt', receiptId: 'r1', clientInvoiceId: null, amount: 10.5, refundDate: '2026-11-20', method: 'bank_transfer', reference: 'EFT 9', reason: 'Overpaid' }
+  const appOk = { projectId: 'p1', applicationId: 'a1', receiptId: 'r1', clientInvoiceId: 'i1', amount: 0.01, applicationDate: '2026-11-20', notes: '' }
+
+  it('a refund: the exact key set; one source id and the other null', () => {
+    expect(parsePostClientRefund(refundOk)).toEqual(refundOk)
+    expect(parsePostClientRefund({ ...refundOk, source: 'invoice', receiptId: null, clientInvoiceId: 'i1' }).clientInvoiceId).toBe('i1')
+    for (const extra of ['clientId', 'currency', 'status', 'companyId', 'refundNumber', 'clientName']) expect(invalid(parsePostClientRefund, { ...refundOk, [extra]: 'x' }), extra).toBe(true)
+    for (const key of Object.keys(refundOk)) expect(invalid(parsePostClientRefund, without(refundOk, key)), `missing ${key}`).toBe(true)
+    for (const bad of [{ receiptId: 'a/b' }, { receiptId: null }, { clientInvoiceId: 'i1' }, { amount: 0 }, { amount: 1.001 }, { amount: '5' }, { method: 'crypto' }, { reference: ' ' }, { reason: '' }, { refundDate: 'x' }, { source: 'wallet' }]) {
+      expect(invalid(parsePostClientRefund, { ...refundOk, ...bad }), JSON.stringify(bad)).toBe(true)
+    }
+  })
+  it('an application: the exact key set; both ids valid; whole cents', () => {
+    expect(parsePostClientReceiptApplication(appOk)).toEqual(appOk)
+    for (const extra of ['clientId', 'currency', 'status', 'companyId']) expect(invalid(parsePostClientReceiptApplication, { ...appOk, [extra]: 'x' }), extra).toBe(true)
+    for (const bad of [{ receiptId: '' }, { clientInvoiceId: 'a/b' }, { amount: -1 }, { amount: 0.001 }, { notes: 5 }, { applicationDate: '' }]) {
+      expect(invalid(parsePostClientReceiptApplication, { ...appOk, ...bad }), JSON.stringify(bad)).toBe(true)
+    }
+  })
+  it('the three voids: ids and a reason', () => {
+    expect(parseVoidClientRefund({ projectId: 'p1', refundId: 'f1', reason: ' x ' })).toEqual({ projectId: 'p1', refundId: 'f1', reason: 'x' })
+    expect(parseVoidClientReceiptApplication({ projectId: 'p1', applicationId: 'a1', reason: 'x' })).toEqual({ projectId: 'p1', applicationId: 'a1', reason: 'x' })
+    expect(parseVoidClientInvoice({ projectId: 'p1', invoiceId: 'i1', reason: 'x' })).toEqual({ projectId: 'p1', invoiceId: 'i1', reason: 'x' })
+    for (const fn of [parseVoidClientRefund, parseVoidClientReceiptApplication, parseVoidClientInvoice]) {
+      expect(invalid(fn, { projectId: 'p1', refundId: 'f1', applicationId: 'a1', invoiceId: 'i1', reason: '' })).toBe(true)
+    }
+    expect(invalid(parseVoidClientInvoice, { projectId: 'p1', invoiceId: 'i1', reason: 'x', amount: 1 })).toBe(true)
+  })
+  it('the switch: production OFF, emulator ON, default OFF', () => {
+    const env = (f) => readFileSync(fileURLToPath(new URL(`../${f}`, import.meta.url)), 'utf8').match(/^CLIENT_SETTLEMENT_ENABLED=(.*)$/m)?.[1]
+    expect(env('.env.constrapp-69b5d')).toBe('false')
+    expect(env('.env.demo-constrap-test')).toBe('true')
+    expect(src('lib/params.js')).toContain("export const CLIENT_SETTLEMENT_ENABLED = defineBoolean('CLIENT_SETTLEMENT_ENABLED', { default: false })")
+  })
+  it('five more audit types, one per committed operation', () => {
+    expect([AUDIT.CLIENT_REFUND_POSTED, AUDIT.CLIENT_REFUND_VOIDED, AUDIT.CLIENT_APPLICATION_POSTED, AUDIT.CLIENT_APPLICATION_VOIDED, AUDIT.CLIENT_INVOICE_VOIDED])
+      .toEqual(['client_refund.posted', 'client_refund.voided', 'client_receipt_application.posted', 'client_receipt_application.voided', 'client_invoice.voided'])
   })
 })

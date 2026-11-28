@@ -30,7 +30,7 @@ import { doc, getDoc, setDoc, updateDoc, serverTimestamp, Timestamp } from 'fire
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RULES_PATH = resolve(HERE, '../../firestore.transitional.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A = 'companyA'
 const PROJECT_A = 'projectA'
 const USERS = {

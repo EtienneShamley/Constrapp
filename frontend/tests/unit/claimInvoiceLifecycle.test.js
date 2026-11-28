@@ -137,7 +137,9 @@ describe('partial claim-sourced invoices are prohibited — the state cannot be 
   })
 
   it('…and the guard is enforced in the create hook and the editor, not only in the library', () => {
-    expect(read('hooks/useSupplierInvoices.jsx')).toMatch(/if \(source === SI_SOURCE\.PROGRESS_CLAIM\) \{\s*const reconcileError = claimReconciliationError\(/)
+    // ADR-93: the create is a backend operation — the reconciliation against the
+    // SERVER copy of the claim is in the shared processing module the callable runs.
+    expect(read('lib/supplierInvoiceProcessing.js')).toContain('if (toCents(totals.payableGst) !== toCents(claim.approvedGst) || toCents(totals.payableTotal) !== toCents(claim.approvedTotal)) {')
     expect(read('pages/project/ProjectInvoices.jsx')).toContain('claimReconciliationError(totals, { approvedGst: claim.approvedGst, approvedTotal: claim.approvedTotal })')
   })
 

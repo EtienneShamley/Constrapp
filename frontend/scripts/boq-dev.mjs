@@ -25,6 +25,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { assertRealAuthLauncherAllowed } from './realAuthLauncherGuard.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const FRONTEND = resolve(HERE, '..')
@@ -151,6 +152,8 @@ async function main() {
   const env = parseEnvFile(resolve(FRONTEND, '.env.local'))
   const projectId = env.VITE_FIREBASE_PROJECT_ID
   if (!projectId) fail('VITE_FIREBASE_PROJECT_ID not found in frontend/.env.local — cannot align the emulator with the app.')
+  // D3 #40: real project id + real Auth — never started by accident.
+  assertRealAuthLauncherAllowed({ projectId, launcher: 'test:boq' })
 
   const firestorePort = Number(
     JSON.parse(readFileSync(resolve(FRONTEND, 'firebase.json'), 'utf8'))?.emulators?.firestore?.port ?? 8080,

@@ -1,0 +1,170 @@
+{
+  "description": "Phase 2 monitoring: every typed refusal code in frontend/functions/src/lib/errors.js, in exactly one class. The class decides whether a refusal can raise an alert. Pinned by frontend/tests/unit/phase2Monitoring.test.js against errors.js and against the filters of the policy and metric files in this folder. A code added to errors.js must be classified here before that suite passes.",
+  "classes": {
+    "baselineFailure": {
+      "alert": "phase2-baseline-failure.policy.json",
+      "meaning": "A project's historical baseline cannot be established or is not usable. Every operation of that family stays refused in that project until it is reviewed. Never an ordinary user error.",
+      "codes": [
+        "client-receipt-baseline-inconsistent",
+        "client-receipt-baseline-invalid",
+        "client-receipt-baseline-missing",
+        "client-receipt-baseline-too-large",
+        "supplier-finance-baseline-invalid"
+      ]
+    },
+    "financialInconsistency": {
+      "alert": "phase2-financial-inconsistency.policy.json",
+      "meaning": "Stored records, a ledger or an invariant do not reconcile, or a stored record is not shaped as Constrap writes one. The operation was refused and nothing was written; the data needs review. client-ledger-invariant is also raised when a requested posting or void would itself breach an invariant (the refusal log line does not say which).",
+      "codes": [
+        "client-entry-invalid",
+        "client-invoice-inconsistent",
+        "client-ledger-invariant",
+        "client-settlement-counter-invalid",
+        "estimate-inconsistent",
+        "supplier-finance-figures-inconsistent",
+        "supplier-finance-ledger-inconsistent",
+        "supplier-finance-unsupported-record",
+        "variation-figures-inconsistent",
+        "variation-unsupported-record"
+      ]
+    },
+    "contention": {
+      "alert": "phase2-contention-repeated.policy.json (threshold, not on a single refusal)",
+      "meaning": "Nothing was written because the same records were being changed at the same time (after the SDK's own retries, up to 5 attempts), or because a historical baseline or an estimate build was in progress, superseded or abandoned (supplier-finance-busy carries reason baseline-in-progress / baseline-superseded / baseline-source-changed, which is NOT in the log line). One is ordinary; a run of them is not.",
+      "codes": [
+        "boq-transfer-busy",
+        "client-finance-busy",
+        "estimate-build-superseded",
+        "estimate-busy",
+        "final-account-busy",
+        "supplier-finance-busy",
+        "variation-busy"
+      ]
+    },
+    "switchOff": {
+      "alert": "none - an emergency brake is off; HTTP 503, so it is ALSO counted by phase2-callable-server-failure.policy.json (see the README)",
+      "meaning": "A global switch is false. Expected from Stage B until Stage F, and whenever the Product Owner pulls a brake.",
+      "codes": [
+        "boq-transfer-disabled",
+        "client-finance-disabled",
+        "client-receipt-disabled",
+        "client-settlement-disabled",
+        "estimate-disabled",
+        "final-account-disabled",
+        "supplier-finance-disabled",
+        "variation-processing-disabled"
+      ]
+    },
+    "notActivated": {
+      "alert": "none",
+      "meaning": "The caller's company is not activated (commercialCompletionEnabled / clientFinanceEnabled). Expected for every inactive company: its Phase 2 registers are read-only.",
+      "codes": [
+        "client-finance-not-activated",
+        "commercial-completion-not-activated"
+      ]
+    },
+    "businessRefusal": {
+      "alert": "none",
+      "meaning": "An ordinary refusal: authentication, permission, validation, a stale review, a cap or limit, a dependency, approval segregation, an id conflict. The user is told what to do; nothing was written.",
+      "codes": [
+        "approval-segregation-required",
+        "boq-transfer-blocked",
+        "boq-transfer-estimate-drift",
+        "boq-transfer-estimate-invalid",
+        "boq-transfer-forbidden",
+        "boq-transfer-stale-review",
+        "boq-transfer-too-large",
+        "client-amount-out-of-range",
+        "client-entry-figures-changed",
+        "client-entry-not-draft",
+        "client-entry-not-found",
+        "client-entry-not-posted",
+        "client-finance-forbidden",
+        "client-invoice-has-money",
+        "client-invoice-mismatch",
+        "client-invoice-not-issued",
+        "client-receipt-future-dated",
+        "client-receipt-has-settlements",
+        "client-receipt-not-posted",
+        "client-receipt-over-allocated",
+        "client-receipts-depend-on-release",
+        "client-refunds-depend",
+        "client-settlement-funds-unavailable",
+        "client-settlement-id-conflict",
+        "client-settlement-invalid",
+        "client-settlement-mismatch",
+        "contract-value-invalid",
+        "contract-value-stale",
+        "estimate-building",
+        "estimate-forbidden",
+        "estimate-id-conflict",
+        "estimate-invalid",
+        "estimate-source-invalid",
+        "estimate-stale",
+        "final-account-figures-changed",
+        "final-account-not-draft",
+        "final-account-not-ready",
+        "final-account-stale",
+        "final-account-too-large",
+        "invalid-argument",
+        "membership-inactive",
+        "no-membership",
+        "not-approver",
+        "not-found",
+        "supplier-finance-already-invoiced",
+        "supplier-finance-cap-exceeded",
+        "supplier-finance-dependency",
+        "supplier-finance-figures-moved",
+        "supplier-finance-forbidden",
+        "supplier-finance-future-dated",
+        "supplier-finance-id-conflict",
+        "supplier-finance-invalid",
+        "supplier-finance-legacy-claim",
+        "supplier-finance-not-linked",
+        "supplier-finance-open-claim",
+        "supplier-finance-out-of-range",
+        "supplier-finance-stale",
+        "unauthenticated",
+        "variation-amount-out-of-range",
+        "variation-cost-code-invalid",
+        "variation-forbidden",
+        "variation-id-conflict",
+        "variation-invalid",
+        "variation-not-applicable",
+        "variation-not-draft",
+        "variation-not-submitted",
+        "variation-po-invalid",
+        "variation-rfi-invalid",
+        "variation-stale"
+      ]
+    },
+    "teamOnly": {
+      "alert": "none - not answered by any financial callable",
+      "meaning": "Team-management and operator codes (ADR-72 / ADR-84).",
+      "codes": [
+        "account-blocked",
+        "already-member",
+        "app-url-not-configured",
+        "email-mismatch",
+        "email-not-configured",
+        "invalid-assignment",
+        "invalid-invitation",
+        "invalid-role",
+        "invitation-accepted",
+        "invitation-busy",
+        "invitation-expired",
+        "invitation-locked",
+        "invitation-revoked",
+        "invite-pending",
+        "last-admin",
+        "member-of-other-company",
+        "not-admin",
+        "rate-limited",
+        "self-target",
+        "stale-expectation",
+        "team-management-disabled",
+        "unsupported-target"
+      ]
+    }
+  }
+}

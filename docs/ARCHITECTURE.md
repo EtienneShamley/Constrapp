@@ -135,6 +135,13 @@ needs an explicit architect decision, not a workaround.
 
 ## Trusted transaction boundary for complex commercial mutations (ADR-89)
 
+> **Release control (ADR-98).** Every Phase 2 trusted callable additionally
+> requires its caller's company to be activated
+> (`companies/{c}.commercialCompletionEnabled === true`, operator-written),
+> checked before any baseline and inside the operation's own transaction, below
+> the global switches. Rules-held approvals on editable drafts (purchase-order
+> send, tender award) use a Rules-maintained material-edit stamp (D4).
+
 **The rule.** A mutation is processed by a trusted callable — not by a client
 transaction validated in Security Rules — when it must (a) read data Rules
 cannot iterate or aggregate (arrays, sibling documents, registers), (b) hold a
@@ -165,15 +172,44 @@ The contracts are stable and client-agnostic: a mobile app or an integration
 calls the same functions. Today: `postClientCreditNote`,
 `voidClientCreditNote`, `postClientRetentionRelease`,
 `voidClientRetentionRelease`, `postClientReceipt`, `voidClientReceipt` (plus the earlier `approveFinalAccount`, ADR-77,
-and `transferBoqToBudget`, ADR-81).
+and `transferBoqToBudget`, ADR-81). **Implemented, not deployed (ADR-90 and its
+checkpoint correction, 27 November 2026):** `createVariation`,
+`updateVariationDraft`, `approveVariation`, `applyVariationCommitment` — the
+same shape, plus one rule the correction made explicit: **nothing stored is
+trusted when it is about to become authoritative** (an approval re-derives the
+submitted side and checks every cost-code relationship; an application does
+the same for the approved side). The same shape, with one difference in the input
+contract that follows from the document: a variation is authored, so a request
+carries the user's inputs (each line's ex-GST amount, tax code and cost code)
+and still never a derived figure, a number, a currency or a stamp.
 
-**Phase 2 architecture plan — next to move, in order (each its own decision
-and release; tracker D3 #37):** (1) `variations` create with an originating
-RFI; (2) claim-sourced `supplierInvoices` create; (3) `progressClaims` and the
+**Calculation version (ADR-91).** A supplier-side document records the policy
+its figures were calculated under (`calcVersion`: absent / 1 legacy, 2 exact),
+written once by the backend and immutable. Every preview, edit, certification
+and check recalculates under the document's own version
+(`src/lib/supplierCalc.js`); derived documents take their GST as an integer
+share of the source's stored figure. Variations are the first documents to
+carry it.
+
+**Phase 2 architecture plan (tracker D3 #37; ADR-92 D11 — the complete
+authority boundary of each, not only the measured branch).** (1) `variations`
+— **IMPLEMENTED, NOT DEPLOYED (ADR-90):** create, draft edit, approve and the
+legacy Apply are callables; Rules keep the read and submit / reject /
+withdraw. (2) and (3) are ONE unit, because they write each other in one
+commit — `progressClaims` create and approve, claim-sourced `supplierInvoices`
+create, existing-invoice linking, invoice cancellation and posting — not
+started (Phase 2 step 3). Then supplier settlement: credits, retention
+releases, payments and their voids (step 4). The payable-side rounding
+correction (D3 #35) is the calculation version of ADR-91 and rides with each.
+*As written before Phase 2:* (1) `variations` create with an originating RFI;
+(2) claim-sourced `supplierInvoices` create; (3) `progressClaims` and the
 claim-to-invoice pairing — the three paths within about 6–10% of the
-1,000-expression ceiling on allowed requests. The payable-side rounding
-correction (D3 #35) is carried in (2) and (3). Nothing else is migrated ahead
-of need; none of these was touched in Phase 1.
+1,000-expression ceiling on allowed requests; each its own decision and
+release.
+
+### Estimating on the trusted boundary (ADR-97)
+
+`estimateOperation` (build / approve / discard / setComponents) follows the ADR-89 rule: a build reads a register (the BOQ) and derives stored figures; an approval holds a cross-document invariant (header ↔ chunks). A revision too large for one transaction is built in four phases — a read-only snapshot transaction, a claim, run-fenced chunk transactions, a completion transaction — and only the completion makes it a reviewable draft; approval re-reads and re-verifies every chunk in one transaction. Bounds: ≤ 5,000 active BOQ items per project (refused by name above), chunks ≤ 250 lines and ≤ ~400 kB, ≤ 4 chunk writes per transaction; an approval reads ≤ 20 chunks in the ordinary case. Contention: one header per revision; builds of different revisions do not contend; the BOQ is read, never written.
 
 ## Capacity and load-test plan (ADR-89, Decision 8) — designed for, NOT yet measured
 
@@ -181,7 +217,7 @@ of need; none of these was touched in Phase 1.
 
 | Quantity | Limit | Budget | Now | Measured by |
 |---|---|---|---|---|
-| Rules source, each of the three files | 262,144 bytes | 245,000 | 236,800 (binding) | `tests/unit/rulesSize.test.js` and its two siblings |
+| Rules source, each of the three files | 262,144 bytes | 245,000 | 236,800 (binding) **in production**; **222,610 on the Phase 2 branch after ADR-90 and its correction** (`firestore.rules` 222,000), not deployed | `tests/unit/rulesSize.test.js` and its two siblings |
 | Rules compiled | 250 KB | — | **unmeasured** | The publish itself (release prerequisite) |
 | Expressions per request | 1,000 | allowed requests pass with ≥ 16 padding comparisons of 196 | three blocks at 16–30 (D3 #37) | `scripts/rules-expression-headroom.mjs` + the suite |
 | Document reads per finance transaction | 500 writes / transaction | a fixed set per call — about 5 reads + 3 writes; a receipt adds 2 reads + 1 write per allocated invoice (≤ 100); **no register is read** | as designed | Functions emulator suite (read counts asserted against a >5,000-receipt project) |

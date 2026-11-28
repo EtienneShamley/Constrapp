@@ -26,6 +26,9 @@ companies/{companyId}
     clientCreditNotes/{creditNoteId}      (ADR-87)
     clientRetentionReleases/{releaseId}   (ADR-88)
     clientReceipts/{receiptId}
+    clientReceiptLedgers/{receiptId}      (ADR-95 — server-only; applied / refunded per receipt)
+    clientRefunds/{refundId}              (ADR-95 — CRF-####, backend-written)
+    clientReceiptApplications/{applicationId} (ADR-95 — CRA-####, backend-written)
     supplierPayments/{paymentId}
     variations/{variationId}
     tenderPackages/{packageId}
@@ -1018,7 +1021,40 @@ receipt.
 | `ledgerSeq` | int | As on a credit note |
 | `currency`, `revision`, stamps | | As on a credit note |
 
+## …/projects/{projectId}/clientRefunds/{refundId} · clientReceiptApplications/{applicationId} · clientReceiptLedgers/{receiptId} (ADR-95, Phase 2 step 5)
+
+**Written only by the trusted backend** (Admin SDK) — Rules: financial-role
+read and `allow write: if false` for the two registers; NO Rules block (every
+client denied) for `clientReceiptLedgers`.
+
+`clientRefunds` — `docType: 'client_refund'`, `refundNumber` (CRF-#### from the
+server-only `counters/clientRefunds`), `status` (`posted` | `void`), `source`
+(`receipt` | `invoice`), `receiptId`/`receiptNumber` or
+`clientInvoiceId`/`invoiceNumber` (the other pair null), `clientId`,
+`clientName`, `currency` (all derived from the source document), `amount`
+(whole cents, > 0), `refundDate`, `method` (a payment method), `reference`
+(≤ 100), `reason` (≤ 500), `postedAt`/`postedBy`, `voidedAt`/`voidedBy`/
+`voidReason` (a void is a CORRECTION of an erroneous record), `createdAt`/
+`createdBy`/`updatedAt`/`updatedBy`. Ordered by `createdAt`.
+
+`clientReceiptApplications` — `docType: 'client_receipt_application'`,
+`applicationNumber` (CRA-#### from `counters/clientReceiptApplications`),
+`status`, `receiptId`/`receiptNumber`, `clientInvoiceId`/`invoiceNumber`,
+`clientId`, `clientName`, `currency`, `amount`, `applicationDate`, `notes`
+(≤ 1000), the same stamps. Moves no cash.
+
+`clientReceiptLedgers/{receiptId}` — `seq`, `appliedCents`, `refundedCents`
+(whole, non-negative cents), `lastEntryId`, `lastEntryKind`, stamps. Absent =
+zero (both facts are new). Available on a receipt = its posted unallocated
+amount − applied − refunded.
+
 ## …/projects/{projectId}/clientInvoiceLedgers/{invoiceId}
+
+**Phase 2 step 5 (ADR-95):** gains `refundedCents` (refunds out of the invoice's
+overpayment), written only once a refund has touched the invoice; an
+application adds to `receivedCents`. Kinds `application`, `application_void`,
+`refund`, `refund_void` join `lastEntryKind`. Money the invoice holds =
+`receivedCents − refundedCents`.
 
 **The document id is the client invoice id.** Running totals of everything
 posted against that invoice (ADR-87 / ADR-88), and — from the ADR-89 final
@@ -1298,6 +1334,32 @@ All canonical amounts are **ex-GST**; GST is derived per line from `taxCode`.
 Header totals derive from the line items (no flat header rate). Numbers come from
 `counters/variationsClient` (`CV-0001`) / `counters/variationsSupplier`
 (`SV-0001`), incremented in the same transaction as the write.
+
+**ADR-90 / ADR-91 (IMPLEMENTED — NOT DEPLOYED, 27 November 2026).** One additive
+key, and a change of writer:
+
+| Field | Type | Written by | Meaning |
+|---|---|---|---|
+| `calcVersion` | number, optional | the trusted backend, once, at create — never a client; no Rules branch admits it | The calculation policy of every figure on the document. **Absent, `null` or `1` = legacy** (`roundMoney(amount × 0.1)`, the figures every existing variation stores); **`2` = exact** (whole cents, half away from zero: 40.15 → 4.02, −40.15 → −4.02). Any other value is unknown and the document is refused by the backend. The variation is always recalculated under this version (lib/supplierCalc.js) |
+
+A variation is **created** by `createVariation`, its **draft edited** by
+`updateVariationDraft` (which stores the edited draft under `calcVersion: 2`,
+whatever it was before), **approved** by `approveVariation` and given its
+commitment stamp pairs by `approveVariation` or `applyVariationCommitment`
+(functions/src/variations/). `createdAt`, the `updatedAt` of an edit,
+`approvedAt`, `commitmentAppliedAt` and `scopeCommittedAt` are then server
+timestamps written by the backend. Only the content-free transitions —
+`submittedAt`, `rejectedAt`, `withdrawnAt` — are still client writes under
+Rules. A stored line has exactly nine keys (`costCodeId`, `costCodeName`,
+`description`, `submittedAmount`, `submittedGst`, `approvedAmount`,
+`approvedGst`, `poLineIndex`, `taxCode`); a variation whose lines deviate is
+refused at approval and at commitment application, never repaired.
+`counters/variationsClient` and `counters/variationsSupplier` are read and
+advanced only by the backend. No existing document is
+changed and no backfill is required: a legacy variation simply has no
+`calcVersion`. Each of the three operations writes one
+`companies/{c}/auditEvents` document (`variation.created`, `variation.approved`,
+`variation.commitment_applied`).
 
 **Lifecycle, immutability and stamps are RULES-ENFORCED since ADR-59 (M2-B3,
 live since 27 October 2026).** A variation is born `draft` with the exact key set below,
@@ -2464,6 +2526,49 @@ other document. Reads: financial roles. Size: a 1,000-row revision with
 170-character names was stored as one document in the emulator; the capture
 refuses above an estimated 900,000 bytes (the Firestore limit is 1 MiB) and
 never truncates. No index, no counter, no migration.
+
+## Server-only supplier-finance documents and new fields (ADR-93 / ADR-94 / ADR-96 — IMPLEMENTED, NOT DEPLOYED)
+
+| Path | Written by | Purpose |
+|---|---|---|
+| `…/projects/{p}/poClaimLedgers/{poId}` | backend only (no Rule) | `openClaimIds`, `approvedPoLineCents`, `approvedVariationLineCents`, `state` / `problem` / `problemKind`, `baseline` |
+| `…/projects/{p}/supplierInvoiceLedgers/{invoiceId}` | backend only | credited subtotal / GST and retained part, released retention / GST, `paidCents`, per (cost code \| tax code) `groups`, `seq`, `lastEntryId/Kind`, `state` / `problem`, `baseline` |
+| `…/projects/{p}/supplierFinanceState/baseline` | backend only | the one-time baseline marker. While a run is building: `state 'building'`, `runId`, `startedBy`, `startedAtMillis`, `leaseUntilMillis`, `attempt`. Once authoritative: `state 'complete'`, `version`, `runId`, `attempt`, `establishedAt/By`, `counts`, `sourceDigest` (sha256 over every register document's path and update time), `ledgerDigest` (sha256 over the ledger set). Only `complete` is authoritative (ADR-94 Decision 7) |
+| `…/projects/{p}/contractValueRevisions/{id}` | backend only; financial read | `kind 'correction'`, `status proposed/approved/withdrawn`, `fromValue`, `toValue`, `fromVersion`, `toVersion`, `reason`, `confirmsNotAVariation`, proposed / approved / withdrawn stamps |
+| `…/projects/{p}/commercial/contractValueState` | backend only | `pendingRevisionId` (one open proposal) |
+| `companies/{c}/approvalPolicy/current` | operator tool only; member read | `segregationEnabled`, `version`, `changedAt/By`, `reason`, `previous` |
+
+New fields: `calcVersion` (claims, supplier invoices, credit notes, releases —
+2 for backend-written documents; absent = legacy) and `sourceCalcVersion`
+(derived documents); on `companies/{c}`: `commercialCompletionEnabled`
+(operator-written Phase 2 activation, ADR-98); on purchase orders and tender
+packages: `lastMaterialEditBy` / `lastMaterialEditAt` (Rules-maintained:
+stamped at create and by a material draft edit, untouched by any other write —
+ADR-98, D3 #46); `lastMaterialEditBy` (backend-written: the creator, then
+the user of the last draft edit that changed anything but the type's
+non-financial text fields — the D4 exclusion) and `draftEditors` (every uid
+that created or saved a draft, bounded at 50 — audit provenance only) on a
+claim, invoice, credit note, release, payment or variation; on a supplier
+invoice ledger `malformedEntryIds` / `malformedOverflow` (malformed posted
+historical entries that keep it inconsistent until voided);
+`retentionAmount` / `retentionGst` on a supplier credit note (its retained part,
+ADR-94 G1; zero on every earlier credit); on the commercial baseline
+`originalContractValueVersion`, `originalContractValueRevisedAt/By`,
+`originalContractValueRevisionId`.
+
+## Estimates (ADR-97 — IMPLEMENTED, NOT DEPLOYED)
+
+Written ONLY by the trusted `estimateOperation` callable; Rules let the financial roles read the first three and no client write any.
+
+**`…/projects/{p}/estimates/{estimateId}`** — one estimate REVISION (header). `state` `building | draft | approved | discarded`; `revision` (int, the optimistic-concurrency guard: 0 while the first build has not completed); `revisionNumber` (int) and `number` (`EST-0001`); the authored settings `title`, `notes`, `pricingPolicy` (`markup_on_cost | margin_on_sell`), `pricingBps`, `overheadMode` / `contingencyMode` (`none | cost_coded | percentage`), `overheadBps`, `contingencyBps`, `costCodeClasses` ([{ costCodeId, costClass: preliminaries | overhead | contingency }], sorted); `currency`; `totals` (whole cents: `directCents`, `preliminariesCents`, `constructionCents`, `overheadCents`, `contingencyCents`, `costTotalCents`, `sellCents`, `grossProfitCents`, `labourCents`, `materialCents`, `plantCents`, `subcontractorCents`, `unanalysedCents`, `boqTotalCents`); `lineCount`, `chunkCount`, `chunkHighWater`; `sourceKey` (`est1:` + 32 hex — the active BOQ items read); `contentSha256`; `sourceReadAt`; `runId`, `runBy`, `runStartedAt` (the build fence and lease); `calcVersion` 1; `createRequestKey`, `requestKey`; `createdAt/By`, `updatedAt/By`, `draftEditors`, `lastMaterialEditBy`; `approvedAt/By`; `discardedAt/By`, `discardReason`.
+
+**`…/estimates/{estimateId}/lines/{nnnnn}`** — a CHUNK: `index`, `count`, `runId` (must equal the header's), `lines` (≤ 250 and ≤ ~400 kB): each `{ itemId, itemNumber, section, description (≤ 1,000), unit, quantity, rate, amountCents, currency, costCodeId, costCodeName, costClass, components: { labour, material, plant, subcontractor } | null }`, in item-id order.
+
+**`…/projects/{p}/estimateItemInputs/{boqItemId}`** — the optional rate breakdown of one BOQ item: `components` (four non-negative rates, ≤ 4 decimals, summing exactly to the unit rate when saved), `rate` (the unit rate it was checked against), `updatedAt/By`. Input to the next build; never a cost.
+
+**`…/projects/{p}/estimateState/current`** — server-only (no Rule): `nextRevisionNumber`, `approvedEstimateId`, `approvedRevisionNumber`.
+
+**Budget lines (ADR-81) — new optional field.** `boqSource.latest.estimate` `{ estimateId, revisionNumber, number, sourceKey, contentSha256 }` — present ONLY on a transfer the callable verified against an approved estimate revision whose source key equals the live BOQ's.
 
 ## Planned Commercial Entities (not yet modelled)
 

@@ -135,6 +135,15 @@ export const isCreditableInvoice = (inv) =>
 export const creditableSupplierInvoices = (invoices) =>
   (invoices ?? []).filter(isCreditableInvoice)
 
+// ADR-94 (G1): crediting a retained invoice is supported. The credit takes
+// the same fraction of the retention still held as it takes of the amount
+// still billed; that part releases retention, the rest reduces what is payable.
+export const RETAINED_CREDIT_TEXT =
+  'A credit on an invoice with retention withheld takes its share of the retention still held: that part ' +
+  'reduces retention held, the rest reduces what is payable. GST on a credit is the matching share of the ' +
+  'GST the invoice stores, never a fresh 10%.'
+
+// Retained for documents and messages written before ADR-94.
 export const RETAINED_INVOICE_BLOCK_TEXT =
   'Invoices with retention withheld cannot receive a credit note in this foundation — crediting a retained ' +
   'invoice is ambiguous: it is unclear whether the credit reduces the payable slice or the retained slice. ' +
@@ -209,7 +218,11 @@ export function creditTargetException(creditNote, invoiceById) {
   // invoice tampered with before ADR-40 and, more importantly, because rules
   // never verified the target's LINE data (Deferred Control 25) — the read-time
   // gate is what keeps a broken target out of every figure.
-  if (toCents(safeAmount(inv.retentionTotal)) !== 0) {
+  // ADR-94 (G1): a credit note written by the trusted backend (calcVersion
+  // 2) may credit a RETAINED invoice — it then carries its retained share
+  // (retentionAmount / retentionGst). A legacy credit note never could.
+  const backendCredit = creditNote?.calcVersion === 2
+  if (!backendCredit && toCents(safeAmount(inv.retentionTotal)) !== 0) {
     return `${inv.invoiceNumber} now withholds retention (${roundMoney(safeAmount(inv.retentionTotal)).toFixed(2)}) — a retained invoice cannot carry a credit note in this foundation.`
   }
 
@@ -232,7 +245,12 @@ export function creditTargetException(creditNote, invoiceById) {
     if (!TAX_CODES.includes(li?.taxCode)) {
       return `Line ${i + 1} carries an unknown tax code, so its GST cannot be verified.`
     }
-    if (toCents(safeAmount(li.gstAmount)) !== toCents(gstForLine(amount, li.taxCode))) {
+    // A legacy credit's GST was 10% of its amount. A backend credit's GST is a
+    // share of the invoice's STORED GST on that cost code (ADR-91 Decision 4,
+    // ADR-94) — never more than the line, and none on a line without GST.
+    if (backendCredit
+      ? (toCents(safeAmount(li.gstAmount)) < 0 || (li.taxCode !== 'gst' && toCents(safeAmount(li.gstAmount)) !== 0) || toCents(safeAmount(li.gstAmount)) > toCents(amount))
+      : toCents(safeAmount(li.gstAmount)) !== toCents(gstForLine(amount, li.taxCode))) {
       return `Line ${i + 1}'s stored GST does not match its ex-GST amount and tax code.`
     }
     if (!li.costCodeId || !targetCostCodeIds.has(li.costCodeId)) {
@@ -252,11 +270,23 @@ export function creditTargetException(creditNote, invoiceById) {
 
   // Checked LAST, once grossTotal is known to reflect the lines — otherwise the
   // cap would be measured against an unverified number.
-  if (toCents(safeAmount(creditNote.grossTotal)) > toCents(safeAmount(inv.payableTotal))) {
+  const retainedPart = creditRetentionCents(creditNote)
+  if (retainedPart.ex < 0 || retainedPart.gst < 0 || retainedPart.ex + retainedPart.gst > toCents(safeAmount(creditNote.grossTotal))
+    || retainedPart.ex > toCents(safeAmount(inv.retention)) || retainedPart.gst > toCents(safeAmount(inv.retentionGst))) {
+    return `The credit note's retained part does not fit within its own total and ${inv.invoiceNumber}'s retention.`
+  }
+  if (toCents(safeAmount(creditNote.grossTotal)) - retainedPart.ex - retainedPart.gst > toCents(safeAmount(inv.payableTotal))) {
     return `The credit note gross (${roundMoney(safeAmount(creditNote.grossTotal)).toFixed(2)}) exceeds ${inv.invoiceNumber}'s payable total (${roundMoney(safeAmount(inv.payableTotal)).toFixed(2)}).`
   }
   return null
 }
+
+// The retained part of a credit note in whole cents (zero on every legacy
+// credit note, which could not target a retained invoice).
+export const creditRetentionCents = (creditNote) => ({
+  ex: toCents(safeAmount(creditNote?.retentionAmount)),
+  gst: toCents(safeAmount(creditNote?.retentionGst)),
+})
 
 const invoicesById = (invoices) => new Map((invoices ?? []).map(inv => [inv.id, inv]))
 
@@ -266,16 +296,37 @@ export const isCountingCreditNote = (creditNote, invoiceById) =>
 
 // ── Read-time derivations (never stored) ─────────────────────────────────────
 
-// { supplierInvoiceId: Σ grossTotal } across POSTED, valid-target credit notes.
+// { supplierInvoiceId: Σ (grossTotal − retained part) } across POSTED,
+// valid-target credit notes — what the credits took off the PAYABLE side.
 // Feeds Remaining Payable (payableTotal − paid − credited) in
 // lib/supplierPayments.js, and through it AP ageing, the payment allocation
-// picker, and Forecast Cash Out.
+// picker, and Forecast Cash Out. On a retained invoice (ADR-94, G1) the
+// retained part of a credit reduces retention HELD instead
+// (creditedRetentionByInvoice); on every other credit it is zero, so the
+// figure is unchanged from before.
 export function creditedByInvoice(creditNotes, invoices) {
   const byId = invoicesById(invoices)
   const map = {}
   for (const cn of postedSupplierCreditNotes(creditNotes)) {
     if (creditTargetException(cn, byId) !== null) continue
-    map[cn.supplierInvoiceId] = roundMoney((map[cn.supplierInvoiceId] || 0) + safeAmount(cn.grossTotal))
+    const r = creditRetentionCents(cn)
+    map[cn.supplierInvoiceId] = roundMoney((map[cn.supplierInvoiceId] || 0) + safeAmount(cn.grossTotal) - (r.ex + r.gst) / 100)
+  }
+  return map
+}
+
+// { supplierInvoiceId: { exGst, gross } } — the retained part of POSTED,
+// valid-target credit notes: retention no longer held because the work it
+// secured was credited (ADR-94, G1). Subtracted from retention held.
+export function creditedRetentionByInvoice(creditNotes, invoices) {
+  const byId = invoicesById(invoices)
+  const map = {}
+  for (const cn of postedSupplierCreditNotes(creditNotes)) {
+    if (creditTargetException(cn, byId) !== null) continue
+    const r = creditRetentionCents(cn)
+    if (r.ex === 0 && r.gst === 0) continue
+    const prev = map[cn.supplierInvoiceId] ?? { exGst: 0, gross: 0 }
+    map[cn.supplierInvoiceId] = { exGst: roundMoney(prev.exGst + r.ex / 100), gross: roundMoney(prev.gross + (r.ex + r.gst) / 100) }
   }
   return map
 }

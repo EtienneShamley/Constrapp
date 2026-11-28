@@ -24,7 +24,7 @@ export const PORTFOLIO_PROJECT_CONCURRENCY = 3
 
 const CREATED_DESC = ['createdAt', 'desc']
 
-// The thirteen registers, each read once per project.
+// The fifteen registers, each read once per project.
 export const PORTFOLIO_LIST_SOURCES = [
   { source: 'budgetLines',         collection: 'budgetLines',         orderBy: CREATED_DESC, hook: 'useBudgetLines.jsx' },
   { source: 'purchaseOrders',      collection: 'purchaseOrders',      orderBy: CREATED_DESC, hook: 'usePurchaseOrders.jsx' },
@@ -43,6 +43,9 @@ export const PORTFOLIO_LIST_SOURCES = [
   // would overstate receivables wherever a credit or held retention exists.
   { source: 'clientCreditNotes',       collection: 'clientCreditNotes',       orderBy: CREATED_DESC, hook: 'useClientCreditNotes.jsx' },
   { source: 'clientRetentionReleases', collection: 'clientRetentionReleases', orderBy: CREATED_DESC, hook: 'useClientRetentionReleases.jsx' },
+  // Phase 2 step 5: net cash and what each invoice holds (refunds, applications).
+  { source: 'clientRefunds',             collection: 'clientRefunds',             orderBy: CREATED_DESC, hook: 'useClientRefunds.jsx' },
+  { source: 'clientReceiptApplications', collection: 'clientReceiptApplications', orderBy: CREATED_DESC, hook: 'useClientReceiptApplications.jsx' },
 ]
 
 // The single documents, as path segments below the project document.
@@ -188,7 +191,7 @@ export function failedProjectResult() {
 // The reads ONE project costs: the fixed part, and the conditional part of the
 // approved budget. Documented from this plan, not estimated.
 export const PORTFOLIO_READS_PER_PROJECT = {
-  // 13 registers + the commercial baseline + the approved-budget pointer.
+  // 15 registers + the commercial baseline + the approved-budget pointer.
   min: PORTFOLIO_LIST_SOURCES.length + 2,
   // + active header + active snapshot + original snapshot + adjustments.
   max: PORTFOLIO_LIST_SOURCES.length + 2 + 4,

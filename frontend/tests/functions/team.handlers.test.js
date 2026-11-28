@@ -728,6 +728,6 @@ describe('kill switch', () => {
     await expectTeamError(H.listTeam(req('u_admin')), CODE.DISABLED)
     await expectTeamError(H.createInvitation(req('u_admin', { email: 'x@acme.test', role: 'qs' })), CODE.DISABLED)
     expect((await A.db.collection('companies').doc(COMPANY_A).collection('invitations').get()).empty).toBe(true)
-    expect(PROJECT_ID).toBe('constrapp-rules-test')
+    expect(PROJECT_ID).toBe('demo-constrap-test')
   })
 })

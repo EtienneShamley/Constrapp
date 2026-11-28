@@ -1,0 +1,43 @@
+{
+  "displayName": "Phase 2 financial callables: repeated contention refusals",
+  "combiner": "OR",
+  "enabled": true,
+  "severity": "WARNING",
+  "userLabels": {
+    "programme": "phase2",
+    "component": "financial-callables",
+    "policy": "contention-repeated"
+  },
+  "conditions": [
+    {
+      "displayName": "More than 3 busy / superseded refusals from one service in 10 minutes",
+      "conditionThreshold": {
+        "filter": "metric.type=\"logging.googleapis.com/user/phase2_contention_refusals\" AND resource.type=\"cloud_run_revision\" AND resource.labels.location=\"australia-southeast1\"",
+        "aggregations": [
+          {
+            "alignmentPeriod": "600s",
+            "perSeriesAligner": "ALIGN_DELTA",
+            "crossSeriesReducer": "REDUCE_SUM",
+            "groupByFields": [
+              "resource.labels.service_name"
+            ]
+          }
+        ],
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 3,
+        "duration": "0s",
+        "trigger": {
+          "count": 1
+        }
+      }
+    }
+  ],
+  "alertStrategy": {
+    "autoClose": "3600s"
+  },
+  "documentation": {
+    "mimeType": "text/markdown",
+    "subject": "Phase 2: repeated \"busy\" refusals from one callable",
+    "content": "## What this means\n\nMore than three requests to one service were refused in ten minutes with `…-busy` or `estimate-build-superseded`. Each means nothing was written. One is ordinary (two people saving the same record); a run of them means either sustained contention on one record (an invoice ledger, a PO claim ledger, a counter), a client retrying in a loop, or an initialisation that keeps being abandoned.\n\n`supplier-finance-busy` has four causes and **the refusal log line does not say which** (its `reason` is not logged):\n\n- contention after the SDK's retries — preceded by a WARNING line `supplier-finance request aborted by contention` with `attempts`;\n- `baseline-in-progress` — another request holds the project's baseline lease (at most 150 s);\n- `baseline-superseded` — this run lost its lease to a newer run;\n- `baseline-source-changed` — a register changed during the run; the run was abandoned.\n\nThe same WARNING line exists for variations, client finance, the BOQ transfer and the Final Account; estimating writes none.\n\n## Do this\n\n1. Logs Explorer (read only), the service from the incident: `jsonPayload.code=~\"busy|superseded\" OR jsonPayload.message:\"aborted by contention\"`. Group by `uid` and time.\n2. One `uid` repeating every few seconds: a client loop or misuse. Ask the user to reload; if it continues, the brake for that family, or deactivating the company, stops it (a brake reverses nothing).\n3. Many users, one project, no contention WARNING lines: a baseline that cannot complete. Run `node ops/recovery/phase2-inventory.mjs --project constrapp-69b5d --company <companyId>` (read only): `serverState.supplierBaselineMarker` = `building-expired` or `building-in-lease`, and `supplierBaselinePreview`. A baseline abandoned by `baseline-source-changed` again and again means a register is still being written while it runs: find the writer before anything else.\n4. `estimate-build-superseded`: two builds of one revision raced; the inventory lists estimates left `building` past their 180 s lease.\n\nNever paste a log entry, an amount, a customer name or a token into a ticket or chat: give the service, the time, the project and document ids, and the code.\n\nRunbook: `ops/monitoring/phase2/README.md`. Cutover and recovery: `docs/DEPLOYMENT.md`, section *Phase 2 — the complete cutover*."
+  }
+}

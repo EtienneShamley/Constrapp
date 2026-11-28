@@ -8,8 +8,9 @@ import { useAuth } from './useAuth'
 import { useCompany } from './useCompany'
 import {
   TENDER_COUNTER_ID, TENDER_STATUS, formatTenderNumber,
-  canTenderTransition, validateTenderPackageDraft, awardBlockedReason,
+  canTenderTransition, validateTenderPackageDraft, awardBlockedReason, TENDER_MATERIAL_KEYS,
 } from '../lib/tenders'
+import { materialEditStamp } from '../lib/purchaseOrders'
 
 // ── Tender Packages ───────────────────────────────────────────────────────────
 //
@@ -133,6 +134,9 @@ export function useTenderPackages(projectId) {
         createdBy: user.uid,
         updatedAt: serverTimestamp(),
         updatedBy: user.uid,
+        // D4 material-edit provenance (D3 #46), required by the Rules at create.
+        lastMaterialEditBy: user.uid,
+        lastMaterialEditAt: serverTimestamp(),
       })
     })
     return packageRef.id
@@ -151,7 +155,7 @@ export function useTenderPackages(projectId) {
     if (validationError) throw new Error(validationError)
 
     const ref = doc(db, 'companies', companyId, 'projects', projectId, 'tenderPackages', pkg.id)
-    await updateDoc(ref, {
+    const next = {
       name:        (name || '').trim(),
       description: (description || '').trim(),
       scope:       (scope || '').trim(),
@@ -161,6 +165,12 @@ export function useTenderPackages(projectId) {
       })),
       closingDate: closingDate || '',
       notes:       (notes || '').trim(),
+    }
+    await updateDoc(ref, {
+      ...next,
+      // D3 #46: a change to the package's scope stamps its editor; notes and
+      // the closing date are cosmetic and leave the stamp as it was.
+      ...materialEditStamp(pkg, next, TENDER_MATERIAL_KEYS, user.uid, serverTimestamp()),
       updatedAt:   serverTimestamp(),
       updatedBy:   user.uid,
     })

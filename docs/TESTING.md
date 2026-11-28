@@ -47,7 +47,7 @@ npm run test:rules
 ```
 
 That script runs
-`firebase emulators:exec --only firestore,storage --project constrapp-rules-test "vitest run --config vitest.rules.config.js"`.
+`node scripts/emulators-isolated.mjs firestore,storage "vitest run --config vitest.rules.config.js"` — since 27 November 2026 the suites run only through this isolating launcher, under the demo project `demo-constrap-test` (tracker D3 #17; §84.2). A direct `firebase emulators:exec … vitest` is refused by the suite guard. A focused run names its files after `--`: `npm run test:rules -- tests/rules/variations.rules.test.js`. *(As written: `firebase emulators:exec --only firestore,storage --project constrapp-rules-test "vitest run --config vitest.rules.config.js"`.)*
 
 - **Requires JDK 21+.** Since ADR-72 `firebase-tools` is `^15` (the v13
   Functions emulator cannot load `firebase-functions` v7), and v15 refuses a
@@ -12503,3 +12503,919 @@ Final Account CSV; the external-role checks of §44 step 3a; the role matrix
 and the not-activated refusal in production; Dashboard §22 checks 2–3; an
 input-taxed line; console capture began late in the H session (no error
 shown in the interface).
+
+## 83. Phase 2 — first integration checkpoint: steps 0, 1 and 2 (ADR-90, ADR-91, ADR-92) — 27 November 2026
+
+**Evidence class: LOCAL (unit) and EMULATOR (Rules, Functions) only.** Branch
+`feature/commercial-completion-phase-2` from `main` `dfe3618` (tree
+`a3514a50`), uncommitted. Nothing deployed; production not read or written; no
+local browser session was run for this checkpoint (83.10).
+
+### 83.1 Suites (run on this branch at the checkpoint)
+
+| Suite | Baseline (`dfe3618`) | Checkpoint | Runtime |
+|---|---|---|---|
+| Unit | 116 files / 6,085 | **120 / 6,157** | Node 24.19.0 |
+| Firestore Rules (emulator) | 40 / 2,632 | **40 / 2,638** | Node 24.19.0 |
+| Functions pure (predeploy chain) | 9 / 256 | **10 / 273** | **Node 22.23.2** |
+| Functions emulator | 14 / 623 | **15 / 674** | **Node 22.23.2** (`Using node@22 from host`) |
+| Total | 9,596 | **9,742** | |
+
+Lint (frontend and functions) 0 errors / 0 warnings; `npm run build` passes;
+the four generated-bundle checks and the transitional-rules check pass. No
+existing test was deleted or skipped.
+
+### 83.2 Calculation results (ADR-91) — independent integer oracle
+
+`tests/unit/supplierCalc.test.js`. The oracle generates every input from an
+integer and computes expectations with BigInt quotient and remainder; it does
+not import the module, parse a double or use floating point.
+
+| Check | Range | Result |
+|---|---|---|
+| Legacy (v1) = `roundMoney(x × 0.1)` = both existing supplier `gstForLine` functions | every cent −2,000.00 … 2,000.00 (400,001 values) | identical |
+| Exact (v2) GST = oracle | same range, plus 40,000 amounts to ±999,999,999,999.99 | identical |
+| Amount → cents, half away from zero = oracle | every thousandth −3,000.000 … 3,000.000 (6,000,001 values); 40,000 ten-thousandths | identical |
+| Quantity × rate, exact before rounding = oracle | 40,000 products (thousandths × ten-thousandths, both signs) | identical |
+
+Named values: 40.15 → v1 **4.01**, v2 **4.02**; −40.15 → v1 **−4.01**, v2
+**−4.02**; 4.015 → v1 4.01 (binary value), v2 **4.02**; −4.015 → v2 **−4.02**;
+3 × 33.335 → 100.01; 1.005 × 1000 → 1,005.00.
+
+**Where the policies differ (measured, 0.00 … 20,000.00):** positive amounts —
+3,271 of 200,000 half-cent boundaries, legacy exactly one cent lower, never
+higher, never off a boundary; **negative amounts — 135,768 of 200,000
+boundaries**, legacy one cent toward zero. The legacy expression is not
+sign-symmetric.
+
+### 83.3 Legacy compatibility
+
+- Every pre-existing unit test of `lib/variations.js`, `variationCommitment`,
+  `newScopeClaims`, `shield`, `forecast`, `margin`, `finalAccount` and the
+  reports passes unchanged (the version parameter defaults to legacy).
+- The `purchaseOrders` header, both supplier `gstForLine` functions and the
+  §44 expectations are unchanged (no PO, claim, invoice, credit-note or
+  release formula moved in this step).
+- Emulator: a legacy variation (no `calcVersion`) approved through
+  `approveVariation` stores 40.15 → **4.01**, −40.15 → **−4.01**, gains no
+  version, and keeps its submitted figures; the same amounts on a version-2
+  variation store **4.02 / −4.02**. A legacy document with no `revision` key
+  approves and applies at revision 0 → 1.
+- The Final Account, client-finance and BOQ-transfer emulator suites pass
+  unchanged with the regenerated bundles (623 of the 674).
+
+### 83.4 Variation lifecycle (Functions emulator, `tests/functions/variations.test.js`, 51 tests)
+
+Create (manual, PO-linked sent / closed / pre-Contacts, client; 200 lines;
+signed, zero and mixed-tax) — the exact stored document asserted, including
+number, currency, version 2 and server stamps · the currency lock in the same
+commit · refusal for a draft / cancelled / missing / other-project purchase
+order, a bad PO line, an unknown cost code, an ineligible or other-project RFI,
+a corrupt counter · browser draft edit (re-derived), submit, reject and withdraw
+of a backend-created variation under the real Rules · approve (certified lines,
+signed header, unbounded amounts, 899.999 → 900.00, notes trimmed and required
+when amounts differ, terminal afterwards) · approve-and-apply against a sent and
+a closed order, with the read-time commitment selectors giving the same result
+as before · refusal when the order is cancelled, draft, pending or deleted
+after the variation was raised · legacy Apply and scope-only Commit · the
+downstream figures (Commitment Exposure, Current Contract Sum input) unchanged.
+
+### 83.5 Security
+
+| Boundary | Result |
+|---|---|
+| Unauthenticated; no App Check token (through the deployed `onCall` over HTTP) | refused before the handler |
+| Subcontractor, client; unknown account; deactivated member | refused, nothing written |
+| Another tenant's project, purchase order, RFI, cost code | not found / refused; nothing written in either company |
+| A `companyId`, a figure, a number, a currency, a status, a stamp or a `calcVersion` in a request | whole request refused |
+| Membership removed while an approval is in flight | ordered against the transaction; never approved after removal |
+| Direct client create / approve / commitment stamps / `calcVersion` change, each financial role, real Rules | `permission-denied`; stored document unchanged |
+| Switch off | every operation refused before any read |
+| Unknown calculation version; malformed PO link; forged submitted side on a version-2 variation | refused (fail closed) |
+
+### 83.6 Concurrency and replays
+
+- Six concurrent creates → six documents, six distinct consecutive numbers,
+  counter advanced six times (all six landed in 5 of 5 runs).
+- The same create sent twice at once → one variation, one number, one audit event.
+- Two assessors approving at once with different amounts → exactly one lands.
+- An approval racing a browser withdrawal → one of the two, never both.
+- Two concurrent applies → one write, one audit event.
+- Replays (create, approve, apply) → `alreadyApplied`, no second write or event.
+- Forced contention: retried and landed once; contention on every attempt →
+  typed `variation-busy`, nothing written; a forced deadline error stays
+  untyped (uncertain), nothing written.
+
+### 83.7 Rules — size and changed expectations
+
+`firestore.rules` **236,120 → 226,099 bytes** (−10,021);
+`firestore.transitional.rules` 236,800 → **226,709** (binding; **18,291 under
+the 245,000 budget**); `firestore.m2a2-transitional.rules` 236,559 → 226,538.
+**Compiled size and the expression headroom of the remaining paths were NOT
+re-measured** (83.10).
+
+Changed expectations, all for one reason — a client can no longer create,
+approve or apply a variation:
+
+| File | Change |
+|---|---|
+| `tests/rules/variations.rules.test.js` (122 → 125 `it`; 143 runtime tests) | Every test whose subject was a client create, approve or legacy apply now asserts refusal for all three financial roles with nothing stored; its positive requirement is proven in `tests/functions/variations.test.js`. Tests of draft edit, submit, reject, withdraw, revision, tenancy and legacy documents keep their assertions, seeded with rules disabled. Six former "NOT enforced by rules" proofs (unrelated approved header, differing amounts with empty notes, self-approval at approve, duplicate references at create, bad PO line at apply, header unrelated to lines at create) became refusals; the draft-edit ceilings remain proven as accepted. New: `calcVersion` and the commitment keys are unwritable by any client |
+| `tests/rules/variationsTransitional.rules.test.js` (14 → 14) | Stage-1 approve / apply / create acceptances → refusals (the transitional file equals FINAL in `variations`); claims describe intact |
+| `tests/unit/rulesTransitional.test.js`, `externalProjectIsolation.test.js` | Four marked pairs → three; the retired pair's assertions replaced by "no client create, approve or apply; blocks byte-identical" |
+| `tests/unit/variationActions.test.js` (46 → 48) | Approve-by-transaction and apply-by-transaction tests → the call contract (request shape, pre-call refusals, typed / certain / uncertain outcomes); server decisions moved to the emulator suite |
+| `functions/test/clientFinance.test.js`, `tests/unit/finalAccountBundle.test.js`, `boqBudgetTransferBundle.test.js` | The pinned count of `onCall(` wrappers 4 → 5 (one new wrapper) |
+
+### 83.8 Runtime
+
+Production Functions are Node 22 (`firebase.json`). Both Functions suites were
+run under Node 22.23.2 through `npm run functions:test:node22` and
+`npm run test:functions:node22`, which refuse any other major version. The
+frontend runtime (Node 24.19.0, as Azure) is unchanged; Azure still runs the
+Functions emulator suite on Node 24.
+
+### 83.9 Credential isolation — PARTIAL
+
+**Verified.** The suites refuse to start unless the emulator hosts are set and
+loopback, the project id is the test id (never `constrapp-69b5d`) and no
+explicit credential file is configured (`tests/_emulatorGuard.js`, vitest
+`globalSetup`, pinned by `tests/unit/emulatorIsolation.test.js`). The harness
+no longer defaults the project id. No file under `functions/src`, the harness
+or the npm scripts names the production project. The emulator env files hold
+no secret and no bucket.
+
+**Not achieved.** The Functions emulator still reports *"Application Default
+Credentials detected"*. Observed directly: with gcloud's configuration hidden
+and `GOOGLE_APPLICATION_CREDENTIALS` unset the message remains, and it remains
+with a `demo-` project id — the emulator takes the operator's Firebase CLI
+sign-in. Removing it means signing the operator out, which was not done (the
+Product Owner's credentials are not to be deleted). What protects production
+is therefore project and host isolation, not the absence of credentials: a call
+to a non-emulated service would carry real credentials but be addressed to
+`constrapp-rules-test`. The suites call no non-emulated service. **Tracker D3
+#17 stays OPEN.** A `demo-` project id (which makes the CLI refuse non-emulated
+access by design) was verified to start but needs the env file and about sixty
+references renamed, including the Product Owner's local permission allowlist —
+proposed as a separate small change, not made here.
+
+### 83.10 Not done — do not read as passed
+
+- No local browser acceptance of the variations page (editor, assess dialog,
+  error messages for uncertain outcomes).
+- No production evidence of any kind.
+- Compiled Rules size; expression headroom after the change
+  (`scripts/rules-expression-headroom.mjs` not re-run).
+- Load or cost measurement of the three callables.
+- SHIELD's supplier-invoice integrity wording and the four ADR-86 comparisons
+  (steps 3–4).
+- Tender-bid Rules line-by-line review (required before steps 6–7, not this
+  step). The previously unread ROADMAP sections were read: no conflict with
+  ADR-92 found.
+
+## 84. Phase 2 — first integration checkpoint, CORRECTIONS (ADR-90 / ADR-91 correction) — 28 November 2026
+
+Branch `feature/commercial-completion-phase-2`, uncommitted, base `dfe3618`.
+**Nothing here is production evidence.** Evidence classes used below: LOCAL
+(unit / static), EMULATOR (isolated local emulators), LOCAL BROWSER (Chrome
+against Vite on 127.0.0.1 and the isolated emulators, synthetic fixture).
+
+### 84.1 Suites (run after every correction, 28 November 2026)
+
+| Suite | Result | Runtime |
+|---|---|---|
+| Unit (`npm run test`) | 120 files / **6,182** passed | Node 24.19.0 |
+| Rules (`npm run test:rules`) | 40 files / **2,650** passed | Node 24.19.0, Java 26, isolated launcher |
+| Functions pure (`npm run functions:test:node22`) | 10 files / **276** passed | Node 22.23.2 |
+| Functions emulator (`npm run test:functions:node22`) | 16 files / **701** passed | Node 22.23.2 (`functions: Using node@22 from host`), isolated launcher |
+| Total | **9,809** | |
+| Lint (frontend, Functions) | clean, zero warnings | |
+| Build (`npm run build`) | succeeds (existing chunk-size advisory only) | |
+| Generated bundles (four `--check`) and `rules:transitional:check` | up to date | |
+
+No test is skipped, deleted or `.only`. After the last two UI fixes (§84.4)
+the unit suite, lint, build and the variation + isolation emulator suites
+(78 tests) were run again and pass.
+
+### 84.2 Credential isolation (tracker D3 #17) — LOCAL / EMULATOR
+
+- **Mechanism read in firebase-tools** (`lib/emulator/env.js`): the Functions
+  runtime receives credentials found through the CLI process's environment —
+  a credential variable, the gcloud file under `$HOME/.config`, or the CLI's
+  own sign-in under `$XDG_CONFIG_HOME`, which the CLI converts to a credential
+  file. Renaming the project to a `demo-` id alone was tested and changes
+  none of this; `CLOUDSDK_CONFIG` alone does not hide the gcloud file.
+- **Negative tests, none of which touches a real resource:**
+  `tests/unit/emulatorIsolation.test.js` (21) — planted FAKE credential files
+  and variables are refused; a production or non-`demo-` project id, a
+  non-loopback host, a missing launcher marker, a home that is the real home
+  are each refused. `tests/functions/isolation.test.js` — inside the running
+  emulator, google-auth-library finds no default credentials and the Admin
+  SDK cannot mint an access token, while emulator reads and writes succeed.
+- **Observed:** the CLI's "Application Default Credentials detected" notice no
+  longer appears; `firebase login:list` run in the isolated environment
+  reports no authorised account; the suite banner reads
+  `project demo-constrap-test · isolated home`.
+- **Not proven:** behaviour of a future firebase-tools version (the guard
+  fails closed if a credential becomes discoverable); the three older dev
+  launchers (D3 #40). Azure CI is unchanged in what it runs and uses the same
+  scripts.
+
+### 84.3 Legacy variation integrity and numbering — EMULATOR
+
+`tests/functions/variations.test.js` (73 tests; 51 at the first checkpoint, 1
+rewritten, 22 added) and `tests/unit/variationProcessing.test.js` (45):
+
+| Case | Result |
+|---|---|
+| Legitimate legacy submitted variation | approved; GST 4.01 kept (not recalculated to 4.02); no `calcVersion` written |
+| Forged legacy line amount (third decimal, string, out of range, null) | refused `variation-figures-inconsistent` / `line-amount`; document byte-identical |
+| Forged legacy GST (unrelated, on a GST-free line, zero on a taxable line) | refused / `line-gst` |
+| Forged header satisfying the old Rules (subtotal + GST = total) | refused / `header` |
+| Forged cost code (missing, other tenant), PO line without an order, PO line with another cost code, index naming no line | refused / `cost-code-missing`, `po-line-without-order`, `po-line-cost-code`, `po-line-missing` |
+| Forged line shape (junk element, extra key, missing key, bad tax code, planted approved value) | refused |
+| Forged calculation version (legacy relabelled 2, unknown 7, one legacy-figure line in a version-2 document; client write of `calcVersion`) | refused (the last by Rules) |
+| Legacy draft with forged content, then edited | saved as version 2, fully re-derived, forged content gone; then approved exactly |
+| Forged cost-code name on a real cost code | approval stores the authoritative name |
+| Stale submitted revision | refused `variation-stale` before assessment |
+| Existing approved legacy variation, legitimate | applied; figures and lines unchanged, stamps only |
+| Existing approved legacy variation, forged (8 forms) | commitment refused; document unchanged; no audit event |
+| Downstream | after every refusal the PO-line adjustment, committed new scope and cost-code totals equal those of the legitimate variations only |
+| Counters | 0, negative, fractional, null, 1,000,000,000 and `MAX_SAFE_INTEGER` refused (`variation-unsupported-record`); one register's counter never affects the other; every financial role is refused read and write of both counters by Rules; six concurrent creates receive six distinct consecutive numbers (first-checkpoint test, unchanged) |
+
+### 84.4 Local browser acceptance — LOCAL BROWSER
+
+`npm run test:team` (isolated emulators + Vite on 127.0.0.1:5173) and
+`node scripts/seed-variations-emulator.mjs` (synthetic company, four users,
+one project, a sent and a cancelled PO, an open and a draft RFI, five legacy
+variations). Stored documents were read back from the emulator and compared
+with an INDEPENDENT calculation (integer thousandths, half away from zero —
+not the application's functions).
+
+| Step | Observed | Independent check |
+|---|---|---|
+| QS creates a PO-linked, RFI-originated supplier variation: PO line 40.15 GST, new scope 250.55 GST, new scope −12.00 GST-free | SV-0001 draft; the cancelled PO and the draft RFI are not offered | stored 278.70 / 29.08 / 307.78; line GST 4.02, 25.06, 0 — equal |
+| QS opens legacy draft SV-0901 | notice that saving recalculates exactly; preview 40.15 / 4.02 / 44.17 against stored 4.01 | exact GST of 40.15 = 4.02 |
+| Save, submit | stored `calcVersion` 2, 4.02 | equal |
+| Approve forged-header SV-0903 | refused with the reconcile message; nothing changed; then Rejected | — |
+| Approve forged-cost-code SV-0904 | refused, same message; then Withdrawn | — |
+| Approve legitimate legacy SV-0902 with a DOUBLE click | one approval (revision +1, one audit event); legacy notice shown | stored 40.15 / 4.01 — legacy kept |
+| Approve SV-0901 at 30.05 without notes, then with | notes required; then approved 30.05 / 3.01 / 33.06 | exact GST of 30.05 = 3.01 |
+| Approve SV-0001 | confirmation names 290.70 applied including 250.55 new scope; approved, applied and scope committed in one action | 40.15 + 250.55 = 290.70; −12.00 stays exposure |
+| Apply legacy approved SV-0905 | applied; figures unchanged (4.01 kept) | — |
+| Variations summary | approved 639; applied 80; unapplied 58 | 278.70 + 40.15 + 30.05 + 290.15 = 639.05; 40.15 × 2 = 80.30; 40.15 + 30.05 − 12.00 = 58.20 |
+| Budget tab | Committed 3,981; new scope 501; exposure 4,039; Concrete 2,580; Preliminaries 501; Steel 900 + 58 unapplied | 3,400 + 80.30 + 500.55 = 3,980.85; + 58.20 = 4,039.05; 2,500 + 80.30 |
+| Purchase order document | unchanged (subtotal 3,400, revision 1) | — |
+| Audit events | 1 created, 3 approved, 1 commitment applied | matches the actions |
+| PM creates a client variation, −80.25 GST | CV-0001 −80.25 / −8.03 / −88.28 | exact GST of −80.25 = −8.03 |
+| Subcontractor | no Variations tab; by direct URL every read is refused and no data is shown (D3 #43) | — |
+| Two tabs edit the same draft | **DEFECT FOUND (D3 #41):** the stale tab's save replaced the other's. **After the fix:** the stale save is refused — "This variation changed since you loaded it…" — and the first save stands (−90.15 / −9.02 / −99.17) | exact GST of −90.15 = −9.02 |
+
+Defects found and fixed here: D3 #41 (stale editor), D3 #42 (cents not shown
+in the two dialogs). **Not exercised in the browser** (covered by the emulator
+suites only): a manual (no-PO) supplier variation created in the browser, the
+uncertain-outcome and backend-unavailable messages, a concurrent approve,
+company-admin sign-in, and a variation created by the pre-ADR-90 bundle.
+Native `confirm()` prompts were answered by a page-level stub that recorded
+their text. The fixture numbered its first new variation SV-0001 beside seeded
+SV-0901…0905 because the seed set no counter — the situation the pre-cutover
+counter check (DEPLOYMENT.md) exists to catch.
+
+### 84.5 Rules — size, expressions, document access
+
+| Measure | Value | Class |
+|---|---|---|
+| Source size | `firestore.rules` 222,000; transitional 222,610 (binding; 22,390 under 245,000); m2a2-transitional 222,439 bytes | LOCAL, measured |
+| Compiled size | **not measured** — no supported local tool reports it; the emulator loads all three files without error | — |
+| Expression headroom, ALLOWED variation requests (read, submit, reject, withdraw) | every allowed request in `variations.rules.test.js` (153 tests) still passes with 150 extra comparisons; 24 fail at 180 → headroom between about 150 and 180 | EMULATOR, padding probe (§78.2 method) |
+| Expression headroom, claims / supplier invoices / pairing (not changed by this step) | all pass at 16; 21 fail at 30 → the tightest allowed request has 16–30 | EMULATOR, same probe |
+| Refused requests | not measurable by this method (padding is evaluated only after the real condition passes); a refusal by the expression ceiling is indistinguishable from an ordinary denial at the client | limitation |
+| Document access | a variation submit / reject / withdraw reads one document besides the variation itself — the caller's `users` document (role, company, and project assignment for external roles); no `getAfter`, no counter, no RFI or PO read remains in the block. Counted by reading the Rules, not instrumented — the emulator reports no per-request access count | LOCAL, by inspection |
+
+The emulator is not the production Rules engine; these figures bound behaviour
+locally and are not a production measurement. **Old-bundle compatibility:**
+after the FINAL Rules a tab on the old bundle can still submit, reject and
+withdraw; its create, draft edit, approve and apply are refused by Rules until
+it reloads. During the transitional window the old bundle's writes are still
+accepted, so a variation it creates or edits is legacy content and is verified
+as such at approval.
+
+### 84.6 Changed expectations (every one, with its reason)
+
+| Test file | Change | Reason |
+|---|---|---|
+| `tests/rules/variations.rules.test.js` (121 → 128 tests) | every test that expected a client DRAFT EDIT to succeed now expects refusal; content-validation tests for client edits became refusal tests; a counter block was added | Decision C1 (draft edit moved to the backend) and C4 (variation counters backend-only) |
+| `tests/rules/variationsTransitional.rules.test.js` | transitional file expectations follow the same block | generated ruleset changed |
+| `tests/unit/rulesTransitional.test.js`, `emulatorAppCheck.test.js` | pinned line pairs / callable list updated (four variation callables) | new callable; regenerated transitional rules |
+| `tests/unit/variationActions.test.js` | draft edit asserted as a callable invocation, not a client transaction; `variation-not-draft` mapped | C1 |
+| `functions/test/variations.test.js` | handler count 3 → 4; write / audit pins; verification-before-write pin; 15 codes | C1, C3 |
+| `tests/functions/variations.test.js` | the client-transaction draft-edit test rewritten to the callable; 22 tests added | C1–C4 |
+| `tests/unit/emulatorIsolation.test.js`, `_emulatorGuard.js` | project id `demo-constrap-test`; isolation requirements | C5 |
+| every suite naming the emulator project | `constrapp-rules-test` → `demo-constrap-test` | C5 |
+| `tests/unit/shield.test.js` | none — the two wording corrections touch no pinned string | — |
+
+The Rules-suite conversion was done by a delegated worker whose run was cut
+off before it reported; its edits were verified afterwards by the full Rules
+run above (2,650 passed) and by lint, not by a line-by-line review of each
+converted case.
+
+
+## 85. Phase 2 steps 3–4 — trusted claims and supplier invoices; supplier ledgers (ADR-93, ADR-94) — 28 November 2026
+
+Branch `feature/commercial-completion-phase-2`, uncommitted. Evidence class:
+LOCAL (unit) and EMULATOR (isolated emulators, Functions on Node 22.23.2).
+Nothing deployed. Integrated totals are in §87.4.
+
+### 85.1 Independent oracle
+
+Every expected figure is computed in the test from integers (`gstHalfUp`,
+`share` by BigInt, `cents`) — never by the modules under test. Claim and
+invoice totals: legacy branch equal to the existing functions on 20,001 cent
+values; exact branch equal to the oracle for 28,572 subtotal / retention pairs
+(`tests/unit/supplierFinanceBundle.test.js`).
+
+### 85.2 Claims and invoices (`tests/functions/supplierFinance.test.js`, 25 tests)
+
+| Case | Result |
+|---|---|
+| Create: version 2, `previouslyApproved` from the PO ledger, retention 500.05 on 10,000.15 → net 9,500.10, GST 950.01 | equal to the oracle |
+| One open claim per PO; two creates racing → one claim, one number | enforced |
+| Draft edit re-derived; stale edit refused; edit of a submitted claim refused | as designed |
+| Approval above the claimed amount refused; stale revision refused; certified 12,050.25 → GST 1,205.03 | equal to the oracle |
+| Next claim's previously-approved (12,000.25 / 50) from the ledger | equal |
+| Reject frees the PO; repeat recognised | as designed |
+| Legacy submitted claim certified with LEGACY figures (40.15 → GST 4.01, no `calcVersion` written) | preserved |
+| Forged legacy header, period amount, previously-approved, cost code, planted certified figure, missing PO line | refused `figures-inconsistent`, document byte-identical |
+| Claim-sourced invoice: payable = certified claim (retention 1,000.00; certified GST 900.02); second invoice for the claim refused, also when racing | pairing holds |
+| Approve / post verify stored figures; a forged payable total refused; posting requires the claim link; cancel unlinks in the same commit | as designed |
+| Direct invoice exact (40.15 → 4.02); edit re-derived; stale edit refused | as designed |
+| Invoice from a LEGACY claim keeps the stored obligation (66.16, GST 6.01 apportioned, `calcVersion` 1, `sourceCalcVersion` null) | preserved |
+| Mixed tax: GST-free certified line carries no GST; certified GST on the taxable line | as designed |
+| Legacy claim without link keys refused (`legacy-claim`) | fail closed |
+
+### 85.3 Supplier settlement
+
+| Case | Result |
+|---|---|
+| Credit on a RETAINED invoice: retained part share(50,000, 200,000, 1,000,000) = 100.00, its GST 10.00; line GST 200.00 | equal to the oracle |
+| Payment beyond remaining payable refused (DC18); the excess recorded as unallocated (550.00) | as designed |
+| Release raises the basis; release void with a dependent payment refused; after voiding the payment the release voids (G3) | as designed |
+| Two payments racing for the last dollar → one posts | as designed |
+| A draft credit whose GST share moved (3,333.33 twice: 333.33 → 333.34) is not posted until re-saved | `figures-moved` |
+| Baseline: legacy over-release → ledger INCONSISTENT, postings refused, corrective void re-establishes it | as designed |
+| Replay of a payment posting: ledger moved once, one audit event | idempotent |
+| Invalid sources: credit on a draft invoice, release on an invoice without retention, payment to another supplier's invoice | refused, nothing written |
+| Future-dated payment saved, not posted | refused at posting |
+| Membership deactivated before the call refused; another tenant not found | as designed |
+| Downstream parity: after a credit, release and payment the read-time payable, remaining and retention-held figures equal the ledger to the cent | equal |
+
+Unit: `tests/unit/supplierLedger.test.js` (16 — telescoping GST, retained
+credits, one retention pool, the payment cap, dependency voids, baseline states,
+stored-figure refusal); `tests/unit/supplierFinanceBundle.test.js` (14 — fresh,
+self-contained, equal, no arithmetic in Functions, contracts, claim-ledger
+baseline, apportionment, verification).
+
+### 85.4 Rules (converted suites)
+
+Nine suites converted by a delegated agent and reviewed: every former client
+write on the five supplier registers is now refused for every financial role
+with the stored document unchanged; every former denial kept; claim SUBMIT is
+the only client write, asserted exactly (34 forged-key shapes, every illegal
+source status, actor, server time, revision, tenant isolation). progressClaims
+119 → 134, supplierPayments 47 → 49, supplierInvoices 141 → 144,
+supplierCreditNotes 57 → 59, retentionReleases 69 → 71, claimInvoicePairing
+37 → 39, claimInvoicePairingTransitional 5 → 6, purchaseOrders 79 → 79 (two
+converted), externalRoles 32 → 34. No test removed.
+
+### 85.5 Rules capacity
+
+`firestore.rules` 222,775 (after step 5) → **176,487** bytes after steps 3–6;
+transitional 177,044 (binding; 67,956 under the 245,000 budget);
+m2a2-transitional 176,946. The five supplier blocks lost their write branches.
+Compiled size: not measured. Expression headroom of the remaining claim submit
+and the four segregated Rules approvals: not re-measured at this checkpoint
+(the probe method is §78.2); each segregated approval adds one `exists` and one
+`get` of the same policy document.
+
+### 85.6 D3 #40 safeguard
+
+`tests/unit/realAuthLauncherGuard.test.js` (6): the three real-Auth launchers
+refuse by default, refuse a wrong or empty confirmation, refuse under every CI
+marker even when confirmed, accept only the exact project id, and call the guard
+before starting any emulator. Verified by running `node scripts/quant-dev.mjs`:
+refused, naming the project and `npm run test:team`.
+
+## 86. Phase 2 step 5 — client refunds and receipt applications
+
+ADR-95 (D6–D8). Branch `feature/commercial-completion-phase-2`, uncommitted.
+**Evidence class: LOCAL / EMULATOR only.** No browser acceptance and no
+production evidence in this step.
+
+### 86.1 Runs (28 November 2026)
+
+| Suite | Result | Runtime |
+|---|---|---|
+| `tests/functions/clientSettlement.test.js` (NEW) | 25 passed | Node 22.23.2, isolated launcher, `demo-constrap-test` |
+| `tests/functions/clientFinance`, `clientReceipts`, `finalAccount.approve` + `clientSettlement` | 4 files / 281 passed | Node 22.23.2, isolated launcher |
+| `clientReceiptBaseline.test.js` | passed (earlier run of the same files) | Node 22.23.2 |
+| Rules: `clientLedger`, `clientInvoices`, `clientReceipts`, `finalAccounts` | 4 files / 304 passed | Node 24.19.0, Java 26, isolated launcher |
+| Functions pure `test/clientFinance.test.js` | 87 passed (whole pure suite 287 at the time) | Node 22.23.2 |
+| Unit: the eleven affected files (incl. NEW `clientSettlement.test.js`, 21) | 900 passed | Node 24.19.0 |
+| Lint (frontend files touched, Functions) | clean | |
+| Bundles `functions:finance-calc:check`, `functions:calc:check`; `rules:transitional:check` | up to date | |
+
+The full suites were NOT run by this step (they belong to the integrated
+checkpoint, while steps 3–4 were changing shared files concurrently).
+
+### 86.2 What is proven (emulator, independent integer-cent oracle written in the tests)
+
+| Case | Result |
+|---|---|
+| Refund from a receipt's unallocated money (1,500.00 receipt, 1,000.00 allocated) | refund 120.45 recorded; receipt ledger `refundedCents` 12045; counter → 2; audit before 50000 / after 37955 |
+| Over-refund | 100.01 above the remaining 100.00 refused (`client-settlement-funds-unavailable`, available 10000 named); exact remainder accepted; nothing more |
+| Replay / id conflict | same caller and content answered `alreadyApplied`; other content or other caller with the same id refused; one audit event |
+| Concurrent refunds (3 × 300.00 of 500.00) | exactly one lands; ledger 30000 |
+| Refund and application racing for the same money | one lands; applied + refunded = 40000 |
+| Invoice overpayment refund (acknowledged over-allocation 250.00) | 250.01 refused, 250.00 accepted, then nothing; an invoice not overpaid has nothing to refund |
+| Receipt void with a dependent invoice refund | `client-refunds-depend`; correct the refund, then the receipt voids and the ledger returns to 100000 received, 0 refunded |
+| Credit-note void after its overpayment was refunded | `client-refunds-depend`; after the client repays (new receipt) the void succeeds |
+| Application (300.25 to CI-0002) | both ledgers move; receipt document unchanged; audit `cash: false` |
+| Application beyond what the invoice owes | refused (owed 10000 named); exact amount accepted |
+| D7 boundaries | other client / other currency → `client-settlement-mismatch`; draft invoice and another project's invoice → `client-invoice-not-issued`; nothing written |
+| Receipt void with applications or refunds | `client-receipt-has-settlements` until each is corrected; then clean |
+| Application correction leaving a refund uncovered | `client-refunds-depend` |
+| Refund correction | status void, availability restored, `correction: true, cashReversed: false`, idempotent |
+| Issued invoice void (D8) | refused with receipts allocated (100000 named), with an application, and with a receipt posted BEFORE ADR-89 (baseline: 11000); allowed with nothing recorded; audited; idempotent; a draft is refused by the backend (browser path) |
+| Roles / tenancy / membership race | subcontractor and client refused; another tenant not found or not activated; unauthenticated refused; a role withdrawn mid-request is ordered against it |
+| Switches and activation | settlement switch off → `client-settlement-disabled`; invoice void follows the receipt switch; company not activated refused |
+| Tampered counter | 0, −1, 1.5, 'x', 1,000,000,000 refused (`client-settlement-counter-invalid`) |
+| Final Account (unit, fixture) | unallocated money blocks (`500.00 unallocated`); applying or refunding it clears; an overpaid invoice blocks until refunded; an unsupported record blocks by name; a failed refunds read makes the figure unknown; a project with no settlement is exactly as before |
+
+### 86.3 Changed expectations (each with its reason)
+
+| File | Change | Reason |
+|---|---|---|
+| `tests/rules/clientLedger.rules.test.js` (invoice-void describe) | every client void of an ISSUED invoice now DENIED (formerly allowed with a clear ledger); former denials unchanged; + drafts still voided; + a received-money ledger case | D8: issued void moved to `voidClientInvoice`, which checks receipts the Rules cannot read — strictly stronger |
+| same file, retention test control | the issued-invoice void control now denied | same |
+| `tests/rules/clientInvoices.rules.test.js` (5, 10c, timestamp, full flow) | issued void denied; timestamp pins run on drafts | same; the server-time requirement is still asserted |
+| `tests/rules/clientReceipts.rules.test.js` (3 tests) | "an invoice with receipts can still be voided" → refused | the pre-existing D8 gap these tests documented is closed |
+| `tests/rules/finalAccounts.rules.test.js` | the prepare query set gains the two registers | they are Final Account sources |
+| `tests/functions/clientReceipts.test.js` (read-set pin) | `voidReceipt` reads one more document, `clientReceiptLedgers/cr1` | dependents check; still no query |
+| `tests/functions/finalAccount.approve.test.js` (one perturbation) | the "still ready but different" receipt is ALLOCATED, not unallocated | unallocated money is now itself a readiness blocker |
+| `tests/functions/clientFinance.test.js` (fresh) | `settlement: true` in the injected config | every handler past its gate for the unauthenticated test |
+| `functions/test/clientFinance.test.js` | 11 handlers, three switches, 32 `CLIENT_*` codes, LEDGER_KIND 10 kinds, settlement.js in the surface lists, `onCall(` 6 | the five new operations; the sixth wrapper is steps 3–4's supplier-finance one |
+| `functions/test/boqBudget.test.js`, `finalAccount.test.js`, `variations.test.js` | exported-name / `clientFinanceCall(` counts 17→22, 6→11 | five new callables |
+| unit: `clientLedger`, `clientReceipts`, `clientLedgerActions`, `clientFinanceBundle`, `commercialReport`, `cashFlow`, `finalAccount`, `finalAccountPage`, `portfolioSources` | new ledger fields and kinds; `refunded`/`netReceived`; new exports; two report sources; selectors called with `settlement`; FA counts 14; page mocks for the two hooks; portfolio reads 17/19/21 | the documented design above — no requirement removed |
+| `ops/recovery/firestore-count-evidence.mjs` | + `clientReceiptApplications`, `clientReceiptLedgers`, `clientRefunds` | new collections must be counted |
+
+No test was skipped or deleted.
+
+## 87. Phase 2 step 6 — approval segregation and original contract value (ADR-96) — 28 November 2026
+
+Evidence class: EMULATOR. Nothing deployed.
+
+### 87.1 Functions (`tests/functions/approvalSegregation.test.js`, 10 tests)
+
+| Case | Result |
+|---|---|
+| Policy absent: the creator approves; the audit event records creator / submitter / not independent | recorded |
+| Enabled: creator, submitter and BOTH draft editors (a material and a later cosmetic edit) refused; an independent PM approves | as designed |
+| Enabled: supplier invoice approval, supplier credit posting and variation approval segregated; posting after an independent approval allowed to the preparer; supplier PAYMENT posting recorded, not segregated | matrix holds |
+| Another company's policy does not apply; a deactivated member refused; the only remaining approver being the preparer fails closed | as designed |
+| Operator tool: dry run by default; `--enable --apply` writes version, reason, previous and one audit event; `--disable` records previous; enabling with one eligible approver refused; reason required | as designed |
+| Contract value: propose → approve replaces the value with provenance and audit; no baseline, stale from-value, no change, second open proposal, missing confirmation, short reason refused; two proposals racing → one open; segregated approval; stale approval after the value moved | as designed |
+
+### 87.2 Rules (delegated, reviewed)
+
+budgetApprovals +10, budgetAdjustments +8, purchaseOrders +7, tenderPackages
++7: policy absent, enabled (creator and last updater refused, independent
+member succeeds), `false`, and another company's policy — with paired writes
+refused as a unit and documents unchanged. commercialBaseline +26 (create with
+provenance keys refused; value and provenance frozen on update; other fields
+editable; a backend-corrected baseline still editable). New
+`approvalPolicy.rules.test.js` +22 (policy and contract-value revisions
+read-only). **Changed expectations:** five commercialBaseline tests now re-send
+the stored contract value instead of changing it (the change itself is now
+asserted as refused) — a direct consequence of G5, no requirement removed.
+
+### 87.3 Unit pins changed (with reasons)
+
+| Test | Change | Reason |
+|---|---|---|
+| rulesTransitional | 3 → 1 marked line pair; the pairing pin replaced by a both-files check that the five supplier blocks admit no client write but submit | ADR-93 retired the claim pairs |
+| rulesHelperHoist | helper-call floor 55 → 42 | the removed write branches carried the calls; the requirement (whole-line calls) unchanged |
+| externalProjectIsolation | Stage-1 check no longer expects the retired claim markers | ADR-93 |
+| boqBudgetTransferBundle, finalAccountBundle | onCall count 5 → 7 | the supplier-finance wrapper and contractValueOperation |
+| functions/test boqBudget, finalAccount | exported names 22 → 23 | contractValueOperation |
+| functions/test clientFinance | onCall count 6 → 7 | contractValueOperation |
+| functions/test variations | create writes `draftEditors` | ADR-96 |
+| recoveryEvidence | + approvalPolicy, contractValueRevisions, poClaimLedgers, supplierFinanceState, supplierInvoiceLedgers | new collections are counted |
+| claimInvoiceLifecycle, supplierInvoiceActions, writeOutcome | read the backend module / callable instead of the old hook transaction | ADR-93 / ADR-94 moved the writes |
+| variations.rules counter list | progressClaims, supplierInvoices, supplierPayments removed from "other counters" | those counters are now backend-only (proven in their own suites) |
+
+No test was skipped or deleted.
+
+### 87.4 Integrated totals (checkpoint run, 28 November 2026)
+
+| Suite | Result | Runtime |
+|---|---|---|
+| Unit | 124 files / **6,273** passed | Node 24.19.0 |
+| Rules | 41 files / **2,810** passed | Node 24.19.0, JDK 26, isolating launcher |
+| Functions pure | 10 files / **287** passed | Node 22.23.2 |
+| Functions emulator | 19 files / 761 — every file passes, but not yet in one clean full run (see note) | Node 22.23.2, isolating launcher |
+| Lint (frontend, Functions) | clean | |
+| Build | succeeds | |
+| Generated bundles (five) and transitional rulesets | up to date | |
+
+Rules sizes: `firestore.rules` **176,507**, `firestore.transitional.rules` **177,064** (binding; 67,936 under the 245,000 budget), `firestore.m2a2-transitional.rules` 176,946.
+
+**Note on the Functions emulator run.** The last full run was started while the
+unit suite, the build and the pure suite were running on the same machine; 14
+tests in 7 files hit the 30-second test timeout (one test ran 935 s). The
+previous full run of the same code passed 760 / 761 (the one failure was the
+`draftEditors` pin, since fixed and rerun: `variations.test.js` 73 / 73). The
+seven files were then rerun: together (six files) they again timed out on 7
+different tests while the machine was swapping (≈3.8 GB swap in use, a few MB
+free); ONE FILE AT A TIME they all pass — `boqBudgetTransfer` 63/63,
+`clientReceiptBaseline` 67/67, `finalAccount.approve` 80/80, `variations`
+73/73, `scripts` 48/48, and `team.callableCompat` and
+`team.externalProvisioning` passed in the six-file run. Every failure was a
+30-second timeout and no assertion failed. **A clean single full run of 761 on
+an unloaded machine is still to be recorded** — run `npm run
+test:functions:node22` with nothing else open before integrating.
+
+### 87.5 Local browser acceptance (LOCAL BROWSER; `npm run test:team`, synthetic company)
+
+| Step | Observed | Independent check |
+|---|---|---|
+| Baseline created (1,000,000.00); notes edited afterwards | saved; the contract value shown read-only | — |
+| Correction proposed (→ 1,012,500.50) and approved by the PROPOSER with segregation enabled (operator tool) | refused with the server's explanation | — |
+| Approved by an independent PM | value 1,012,500.50, "corrected 1 time", history line; forecast revenue and current contract sum follow | equal |
+| Claim by PM2: 1,000.15 claimed, retention 100.00 | net 900.15, GST 90.02, total 990.17 | 10% of 90,015 cents half-up = 9,002 |
+| Claim approved by its creator / submitter | refused, reason shown | — |
+| Claim approved by the QS | approved, "Not yet invoiced" | — |
+| Invoice from the claim (QS) | net payable 990.17, GST 100.02 (90.02 + 10.00 retention GST), due date from the supplier's 30-day terms | equal |
+| Invoice approved by its creator | refused — **DEFECT FOUND**: the page showed "check your connection" (a certain refusal shown as a network problem); fixed (the page and the shared write-outcome helper now present callable refusals as certain with the server's reason; regression test added); re-tested: reason shown | — |
+| Invoice approved and posted by PM2 | posted; "Record credit note" offered on the retained invoice (G1) | — |
+| Credit 200.00 on the retained invoice (PM2) | GST 20.00; retained part 22.00 shown | share(10,002, 20,000, 100,015) = 2,000; share(10,000, 20,000, 100,015) = 2,000; share(1,000, 2,000, 10,000) = 200 |
+| Credit posted by its preparer | refused, reason shown | — |
+| Payment 1,000.00 allocated 1,000.00 | blocked: over remaining payable by 9.83 — **DEFECT FOUND**: the warning still said "This is allowed"; reworded | 1,000.00 − 990.17 = 9.83 |
+| Payment allocated 990.17, 9.83 unallocated; posted by its preparer (not segregated) | posted; remaining payable 0 | — |
+| Credit posted by the QS (after payment) | retention held 88.00; credited 198.00; remaining −198.00 (over-settled, recoverable) | 110 − 22 = 88; 220 − 22 = 198 |
+| Release preview 50.00 | available 80.00; GST 5.00 — the editor's concurrency notice was **outdated** (said concurrent releases can both succeed); corrected | share(1,000, 7,000, 10,000) − 200 = 500 |
+| Emulator read-back | invoice ledger paid 99,017, credited 20,000 / 2,000, retained 2,000 / 200; PO ledger 100,015 on line 1; baseline marker; audit: one event per fact | equal |
+
+**Not exercised in the browser** (emulator suites only): client refunds and
+receipt applications (step 5), release posting and voids, payment voids, claim
+rejection, direct-PO invoices, the variation flows after ADR-96, the Rules-held
+segregated approvals (budget, adjustment, tender, PO send) and the subcontractor
+view of the new pages.
+
+
+
+## 88. Phase 2 final batch — Steps 3–6 corrections, internal acceptance gate, Step 7 (estimating), Step 8 (integrated acceptance) — 28 November 2026
+
+Evidence classes: **LOCAL / EMULATOR** and **LOCAL BROWSER** (synthetic
+company on the emulators). No production access of any kind.
+
+### 88.1 The emulator-suite timeouts (gate investigation)
+
+Every earlier failure of the full Functions emulator suite was a 30 s test
+timeout, and the failing tests changed from run to run. Evidence gathered:
+
+| Check | Finding |
+|---|---|
+| Orphan emulator / JVM processes | none before each run (`pgrep`, `lsof :8080`) |
+| Per-test elapsed time of the "timeouts" | 117–1,039 s against a 30 s timeout — the test process was not running for long stretches, which a slow emulator cannot cause |
+| Same files run one at a time | 34–45 s each, all passing |
+| macOS power log (`pmset -g log`) | the machine on battery, `sleep 1`, entering system sleep for 190–1,022 s repeatedly during the long runs |
+| JVM / Node memory during a run (sampled every 10 s) | Firestore emulator ≤ 630 MB, all Node ≤ 1.5 GB; swap high but stable |
+| Worker concurrency | `fileParallelism: false` — one file at a time; no shared fixtures across files (`resetEmulators` per test) |
+
+**Root cause: host sleep**, not the code, the emulator or order dependence.
+**Resolution:** run the long suites under `caffeinate -ims` (prevents idle and
+system sleep). No timeout, assertion or test was changed.
+
+### 88.2 Gate result — complete suites, one run each
+
+| Suite | Result | Runtime |
+|---|---|---|
+| Unit | 125 files / **6,330** passed | Node 24.19.0 |
+| Rules | 42 files / **2,822** passed (298 s) | Node 24.19.0, JDK 26, isolating launcher |
+| Functions pure | **288** passed | Node 22.23.2 |
+| Functions emulator | 22 files / **805** passed in ONE run (456 s) | Node 22.23.2, isolating launcher, `caffeinate -ims` |
+| Lint (frontend, Functions) | clean | |
+| Build | succeeds | |
+| Generated bundles (six) + transitional rulesets | all up to date | |
+| Credential isolation | `emulatorIsolation` 22, `realAuthLauncherGuard` 6 (unit); `isolation` 5 (emulator) — all inside the totals above | |
+
+### 88.3 Steps 3–6 corrections — new tests
+
+- `tests/functions/supplierBaseline.test.js` (17): completion marker and both
+  digests recomputed independently; two concurrent requests; interruption
+  between chunks (marker stays `building`, operations refuse) and takeover after
+  the lease; a superseded run can neither write nor complete; a source change
+  during the run abandons it; stale ledgers from an abandoned run removed;
+  membership revoked during the run; missing source; a non-`complete` marker
+  refused inside an operation's transaction; measured cost; six corrective-void
+  cases (narrowing, still inconsistent after one void, dependent payment
+  refused, malformed entry tracked until voided, negative historical figure,
+  no supported correction fails closed, a legacy payment naming one invoice
+  twice voided cumulatively).
+- `tests/functions/approvalSegregation.test.js` (+4 / changed 1): D4 last
+  material editor (cosmetic edit neither hides nor excludes); an earlier editor
+  whose work was re-prepared may approve; actor stamps cannot be supplied; legacy
+  draft falls back to its last editor; posting after a non-independent approval
+  needs an independent poster; an approved invoice admits no edit; void of a
+  posted credit segregated.
+- `tests/functions/phase2Reconciliation.test.js` (1): the full supplier
+  lifecycle against a hand-written oracle (88.4).
+- `tests/unit/supplierLedger.test.js` (+6): excess measures, corrective-void
+  rule, malformed-entry tracking, cumulative allocations.
+- `tests/rules/progressClaims.rules.test.js` (+2): submit cannot alter
+  provenance, calculation version, authority or pairing fields; the production
+  submit runner.
+- `tests/unit/progressClaimActions.test.js` (+3): the production submit runner.
+
+**Changed expectations, each justified:** `clientReceipts.test.js` read-set
+pin — a void of a posted client credit / release now reads the policy document
+(one fixed document, still no query); `functions/test/variations.test.js` and
+`tests/functions/variations.test.js` — the create stamps `lastMaterialEditBy`;
+one segregation test rewritten from "every draft editor refused" to the D4 rule
+(the architect's ruling C). The legacy client write shapes moved verbatim to
+`tests/fixtures/legacyClientWrites.js` (ruling G); no Rules denial test was
+removed or weakened.
+
+### 88.4 Independent reconciliation (one lifecycle, cents)
+
+| Movement | Figure | Arithmetic |
+|---|---|---|
+| PO line 0 | 25,000.00 | 10 × 2,500.00 |
+| Claim | 1,000.15; retention 100.00; net 900.15; GST 90.02; total 990.17 | GST 10 % of 900.15 = 90.015 → half-up |
+| Claim-sourced invoice | subtotal 1,000.15; GST 100.02; gross 1,100.17; retention 100.00 + 10.00; payable 990.17 | GST = certified 90.02 + retention GST 10.00; payable = 1,100.17 − 110.00 |
+| Credit 200.00 (retained invoice) | GST 20.00; retained part 20.00 + 2.00 | share(10,002, 20,000, 100,015) = 2,000; share(10,000, 20,000, 100,015) = 2,000; share(1,000, 2,000, 10,000) = 200 |
+| Payable basis after credit | 792.17 | 990.17 − (220.00 − 22.00) |
+| Release 50.00 | GST 5.00 | share(1,000, 7,000, 10,000) − 200 = 500 |
+| Basis after release | 847.17 | 792.17 + 55.00 |
+| Payment 1,000.00 | 847.18 refused; 847.17 allocated; 152.83 unallocated | |
+| Retention held | 30.00 + 3.00 | 100 − 20 − 50; 10 − 2 − 5 |
+| Actual cost, cost code 03-100 | 800.15 | invoice 1,000.15 (claim superseded) − credit 200.00 |
+| Remaining committed | 23,999.85 | 25,000.00 − 1,000.15 |
+| Cash out | 1,000.00 | gross cash, unallocated included |
+| Void release while paid out | refused | |
+| Void payment, then release | basis 847.17, then 792.17; held 88.00 | |
+
+Why the claim and the invoice show different GST: the claim certifies GST on
+the NET (900.15 → 90.02); the invoice is the full taxable supply, so it also
+carries the retained slice's GST (10 % of 100.00 = 10.00) — 100.02 — while its
+payable total equals the certified total. A legacy approved claim converted to
+an invoice keeps its STORED obligation (66.16, GST 6.01, not recomputed to
+6.02; `supplierFinance.test.js`).
+
+### 88.5 Browser acceptance (LOCAL BROWSER, segregation ENABLED by the operator tool)
+
+| Scenario | Observed |
+|---|---|
+| Estimate live preview: margin 20 %, overheads 5 %, contingency 2.5 %, preliminaries classed | 10,677.49 / 5,000.00 / 783.87 / 391.94 / cost 16,853.30 / sell 21,066.63 / GP 4,213.33 / markup 25.00 % — equal to the hand oracle |
+| QS builds EST-0001 | stored figures equal; "live BOQ matches" |
+| PM builds EST-0002 and approves it | refused, server reason shown |
+| PM approves the QS's EST-0001 | approved, "current"; audit `independent: true` |
+| Transfer to working budget from EST-0001 | labelled as the estimate's handover; cost only; ADR-81 blocking of manual lines unchanged; provenance (revision, source key, content hash) recorded |
+| BOQ quantity changed | "live BOQ has changed"; handover button disabled with the reason |
+| Selling-price prefill | Commercial tab with 21,066.63 and a notice; nothing saved |
+| Client receipt 1,500.00 (1,100.00 to CI-0001) | posted; 400.00 on account; remaining to reconcile 550.00 |
+| Application 400.01 / 300.00 | blocked / posted; 100.00 still available |
+| Refund 100.01 / 100.00 | blocked ("At most 100.00") / posted; net cash 1,400.00 |
+| Void the receipt | refused — dependent refund / application named |
+| Void the application (correction) | 300.00 back on the receipt |
+| PO send by its preparer (Rules-held) | refused — generic permission message (documented limitation) |
+| PO send by a second PM | sent |
+| Claim create with the backend unreachable (network cut in the page) | "The server did not confirm the outcome…" — never "nothing saved" |
+| Retry after reconnecting | exactly one claim (PC-0001) |
+| Claim submit / reject | submitted (client Rules write) / rejected (backend) |
+| Direct-PO invoice with retention | 1,000.00 + 100.00; retention 100.00 + 10.00; net 990.00 |
+| Release 100.01 / 50.00 | blocked / draft; GST 5.00 |
+| Release post by its preparer / by a second PM | refused / posted (held 110 → 55) |
+| Void of the release by its poster | voided (held 55 → 110) |
+| Subcontractor on Estimate / Receipts | "Estimates are restricted"; no receipt figures |
+
+**Not exercised in the browser:** the three other Rules-held approvals
+(budget version, budget adjustment, tender award — Rules-tested), variation
+browser flows beyond §84, Final Account approval with segregation, Dashboard /
+Portfolio / PULSE / SHIELD / CSV parity in the browser (selector parity is
+tested in the emulator suite), external roles other than subcontractor.
+
+### 88.6 Step 7 (estimating, ADR-97) — final verification
+
+LOCAL unit + EMULATOR only. These are emulator measurements on the local
+machine, not production capacity. Focused runs:
+`tests/unit/estimating.test.js` **42/42**,
+`tests/functions/estimating.test.js` **33/33** (Node 22),
+`tests/rules/estimates.rules.test.js` **10/10**. `functions:estimating-calc:check`
+up to date; `functions:lint` clean; `lint` clean on the estimating files.
+
+| Requirement | Code | Test |
+|---|---|---|
+| Rate components reconcile exactly | `componentsProblem`, `componentCents` | unit "rate components reconcile…" (4); functions "rate breakdowns: saved only when they add up…"; max-text test (Σ components = BOQ total) |
+| Preliminaries, contingency, explicit overhead, no double counting | `estimateSettingsProblem`, `estimateTotals` | unit "settings — explicit overhead…" (5), "cost-coded overhead and contingency…"; functions worked estimate |
+| Exact pricing assumptions stored | header settings, `canonicalHeader`, audit `estimate.approved` | unit "the canonical line / header…"; functions "a PM approves…" |
+| Reconstruction from an approved revision alone after BOQ changes | chunks + header | functions "an approved revision reconstructs exactly…", max-text test, concurrency (a)–(d) |
+| Immutable approved snapshot | `approveEstimate` / `buildEstimate` / `discardEstimate` state guards; Rules `write: false` | functions "a PM approves… immutable"; rules "no role creates, updates or deletes…" |
+| Approval segregation | `segregationGuard` | functions "SEGREGATION enabled…", "DISABLED (default)…" |
+| BOQ drift (whole project; no subset estimates exist) | `estimateSourceKey`, `estimateDrift` | unit drift tests; functions "an estimate is the WHOLE project BOQ…" |
+| Cost-only budget handover | ADR-81 transfer with `estimateId` | functions "an approved, matching estimate: COST values transferred…" |
+| Contract-value prefill, no persistence | router state in ProjectEstimate / ProjectCommercial | unit "D3 — … PREFILL carried in router state…" (structural; not browser-run) |
+| Phase 2 company activation | handler `assertCommercialActivated`; `callerScope` → `requireCommercialActivationInTx` | functions "an INACTIVE company…", "the global switch OFF…", "DEACTIVATED between build and approval…" |
+
+**Concurrency (hooks, no sleeps except the 500 ms lock probe).** Each case
+asserts that the revision reconstructs from its own documents and that its key
+is the pre-edit BOQ's key, while the live key differs.
+- (a) An edit after the snapshot read (`afterRead`).
+- (b) An edit between chunk writes (`afterChunkGroup`, 1,303 items, 6 chunks). The approval attempted at that point is refused `estimate-building`.
+- (c) An edit just before completion (`beforeComplete`). The approval attempted with the hash the revision will store is refused `estimate-building`.
+- (d) An edit between completion and approval. The approval approves the revision as priced; the transfer claiming it is refused `boq-transfer-estimate-drift` with nothing written; the transfer without the claim works.
+- (e) An edit landing inside the transfer (`afterRead` of the transfer). It is held by the transfer's read locks: it is not settled at 500 ms, and its commit time is later than the budget line's. The recorded provenance is therefore true of the BOQ the transfer read. The next claim is refused.
+
+**Byte bounds — the worst case at the item limit.** The fixture: 5,000 active
+items plus one void item (not counted); a 128-character id; a 40-character item
+number and unit; section and cost-code name 260 characters (stored as 200);
+description 1,200 characters (stored as 1,000), all in three-byte "€"; a
+breakdown on every item; 1,001 cost codes with 128-character ids, 1,000 of them
+classified; title and notes at their maximum length.
+
+| Measure | Result |
+|---|---|
+| Chunks | 69, of 36–73 lines |
+| `LINE_MAX_BYTES` | 5,948 |
+| Largest chunk bound | 395,262 B |
+| Chunk storage size (documented formula) | 177,020–359,388 B |
+| Chunk protobuf `Write` (Admin SDK serializer) | ≤ 367,377 B |
+| Header | storage 171,609 B, protobuf 194,862 B |
+| Largest chunk transaction | 1,468,620 B |
+| Whole revision | 24,577,384 B |
+| Build | 0.8–2.0 s over three runs |
+| Approve | 0.36–0.80 s |
+| Reconstruct | 0.33–0.62 s |
+
+The ordinary-text 5,000-item case remains 20 chunks: build 337–354 ms, approve
+77–80 ms. One more active item is refused `too-large` with nothing written.
+Unit tests check the bound against an independent storage-size oracle, and
+check the arithmetic of the proof: ≥ 67 maximal lines per chunk, a chunk
+< 40% of 1 MiB, a four-chunk transaction < 17% of 10 MiB. They also prove that
+key text over its bound is refused rather than clipped.
+
+**Open.** The BOQ Rules put no length bound on description, section, cost-code
+name or notes, so the build snapshot (and the ADR-81 transfer read) has no
+byte bound. It fails closed, but it is an availability and cost exposure. A
+Rules change is needed; it is reported, not made.
+
+## 89. Phase 2 final release-readiness batch (ADR-98) — 28 November 2026
+
+Evidence classes: **LOCAL / EMULATOR** and **LOCAL BROWSER** (synthetic
+companies on the emulators, segregation enabled by the operator tool). No
+production access of any kind.
+
+### 89.1 Browser acceptance — report parity against a hand oracle
+
+Parity dataset (emulator only; `parity-seed` in the session scratchpad, every
+figure hand-calculated): original contract 500,000.00; approved client
+variation +20,000.00; PO-0001 3,400.00 (03-100 2,500.00 · 05-100 900.00);
+SI-0901 posted on PO line 0 (1,000.00 + 100.00 GST, retention 100.00 + 10.00,
+payable 990.00); SP-0901 990.00 posted; CR-0901 1,500.00 posted (1,100.00 to
+CI-0001, 400.00 on account); CI-0002 550.00 outstanding.
+
+| Surface | Observed | Oracle |
+|---|---|---|
+| Dashboard | contract sum 520,000; FFC 3,400; actual 1,000; remaining committed 2,400; GP 516,600; margin 99.3 %; remaining payable 0 | equal (99.346 % shown to 1 dp) |
+| Portfolio | same row; receivables 550.00; payables 0.00 | equal |
+| Budget | 03-100 committed 1,500, actual 1,000, invoiced 1,000, remaining 11,000; 05-100 committed 900 | equal |
+| Forecast | 03-100 FFC 2,500 (variance 9,500); 05-100 FFC 900 (variance 7,100) | equal |
+| Cash Flow | cash in 1,500; out 990; net 510; forecast in 550; forecast out 0 | equal |
+| Commercial (Margin) | 500,000 / 520,000 / FFC 3,400 / GP 516,600 / 99.3 % | equal |
+| Commercial Report + CSV export | same; CSV margin 99.35 %; print invoked once (dialog stubbed) | equal |
+| PULSE | renders from current records (2 findings: forecasts missing — true) | consistent |
+| SHIELD | 0 findings, 5 no issue, 1 needs data (no approved budget at that moment) | consistent |
+| Final Account (current position) | adjusted contract 520,000; actual 1,000; CTC 2,400; FFC 3,400; GP 516,600; cash received 1,500; paid 990; unallocated 400; outstanding 550; supplier retention held 110 | equal |
+| Final Account (small ready project, approved) + CSV | contract 10,000; final cost 0; variance 8,000; final GP 10,000; margin 100 %; cash 11,000 | equal |
+
+### 89.2 Browser acceptance — approvals with segregation ON
+
+| Scenario | Observed |
+|---|---|
+| Budget version: PM captures, PM approves | refused — **DEFECT FOUND**: the dialog said "Approving it yourself is permitted"; the refusal was a generic permission message. **Fixed** (`lib/approvalSegregation.js`, `useApprovalPolicy`): the dialog now says "You prepared this budget draft, so you cannot approve it…" and disables Approve |
+| Budget version: PM2 approves | approved (v1, 20,000) |
+| Budget adjustment: PM2 prepares +5,000, PM2 approves / PM approves | refused / approved (approved budget 25,000, net +5,000) |
+| Tender: PM2 creates and issues TP-0001, records bid 2,100 (9,900 under 12,000 budget); PM2 awards | refused (see 89.4 for the expression-ceiling text) |
+| Tender: PM awards | awarded; "You did not prepare this tender package, so you can award it" |
+| PO raised from the award by PM; PM sends | Send disabled with the reason |
+| PM2 edits the PO's notes only, then sends | sent; stored `lastMaterialEditBy` stays PM (cosmetic edit did not move it) |
+| Final Account (small project): PM prepares and approves | refused by the server with the full reason — **DEFECT FOUND**: the dialog also claimed self-approval was permitted. **Fixed** (same helper); re-checked: "You prepared this draft, so you cannot approve it", Approve disabled |
+| Final Account: PM2 approves | approved (revision 1) |
+| Refund (D3 #47): PM2 records 100.00 from CR-0901; PM2 voids | refused with the server's reason; the dialog distinguishes refund record / void as correction (no money moves) / real repayment = new receipt |
+| PM voids it | voided; 400.00 back on account |
+
+### 89.3 Browser acceptance — company activation
+
+| Scenario | Observed |
+|---|---|
+| Active company, Variations page open; operator tool deactivates the company (dry run, then --apply) | the open page switches live to "Read-only during the commercial upgrade", every write action disappears, the 7 records stay listed |
+| Same company inactive: Client Receipts / BOQ | New Receipt and receipt Void still offered (Phase 1); Refund / Apply hidden; BOQ "Transfer to budget" still offered |
+| Second synthetic company (always inactive): Progress Claims, Estimate | maintenance notice; no write actions |
+| Reactivated with the operator tool | normal |
+
+### 89.4 Browser acceptance — preconstruction chain and findings
+
+Drawing S-101 created and revision A uploaded (Storage emulator, new
+`team-dev --storage`); Quant calibrated on a 10 m line; a length measured
+5.007 m, linked to BOQ item 1.3 (m, 45.00/m) and applied on the BOQ tab with
+its confirmation → quantity 5.007, amount 225.32 (5.007 × 45 = 225.315,
+half-up); the Estimate live preview then includes it (direct cost 15,902.81 =
+1,177.50 + 999.99 + 225.32 + 8,500.00 + 5,000.00). With 89.2 (tender → award →
+PO → budget) and §88.5 (estimate build/approve/handover) this covers Drawing →
+Quantity → BOQ → Estimate → Tender → Award → Budget → PO.
+
+Findings recorded:
+- **Expression ceiling on REFUSED tender-package updates** — the refusal text
+  is "maximum of 1000 expressions … @ tenderPackages update". Reproduced in an
+  isolated probe against the base commit's Rules (`dfe3618`): **pre-existing**
+  (D3 #37 class — refused requests in six older blocks exhaust the budget
+  before returning false). The outcome is a refusal either way (fail-closed);
+  the award page now explains a segregation refusal itself.
+- The synthetic seed wrote PO-0001 without a counter, so a PO raised later was
+  also numbered PO-0001 — a seed artefact, exactly the condition the counter
+  inventory (DEPLOYMENT.md stage A) checks in production.
+- The Firebase CLI crashed once under memory pressure ("An unexpected error has
+  occurred", ~4 GB swap in use); the session was restarted and the remaining
+  steps completed. A scripted (non-keyboard) bulk forecast save did not persist
+  once; a keyboard entry and row save did — not reproduced, recorded only.
+
+**Not exercised in the browser:** the earlier outstanding variation flows
+(Rules / emulator suites only), external roles other than subcontractor,
+Dashboard and Portfolio for an inactive company, printing to a real PDF.
+
+### 89.5 Rules capacity and expression headroom (probe method §78.2)
+
+Source sizes: `firestore.rules` **179,135** bytes; `firestore.transitional.rules`
+**179,692** (binding; **65,308** under the 245,000 budget);
+`firestore.m2a2-transitional.rules` 179,574 (+2,071 for D3 #46). Compiled size:
+not measurable locally — **a release prerequisite** (stage D).
+
+Headroom, measured in an isolated copy of the tree on separate emulator ports
+(`scripts/rules-expression-headroom.mjs`): the FULL Rules suite (42 files,
+2,853 tests) passes with **16** padding comparisons on every allowed request;
+the changed / segregated blocks (purchase orders, tender packages, award to
+PO, budget versions, budget adjustments, progress claims — 513 tests) pass at
+**60**; at 100, 57 allowed requests fail (PO send / edit, award-to-PO, budget
+approvals and adjustments) and tender packages pass; at 150 tender packages
+fail too. So the tightest changed path has between 60 and 100 comparisons of
+headroom; the whole ruleset at least 16. Refused requests in older blocks still
+reach the ceiling before returning false (D3 #37, D3 #52 — pre-existing).
+
+### 89.6 Other evidence of this batch
+
+- Company activation: emulator tests in `clientSettlement`, `supplierFinance`,
+  `variations`, `approvalSegregation` (contract value + operator tool),
+  `boqBudgetTransfer`, `estimating`; Rules test that no client can write the
+  marker (`clientLedger`); unit tests of the maintenance gating and every error
+  mapper (`commercialActivation`, `clientLedgerActions`).
+- D3 #46: PO / tender / award-to-PO / external-role Rules suites rewritten case
+  by case (architect case: A material, B cosmetic, A refused, B may approve);
+  unit tests of the stamp helpers and the STALE send path; `approvalSegregation`
+  unit tests (50) of the messaging; the operator tool's legacy-document listing.
+- D3 #47: `clientSettlement` refund-void tests (strict, not strict, policy
+  enabled between record and void); browser 89.2.
+- Baseline fence: `supplierBaseline` adversarial tests (a payment written and a
+  claim submitted inside the completion window).
+- Estimating final verification: §88.6.
+- Monitoring definitions and the read-only inventory tool: `ops/monitoring/phase2/`,
+  `ops/recovery/phase2-inventory.mjs`, unit tests `phase2Monitoring` (29) and
+  `phase2Inventory` (10); the inventory exercised on the emulator against 32
+  seeded defective documents (20 findings, no customer text in the output).
+- Release pins: `functions/test/phase2Release.test.js` (switch defaults and
+  production values, leases longer than timeouts, no money total in the receipt
+  baseline log).
+
+
+### 89.7 Final automated acceptance — complete suites, one run each (28 Nov 2026, `caffeinate -ims`)
+
+| Suite | Result | Runtime |
+|---|---|---|
+| Unit | 129 files / **6,485** passed | Node 24.19.0 |
+| Rules | 42 files / **2,853** passed (283 s) | Node 24.19.0, JDK 26, isolating launcher |
+| Functions pure | **296** passed | Node 22.23.2 |
+| Functions emulator | 22 files / **833** passed (495 s) | Node 22.23.2, isolating launcher |
+| **Total** | **10,467** (accepted baseline 10,245; none skipped or deleted) | |
+| Lint (frontend, Functions) | clean | |
+| Build | succeeds | |
+| Generated bundles (six) + transitional rulesets | up to date | |
+| Credential isolation (`emulatorIsolation`, `realAuthLauncherGuard`, `isolation`) | inside the totals above | |
+
+### 89.8 Final integration correction (28 Nov 2026)
+
+| Change | Evidence |
+|---|---|
+| Rules: claim submit and variation submit / reject / withdraw require an ACTIVATED company (`commercialActive`) | `progressClaims.rules` and `variations.rules`: marker missing, `false`, `"true"`, `1` → refused for every financial role, document unchanged; `true` → allowed; deactivated while a tab holds the document → refused, reads still allowed; another company's activation does not apply; a Phase 1 forecast-line write by an inactive company still succeeds. Seven affected Rules suites: **707 / 707**; `variations` + `approvalSegregation` Functions emulator (client transitions through the Rules): **92 / 92**; the 22 unit files that read the Rules: **1,070 / 1,070** |
+| Capacity | `firestore.rules` **179,677** bytes; binding transitional **180,234** (64,766 under 245,000); m2a2 180,116. Claim and variation blocks pass the headroom probe at 16, 60 and **100** padding comparisons (345 / 345 each) |
+| D3 #53: estimating refuses over-bound BOQ text instead of clipping it | unit (42 / 42): at the bound kept whole, one over → `text-too-long` naming the field, nothing built; emulator (34 / 34): a 1,001-character description refuses the build, no revision written, the BOQ item unchanged; the 5,000-item maximum-text test now runs every text AT its bound |
+| Stage A inventory additions (BOQ text and key bounds, item limit, estimate provenance on budget lines, open POs / tenders with no recorded preparer) | `phase2Inventory` unit tests **12 / 12**: ids and codes only, no text in the output |
+
+The full automated gate (every suite) runs inside the integration block before
+anything is committed.

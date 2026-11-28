@@ -148,7 +148,7 @@ describe('the trusted backend surface', () => {
     expect(opts).toMatch(/enforceAppCheck:\s*true/)
     expect(opts).toMatch(/region:\s*REGION/)
     expect(opts).not.toMatch(/secrets|serviceAccount/)
-    expect((index.match(/onCall\(/g) || []).length).toBe(4)   // the team wrapper, this one, transferBoqToBudget (ADR-81) and the client-finance wrapper (ADR-89)
+    expect((index.match(/onCall\(/g) || []).length).toBe(8)   // the team wrapper, approveFinalAccount, transferBoqToBudget (ADR-81), the client-finance wrapper (ADR-89), the variation wrapper (ADR-90), the supplier-finance wrapper (ADR-93 / ADR-94), contractValueOperation (ADR-96) and estimateOperation (ADR-97 — its App Check / region / no-secret options are pinned in estimating.test.js)
     expect(index).not.toMatch(/onRequest\(/)
   })
 

@@ -131,6 +131,10 @@ export function buildPurchaseOrderDocument({
     // Audit stamps — required by rules on EVERY write since ADR-57.
     updatedAt:   now,
     updatedBy:   uid,
+    // D4 material-edit provenance (D3 #46) — the Rules require the creator
+    // and the server time at create, and keep them on every later write.
+    lastMaterialEditBy: uid,
+    lastMaterialEditAt: now,
   }
   if (source) {
     docData.sourceTenderPackageId = source.tenderPackageId
@@ -371,4 +375,34 @@ export function validatePoDraft({ lineItems, costCodes = null } = {}) {
     if (unresolved !== -1) return `Line ${unresolved + 1}: choose a current cost code`
   }
   return null
+}
+
+// ── D4 material-edit provenance (D3 #46) ─────────────────────────────────────
+//
+// A draft edit that changes any of these keys is MATERIAL: the Rules then
+// require `lastMaterialEditBy` = the editor and `lastMaterialEditAt` = server
+// time; any other edit (notes only) must leave both untouched, so a cosmetic
+// edit can never hide the material editor from the approval check.
+export const PO_MATERIAL_KEYS = ['description', 'lineItems', 'subtotal', 'gst', 'total']
+
+// Key-order-insensitive comparison: Firestore maps are unordered, and the Rules
+// compare values, so a line rebuilt with its keys in another order is the SAME
+// value — never a material change.
+const canonical = (v) => (v === null || typeof v !== 'object' ? JSON.stringify(v ?? null)
+  : Array.isArray(v) ? `[${v.map(canonical).join(',')}]`
+    : `{${Object.keys(v).sort().map(k => `${JSON.stringify(k)}:${canonical(v[k])}`).join(',')}}`)
+const sameValue = (a, b) => canonical(a ?? null) === canonical(b ?? null)
+
+// The stamp fields a draft edit must carry: { lastMaterialEditBy, lastMaterialEditAt }
+// when `next` changes a material key against `live`, otherwise {}.
+export function materialEditStamp(live, next, keys, uid, now) {
+  const material = keys.some(k => k in next && !sameValue(live?.[k], next[k]))
+  return material ? { lastMaterialEditBy: uid, lastMaterialEditAt: now } : {}
+}
+
+// Whether the copy a reviewer acted on is still the stored draft's content:
+// its last material edit (by and at) is unchanged.
+export function materialEditMoved(seen, live) {
+  const at = (d) => (d?.lastMaterialEditAt && typeof d.lastMaterialEditAt.toMillis === 'function' ? d.lastMaterialEditAt.toMillis() : (d?.lastMaterialEditAt ?? null))
+  return (seen?.lastMaterialEditBy ?? null) !== (live?.lastMaterialEditBy ?? null) || at(seen) !== at(live)
 }

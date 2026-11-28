@@ -295,6 +295,16 @@ describe('transfer', () => {
 
 // ── Fully voided source ──────────────────────────────────────────────────────
 
+describe('Phase 2 company activation and the ADR-81 transfer', () => {
+  it('an INACTIVE company keeps the ADR-81 transfer without an estimate, and is refused only when it names an estimate (nothing written)', async () => {
+    await seedProject()
+    const named = { ...(await request()), estimateId: 'est1' }
+    await expectTeamError(call('u_qs', named), 'commercial-completion-not-activated')
+    expect(await lines()).toEqual([])
+    expect((await call('u_qs', await request())).outcome).toBe('applied')
+  })
+})
+
 describe('a fully voided source', () => {
   beforeEach(async () => {
     await seedProject()

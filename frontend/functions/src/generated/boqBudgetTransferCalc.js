@@ -814,6 +814,46 @@ const costCodeDisplayName = (costCode) => costCode ? `${costCode.code} — ${cos
 const isActiveCostCode = (costCode) => costCode?.isActive !== false;
 
 //#endregion
+//#region src/lib/estimateSource.js
+const ESTIMATE_SOURCE_VERSION = "est1";
+function fnv1a64$1(str, basis) {
+	let hash = basis;
+	const prime = 1099511628211n;
+	const mask = 18446744073709551615n;
+	for (let i = 0; i < str.length; i++) {
+		hash ^= BigInt(str.charCodeAt(i));
+		hash = hash * prime & mask;
+	}
+	return hash.toString(16).padStart(16, "0");
+}
+const fnvDigest = (str) => fnv1a64$1(str, 14695981039346656037n) + fnv1a64$1(str, 9521211207457086692n);
+const isNumber$1 = (v) => typeof v === "number" && Number.isFinite(v);
+const num$1 = (v) => isNumber$1(v) ? String(v) : "x";
+const cmp$1 = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+const sourceItemKey = ({ id, quantity, rate, amountCents, unit, currency, costCodeId }) => [
+	id,
+	num$1(quantity),
+	rate === null ? "null" : num$1(rate),
+	amountCents === null ? "null" : String(amountCents),
+	String(unit ?? ""),
+	String(currency ?? ""),
+	String(costCodeId ?? "")
+].join(":");
+const liveItemKey = (item) => sourceItemKey({
+	id: item.id,
+	quantity: item.quantity,
+	rate: isPriced(item.rate) ? item.rate : null,
+	amountCents: isPriced(item.rate) ? isNumber$1(item.amount) ? toCents(item.amount) : "x" : null,
+	unit: item.unit,
+	currency: item.currency,
+	costCodeId: item.costCodeId
+});
+const sourceKeyOfRows = (rows) => `${ESTIMATE_SOURCE_VERSION}:${fnvDigest([String(rows.length), ...[...rows].sort(cmp$1)].join("|"))}`;
+function estimateSourceKey(boqItems) {
+	return sourceKeyOfRows((boqItems ?? []).filter((i) => i?.status === "active").map(liveItemKey));
+}
+
+//#endregion
 //#region src/lib/boqBudgetTransfer.js
 const BOQ_TRANSFER_VERSION = "v1";
 const BOQ_TRANSFER_ROLES = [
@@ -1031,7 +1071,11 @@ function reviewKeyOf(currencyCode, rows) {
 }
 const isReviewKeyShape = (v) => typeof v === "string" && /^v1:[0-9a-f]{32}$/.test(v);
 const normaliseZeroChoices = (ids) => [...new Set((ids ?? []).filter((id) => typeof id === "string" && id))].sort(cmp);
-const transferRequestKey = (reviewKey, setToZero) => `r1:${digest([String(reviewKey ?? ""), ...normaliseZeroChoices(setToZero)].join("|"))}`;
+const transferRequestKey = (reviewKey, setToZero, estimateId = null) => `r1:${digest([
+	String(reviewKey ?? ""),
+	...normaliseZeroChoices(setToZero),
+	...estimateId ? [`estimate:${estimateId}`] : []
+].join("|"))}`;
 const TRANSFER_OPERATION = {
 	CREATE: "create",
 	REFRESH: "refresh",
@@ -1142,7 +1186,8 @@ const BOQ_TRANSFER_REQUEST_KEYS = [
 	"reviewKey",
 	"setToZero"
 ];
+const BOQ_TRANSFER_OPTIONAL_REQUEST_KEYS = ["estimateId"];
 const BOQ_TRANSFER_MAX_ZERO_CHOICES = 2e3;
 
 //#endregion
-export { BOQ_LINE_ID_PREFIX, BOQ_TRANSFER_MAX_ZERO_CHOICES, BOQ_TRANSFER_REQUEST_KEYS, BOQ_TRANSFER_ROLES, BOQ_TRANSFER_VERSION, TRANSFER_BLOCKER, TRANSFER_BLOCKER_LABELS, TRANSFER_OPERATION, TRANSFER_OUTCOME, TRANSFER_ROW_STATE, TRANSFER_ROW_STATE_LABELS, applyOperationsToLines, boqBudgetLineId, boqSourceInfo, buildTransferProposal, canTransferBoqToBudget, centsToAmount, findAppliedRequest, isBoqSourcedLine, isReviewKeyShape, normaliseZeroChoices, resolveProjectCurrency, resultKeyAfter, sourceFingerprint, transferOperations, transferRequestKey, transferSummary };
+export { BOQ_LINE_ID_PREFIX, BOQ_TRANSFER_MAX_ZERO_CHOICES, BOQ_TRANSFER_OPTIONAL_REQUEST_KEYS, BOQ_TRANSFER_REQUEST_KEYS, BOQ_TRANSFER_ROLES, BOQ_TRANSFER_VERSION, TRANSFER_BLOCKER, TRANSFER_BLOCKER_LABELS, TRANSFER_OPERATION, TRANSFER_OUTCOME, TRANSFER_ROW_STATE, TRANSFER_ROW_STATE_LABELS, applyOperationsToLines, boqBudgetLineId, boqSourceInfo, buildTransferProposal, canTransferBoqToBudget, centsToAmount, estimateSourceKey, findAppliedRequest, isBoqSourcedLine, isReviewKeyShape, normaliseZeroChoices, resolveProjectCurrency, resultKeyAfter, sourceFingerprint, transferOperations, transferRequestKey, transferSummary };

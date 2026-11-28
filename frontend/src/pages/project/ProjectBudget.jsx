@@ -25,6 +25,7 @@ import {
   availableFigure, displayFigure, figureState, FIGURE_STATE, SNAPSHOT_SOURCE_LABELS,
 } from '../../lib/projectSnapshot'
 import { useProfile } from '../../hooks/useProfile'
+import { useApprovalPolicy } from '../../hooks/useApprovalPolicy'
 import { activeCostCodes, costCodeDisplayName, resolveCostCodeName } from '../../lib/costCodes'
 import { budgetLineToForm } from '../../lib/budgetLines'
 import { boqSourceInfo } from '../../lib/boqBudgetTransfer'
@@ -253,6 +254,8 @@ export default function ProjectBudget() {
     newAdjustmentId, prepareBudgetAdjustment, approveBudgetAdjustment, withdrawBudgetAdjustment,
   } = useBudgetAdjustments(projectId)
   const { user } = useAuth()
+  // Approval segregation (UX mirror; the Rules enforce it) for the two review dialogs.
+  const { approvalPolicy, approvalPolicyKnown } = useApprovalPolicy()
   const { costCodes, costCodesLoading, costCodesError } = useCostCodes()
   const { profile } = useProfile()
   const { purchaseOrders, purchaseOrdersLoading, purchaseOrdersError } = usePurchaseOrders(projectId)
@@ -789,6 +792,8 @@ export default function ProjectBudget() {
           currentUid={user?.uid}
           canApprove={canApprove}
           canWithdraw={canWithdrawBudgetDraft(profile?.role, reviewHeader, user?.uid)}
+          approvalPolicy={approvalPolicy}
+          approvalPolicyKnown={approvalPolicyKnown}
           onCheckDrift={checkDrift}
           onApprove={onApprove}
           onWithdraw={onWithdraw}
@@ -815,6 +820,8 @@ export default function ProjectBudget() {
           currentUid={user?.uid}
           canApprove={canApproveBudgetAdjustment(profile?.role)}
           canWithdraw={canWithdrawBudgetAdjustment(profile?.role, reviewAdjustment, user?.uid)}
+          approvalPolicy={approvalPolicy}
+          approvalPolicyKnown={approvalPolicyKnown}
           onApprove={onApproveAdjustment}
           onWithdraw={onWithdrawAdjustment}
           onClose={() => setAdjustmentDialog(null)}

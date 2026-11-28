@@ -6,11 +6,11 @@
 // accepts BOTH the old write and the new one while the old bundle is still
 // served — and nothing else may differ. For M3-B2 (ADR-63):
 //
-//   · variations branch (c): the FINAL file requires the ADR-62 applied pair
-//     AND the ADR-63 scope pair on a PO-linked approve; the M3-B1 bundle writes
-//     only the applied pair, so Stage 1 makes the scope pair optional (a
-//     present pair must still be the caller's at server time; the PO must
-//     still be sent/closed either way).
+//   · variations branch (c) — RETIRED BY ADR-90. The FINAL file used to require
+//     the ADR-62 applied pair AND the ADR-63 scope pair on a PO-linked approve,
+//     and Stage 1 made the scope pair optional. Approval is now a trusted
+//     callable (functions/src/variations/); neither file has a client approve
+//     branch, so the two files no longer differ anywhere in `variations`.
 //   · progressClaims exactKeys: the FINAL file requires `variationLineCount`
 //     at create; the M3-B1 bundle writes no such key, so Stage 1 leaves it
 //     optional (absent reads 0 everywhere else in the block — unchanged).
@@ -54,20 +54,15 @@ export const TRANSITIONAL_RULES_PATH = resolve(HERE, '../firestore.transitional.
 // Each FINAL line and its STAGE-1 replacement. Both carry an end-of-line marker
 // so a reviewer can grep the live ruleset for which stage is published.
 export const LINE_PAIRS = [
-  {
-    name: 'variations approve — the scope pair',
-    final:
-      "                      && appliedStamped(request.resource.data) && scopeStamped(request.resource.data))) // ADR-63 FINAL: BOTH pairs are REQUIRED on a PO-linked approve",
-    transitional:
-      "                      && appliedStamped(request.resource.data) && (scopeAbsent(request.resource.data) || scopeStamped(request.resource.data)))) // ADR-63 TRANSITIONAL (STAGE 1): the scope pair is OPTIONAL while the M3-B1 bundle is served",
-  },
-  {
-    name: 'progressClaims exactKeys — variationLineCount',
-    final:
-      "            && request.resource.data.keys().hasAll(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'variationLineCount', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'notes', 'assessmentNotes', 'currency', 'revision', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'invoicedAt', 'supplierInvoiceId', 'supplierInvoiceLinkedAt', 'supplierInvoiceLinkedBy', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']); // ADR-63 / ADR-68 FINAL: variationLineCount and the invoice link keys are REQUIRED at create",
-    transitional:
-      "            && request.resource.data.keys().hasAll(['claimNumber', 'status', 'poId', 'poNumber', 'supplierName', 'supplierId', 'claimRef', 'periodEnding', 'variationId', 'lineItems', 'retention', 'claimedSubtotal', 'claimedGst', 'claimedTotal', 'approvedSubtotal', 'approvedGst', 'approvedTotal', 'notes', 'assessmentNotes', 'currency', 'revision', 'submittedAt', 'submittedBy', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'invoicedAt', 'externalRefs', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']); // ADR-63 / ADR-68 TRANSITIONAL (STAGE 1): variationLineCount and the invoice link keys are OPTIONAL at create while the previous bundle is served",
-  },
+  // ADR-90 retired the FIRST pair this list carried ('variations approve — the
+  // scope pair', ADR-63): approving a variation is a trusted-backend operation
+  // and NEITHER file has a client approve branch any more, so there is no line
+  // left to relax. The M3-B2 rollout it served has been complete since 31
+  // October 2026.
+  // ADR-93 retired the two progressClaims pairs ('exactKeys — variationLineCount'
+  // and 'approve — the invoice link keys', ADR-63 / ADR-68): claim create and
+  // approval are trusted-backend operations and NEITHER file has a client
+  // create or approve branch any more. Their rollouts completed in November 2026.
   // ADR-65 (Constrapp GANTT™ 1A2): the FINAL file requires `revision` + 1 on
   // every activity update; the 1A1 bundle writes an unchanged revision, so
   // Stage 1 accepts EITHER (the optional `predecessors` key needs no marker —
@@ -80,20 +75,7 @@ export const LINE_PAIRS = [
     transitional:
       "          && (request.resource.data.revision == resource.data.revision || revisionIncremented()) // ADR-65 TRANSITIONAL (STAGE 1): an UNCHANGED revision is still accepted while the 1A1 bundle is served",
   },
-  // ADR-68 (SHIELD 2A): the FINAL file requires the invoice link keys to be
-  // present and null once a claim is approved; the pre-2A bundle writes none.
-  {
-    name: 'progressClaims approve — the invoice link keys',
-    final:
-      "              && linkUnlinked(request.resource.data) // ADR-68 FINAL: the invoice link keys are REQUIRED (null) on approve",
-    transitional:
-      "              && (!('supplierInvoiceId' in request.resource.data) || linkUnlinked(request.resource.data)) // ADR-68 TRANSITIONAL (STAGE 1): the invoice link keys are OPTIONAL on approve while the pre-2A bundle is served",
-  },
 ]
-
-// Kept for callers that pin the first pair by name.
-export const FINAL_LINE = LINE_PAIRS[0].final
-export const TRANSITIONAL_LINE = LINE_PAIRS[0].transitional
 
 const HEADER_FINAL = "rules_version = '2';"
 export const HEADER_TRANSITIONAL_LINES = [

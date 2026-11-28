@@ -8,7 +8,7 @@ import {
   assertFails,
 } from '@firebase/rules-unit-testing'
 import {
-  doc, getDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, Timestamp,
+  doc, getDoc, setDoc, updateDoc, deleteDoc, runTransaction, serverTimestamp, Timestamp,
 } from 'firebase/firestore'
 
 // ── Supplier Credit Note Security Rules — emulator tests ─────────────────────
@@ -26,6 +26,22 @@ import {
 // cannot sum sibling documents (Deferred Control 25), and one test below proves
 // that gap honestly.
 //
+// ⚠️ ADR-94 (Phase 2 step 4, trusted supplier finance). A supplier credit note
+// is CREATED, its draft EDITED, POSTED and VOIDED only by the trusted backend
+// (functions/src/supplierFinance/), through the invoice ledger: the cumulative
+// cap (Deferred Control 25), credits on retained invoices (G1) and
+// dependency-safe voids (G3). The block is now `allow create, update, delete:
+// if false` and the `supplierCreditNotes` counter is backend-only. Every test
+// below whose subject was a client write that used to SUCCEED now proves that
+// exact write is REFUSED for every financial role (company_admin,
+// project_manager, qs) with nothing stored / the stored document unchanged
+// (`createRefused` / `updateRefused`). Every denial the suite already asserted
+// is kept unchanged — it still holds, now trivially. The target / post-time
+// checks the rules used to make are the backend's now; the scenarios are kept
+// as refusals. Where a scenario needs the document the old client write
+// produced, it is written with rules disabled (`serverUpdate`). Reads are
+// unchanged: financial roles only, tenant-isolated.
+//
 // SAFETY: this suite refuses to run unless FIRESTORE_EMULATOR_HOST is set, so it
 // can never reach a production Firebase project. The npm script starts the
 // emulator via `firebase emulators:exec`, which sets that variable.
@@ -33,7 +49,7 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RULES_PATH = resolve(HERE, '../../firestore.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A = 'companyA'
 const COMPANY_B = 'companyB'
 const PROJECT_A = 'projectA'
@@ -48,6 +64,8 @@ const USERS = {
   client:{ uid: 'u_client',role: 'client',          companyId: COMPANY_A },
   other: { uid: 'u_other', role: 'company_admin',   companyId: COMPANY_B },
 }
+
+const FINANCIAL = [USERS.admin, USERS.pm, USERS.qs]
 
 let testEnv
 
@@ -147,6 +165,34 @@ async function seed(id, status, user = USERS.admin, extra = {}) {
   })
 }
 
+async function readCn(id, companyId = COMPANY_A) {
+  let data
+  await testEnv.withSecurityRulesDisabled(async (c) => {
+    const snap = await getDoc(doc(c.firestore(), creditNotesPath(companyId), id))
+    data = snap.exists() ? snap.data() : undefined
+  })
+  return data
+}
+// ADR-94 — a client create is REFUSED for EVERY financial role; nothing is stored.
+async function createRefused(id, build, companyId = COMPANY_A) {
+  for (const user of FINANCIAL) await assertFails(setDoc(cnRef(ctx(user), id, companyId), build(user)))
+  expect(await readCn(id, companyId)).toBeUndefined()
+}
+// ADR-94 — a client update is REFUSED for EVERY financial role; the stored
+// document does not move.
+async function updateRefused(id, build) {
+  const before = await readCn(id)
+  expect(before).toBeDefined()
+  for (const user of FINANCIAL) await assertFails(updateDoc(cnRef(ctx(user), id), build(user)))
+  expect(await readCn(id)).toEqual(before)
+}
+// What the TRUSTED BACKEND stores, written with rules disabled.
+async function serverUpdate(id, data) {
+  await testEnv.withSecurityRulesDisabled(async (c) => {
+    await updateDoc(doc(c.firestore(), creditNotesPath(), id), data)
+  })
+}
+
 // The three write shapes the app performs, so tests exercise the real payloads.
 const postWrite = (user, extra = {}) => ({
   status: 'posted',
@@ -221,12 +267,12 @@ beforeEach(async () => {
   await seedInvoice('si1')
 })
 
-// ── MUST ALLOW ───────────────────────────────────────────────────────────────
+// ── formerly MUST ALLOW — ADR-94: every client write is now REFUSED ──────────
 
-describe('MUST ALLOW', () => {
-  it('1. financial roles create a draft (company_admin, project_manager, qs)', async () => {
+describe('formerly MUST ALLOW — ADR-94: every client write REFUSED for every financial role; reads unchanged', () => {
+  it('1. ADR-94 — a draft create is REFUSED for every financial role (company_admin, project_manager, qs); nothing is stored', async () => {
     for (const user of [USERS.admin, USERS.pm, USERS.qs]) {
-      await assertSucceeds(setDoc(cnRef(ctx(user), `d_${user.uid}`), draftPayload(user)))
+      await createRefused(`d_${user.uid}`, (user) => draftPayload(user))
     }
   })
 
@@ -237,9 +283,9 @@ describe('MUST ALLOW', () => {
     }
   })
 
-  it('2. financial role edits a draft (date, reason, reference, lines, totals, notes)', async () => {
+  it('2. ADR-94 — a draft edit (date, reason, reference, lines, totals, notes) is REFUSED for every financial role; the draft does not move', async () => {
     await seed('cn1', 'draft')
-    await assertSucceeds(updateDoc(cnRef(ctx(USERS.qs), 'cn1'), draftEdit(USERS.qs, {
+    await updateRefused('cn1', (user) => draftEdit(user, {
       supplierCreditReference: 'CN-10',
       creditDate: '2026-08-14',
       reason: 'Back-charge for rectification',
@@ -251,63 +297,62 @@ describe('MUST ALLOW', () => {
       gstTotal: 20,
       grossTotal: 270,
       notes: 'agreed with supplier 14 Aug',
-    })))
+    }))
   })
 
-  it('3. draft -> posted with correct postedAt/postedBy', async () => {
+  it('3. ADR-94 — draft -> posted with correct postedAt/postedBy is REFUSED for every financial role', async () => {
     await seed('cn1', 'draft')
-    await assertSucceeds(updateDoc(cnRef(ctx(USERS.pm), 'cn1'), postWrite(USERS.pm)))
+    await updateRefused('cn1', (user) => postWrite(user))
   })
 
-  it('4. draft -> void with a non-empty reason', async () => {
+  it('4. ADR-94 — draft -> void with a non-empty reason is REFUSED for every financial role', async () => {
     await seed('cn1', 'draft')
-    await assertSucceeds(updateDoc(cnRef(ctx(USERS.admin), 'cn1'), voidWrite(USERS.admin)))
+    await updateRefused('cn1', (user) => voidWrite(user))
   })
 
-  it('5. posted -> void with a non-empty reason', async () => {
+  it('5. ADR-94 — posted -> void with a non-empty reason is REFUSED for every financial role', async () => {
     await seed('cn1', 'posted')
-    await assertSucceeds(updateDoc(cnRef(ctx(USERS.admin), 'cn1'), voidWrite(USERS.admin)))
+    await updateRefused('cn1', (user) => voidWrite(user))
   })
 
-  it('6. a FULL credit — grossTotal exactly equal to the target payableTotal, to the cent', async () => {
-    await assertSucceeds(setDoc(cnRef(ctx(USERS.admin), 'full'), draftPayload(USERS.admin, {
+  it('6. ADR-94 — a FULL credit (grossTotal exactly the target payableTotal): the create is REFUSED', async () => {
+    await createRefused('full', (user) => draftPayload(user, {
       lineItems: [{ costCodeId: 'cc1', costCodeName: '03-100 — Concrete', description: 'Full credit', amount: 1000, taxCode: 'gst', gstAmount: 100 }],
       subtotal: 1000, gstTotal: 100, grossTotal: 1100,
-    })))
+    }))
   })
 
-  it('7. exactly 100 lines are permitted', async () => {
-    await assertSucceeds(setDoc(cnRef(ctx(USERS.admin), 'max'), draftPayload(USERS.admin, manyLines(100))))
+  it('7. ADR-94 — exactly 100 lines: the create is REFUSED', async () => {
+    await createRefused('max', (user) => draftPayload(user, manyLines(100)))
   })
 
-  it('8. empty supplierInvoiceNumber and supplierCreditReference are permitted (never invented)', async () => {
-    await assertSucceeds(setDoc(cnRef(ctx(USERS.admin), 'norefs'), draftPayload(USERS.admin, {
+  it('8. ADR-94 — empty supplierInvoiceNumber and supplierCreditReference: the create is REFUSED', async () => {
+    await createRefused('norefs', (user) => draftPayload(user, {
       supplierInvoiceNumber: '', supplierCreditReference: '',
-    })))
+    }))
   })
 
-  it('8b. a LEGACY target with supplierId null is creditable when the credit freezes null too', async () => {
+  it('8b. ADR-94 — a credit on a LEGACY target (supplierId null on both): the create is REFUSED', async () => {
     await seedInvoice('si_legacy', { supplierId: null, invoiceNumber: 'SI-0002' })
-    await assertSucceeds(setDoc(cnRef(ctx(USERS.admin), 'legacy'), draftPayload(USERS.admin, {
+    await createRefused('legacy', (user) => draftPayload(user, {
       supplierInvoiceId: 'si_legacy', invoiceNumber: 'SI-0002', supplierId: null,
-    })))
+    }))
   })
 
-  it('8c. cumulative over-credit across SIBLINGS is NOT rules-enforced (Deferred Control 25 — honestly proven)', async () => {
+  it('8c. ADR-94 — a cumulative over-credit across SIBLINGS (the old Deferred Control 25 gap) is now REFUSED: no client create at all; the cap is the backend ledger\'s', async () => {
     // A posted sibling credit already consumed 1000 of si1's 1100 payable. The
-    // app HARD-BLOCKS this second 200 credit; the rules CANNOT — they have no
-    // list/query/count over sibling documents. This test documents the gap:
-    // if it ever starts failing, the rules got stronger and DC25 must be updated.
+    // rules could never sum siblings (DC25); ADR-94 closes the gap by moving
+    // every write to the backend, which caps against the invoice ledger.
     await seed('cn_sib', 'posted', USERS.admin, {
       creditNumber: 'SCN-0009',
       lineItems: [{ costCodeId: 'cc1', costCodeName: '03-100 — Concrete', description: 'big', amount: 909.09, taxCode: 'gst', gstAmount: 90.91 }],
       subtotal: 909.09, gstTotal: 90.91, grossTotal: 1000,
     })
-    await assertSucceeds(setDoc(cnRef(ctx(USERS.admin), 'cn_over'), draftPayload(USERS.admin, {
+    await createRefused('cn_over', (user) => draftPayload(user, {
       creditNumber: 'SCN-0010',
       lineItems: [{ costCodeId: 'cc1', costCodeName: '03-100 — Concrete', description: 'second', amount: 181.82, taxCode: 'gst', gstAmount: 18.18 }],
       subtotal: 181.82, gstTotal: 18.18, grossTotal: 200,
-    })))
+    }))
   })
 })
 
@@ -319,22 +364,21 @@ describe('MUST ALLOW', () => {
 // math.round(v * 100) — equivalent to a half-cent tolerance, so a discrepancy
 // of one cent or more still fails. The payable cap compares cents the same way.
 
-describe('cent arithmetic (header invariant and payable cap must accept real money)', () => {
-  it('accepts 0.30 = 0.10 + 0.20 (the classic float failure)', async () => {
-    await assertSucceeds(setDoc(cnRef(ctx(USERS.admin), 'c1'), draftPayload(USERS.admin, {
+describe('cent arithmetic (ADR-94: the header invariant and payable cap are the backend\'s; every client create is REFUSED)', () => {
+  it('ADR-94 — 0.30 = 0.10 + 0.20 (the classic float failure): the create is REFUSED', async () => {
+    await createRefused('c1', (user) => draftPayload(user, {
       lineItems: [{ costCodeId: 'cc1', costCodeName: '03-100 — Concrete', description: 'x', amount: 0.10, taxCode: 'gst', gstAmount: 0.20 }],
       subtotal: 0.10, gstTotal: 0.20, grossTotal: 0.30,
-    })))
+    }))
   })
 
-  it('accepts 10.01 = 3.33 + 6.68 and 1000.00 = 999.99 + 0.01', async () => {
-    const db = ctx(USERS.admin)
-    await assertSucceeds(setDoc(cnRef(db, 'c2'), draftPayload(USERS.admin, {
+  it('ADR-94 — 10.01 = 3.33 + 6.68 and 1000.00 = 999.99 + 0.01: both creates are REFUSED', async () => {
+    await createRefused('c2', (user) => draftPayload(user, {
       subtotal: 3.33, gstTotal: 6.68, grossTotal: 10.01,
-    })))
-    await assertSucceeds(setDoc(cnRef(db, 'c3'), draftPayload(USERS.admin, {
+    }))
+    await createRefused('c3', (user) => draftPayload(user, {
       subtotal: 999.99, gstTotal: 0.01, grossTotal: 1000.00,
-    })))
+    }))
   })
 
   it('STILL REJECTS a one-cent discrepancy in either direction', async () => {
@@ -347,11 +391,11 @@ describe('cent arithmetic (header invariant and payable cap must accept real mon
     })))
   })
 
-  it('the payable cap is cent-exact: 1100.00 passes, 1100.01 fails', async () => {
+  it('the payable cap: ADR-94 — 1100.00 is REFUSED now too; 1100.01 fails', async () => {
     const db = ctx(USERS.admin)
-    await assertSucceeds(setDoc(cnRef(db, 'cap_ok'), draftPayload(USERS.admin, {
+    await createRefused('cap_ok', (user) => draftPayload(user, {
       subtotal: 1000, gstTotal: 100, grossTotal: 1100,
-    })))
+    }))
     await assertFails(setDoc(cnRef(db, 'cap_over'), draftPayload(USERS.admin, {
       subtotal: 1000.01, gstTotal: 100, grossTotal: 1100.01,
     })))
@@ -419,7 +463,7 @@ describe('MUST REJECT — target invoice checks (rules get() the target)', () =>
     })))
   })
 
-  it('T8. a draft edit fails once the target has been cancelled — but VOIDING still succeeds', async () => {
+  it('T8. a draft edit fails once the target has been cancelled — ADR-94: the VOID is now REFUSED too (the backend voids)', async () => {
     await seed('cn1', 'draft')
     await testEnv.withSecurityRulesDisabled(async (c) => {
       await updateDoc(doc(c.firestore(), invoicesPath(), 'si1'), { status: 'cancelled' })
@@ -427,8 +471,8 @@ describe('MUST REJECT — target invoice checks (rules get() the target)', () =>
     const db = ctx(USERS.admin)
     // Content edits re-run targetValid() and fail against a cancelled target…
     await assertFails(updateDoc(cnRef(db, 'cn1'), draftEdit(USERS.admin, { notes: 'still here' })))
-    // …but the void branch carries no target check, so the record can be closed out.
-    await assertSucceeds(updateDoc(cnRef(db, 'cn1'), voidWrite(USERS.admin, 'Target invoice was cancelled')))
+    // …and ADR-94: the void (which carried no target check) is the backend's now.
+    await updateRefused('cn1', (user) => voidWrite(user, 'Target invoice was cancelled'))
   })
 
   // ── POST-TIME REVALIDATION ────────────────────────────────────────────────
@@ -486,12 +530,12 @@ describe('MUST REJECT — target invoice checks (rules get() the target)', () =>
     await assertFails(updateDoc(cnRef(ctx(USERS.admin), 'cn1'), postWrite(USERS.admin)))
   })
 
-  it('P3b. a payableTotal reduction that still covers the credit gross permits the post', async () => {
+  it('P3b. ADR-94 — a payableTotal reduction that still covers the credit gross: the post is REFUSED for every financial role', async () => {
     await seed('cn1', 'draft') // grossTotal 110
     await testEnv.withSecurityRulesDisabled(async (c) => {
       await updateDoc(doc(c.firestore(), invoicesPath(), 'si1'), { payableTotal: 110 })
     })
-    await assertSucceeds(updateDoc(cnRef(ctx(USERS.admin), 'cn1'), postWrite(USERS.admin)))
+    await updateRefused('cn1', (user) => postWrite(user))
   })
 
   it('P4. posting fails when the target SUPPLIER or CURRENCY changed after the draft was saved', async () => {
@@ -515,17 +559,17 @@ describe('MUST REJECT — target invoice checks (rules get() the target)', () =>
     await assertFails(updateDoc(cnRef(ctx(USERS.admin), 'cn1'), postWrite(USERS.admin)))
   })
 
-  it('P6. voiding a draft whose target went bad STILL succeeds (the record can always be closed out)', async () => {
+  it('P6. ADR-94 — voiding a draft whose target went bad is REFUSED for every financial role (the backend closes it out)', async () => {
     await seed('cn1', 'draft')
     await testEnv.withSecurityRulesDisabled(async (c) => {
       await updateDoc(doc(c.firestore(), invoicesPath(), 'si1'), { status: 'cancelled' })
     })
-    await assertSucceeds(updateDoc(cnRef(ctx(USERS.admin), 'cn1'), voidWrite(USERS.admin, 'Target was cancelled')))
+    await updateRefused('cn1', (user) => voidWrite(user, 'Target was cancelled'))
   })
 
-  it('P7. an unchanged, still-valid target posts normally (no regression)', async () => {
+  it('P7. ADR-94 — a post over an unchanged, still-valid target is REFUSED for every financial role', async () => {
     await seed('cn1', 'draft')
-    await assertSucceeds(updateDoc(cnRef(ctx(USERS.admin), 'cn1'), postWrite(USERS.admin)))
+    await updateRefused('cn1', (user) => postWrite(user))
   })
 })
 
@@ -737,20 +781,20 @@ describe('MUST REJECT', () => {
 
 // ── serverTimestamp() must satisfy the request.time checks ───────────────────
 
-describe('serverTimestamp satisfies request.time', () => {
-  it('create: serverTimestamp() is accepted; a client clock value is rejected', async () => {
+describe('serverTimestamp stamps (ADR-94: the well-formed write is REFUSED too)', () => {
+  it('create: ADR-94 — the serverTimestamp() create is REFUSED for every financial role; a client clock value is rejected', async () => {
     const db = ctx(USERS.admin)
-    await assertSucceeds(setDoc(cnRef(db, 'ok'), draftPayload(USERS.admin)))
+    await createRefused('ok', (user) => draftPayload(user))
     for (const [i, stamp] of CLIENT_CLOCKS.entries()) {
       await assertFails(setDoc(cnRef(db, `badc${i}`), draftPayload(USERS.admin, { createdAt: stamp() })))
       await assertFails(setDoc(cnRef(db, `badu${i}`), draftPayload(USERS.admin, { updatedAt: stamp() })))
     }
   })
 
-  it('post: serverTimestamp() is accepted; a client clock value is rejected', async () => {
+  it('post: ADR-94 — the serverTimestamp() post is REFUSED for every financial role; a client clock value is rejected', async () => {
     await seed('cn_ok', 'draft')
     const db = ctx(USERS.admin)
-    await assertSucceeds(updateDoc(cnRef(db, 'cn_ok'), postWrite(USERS.admin)))
+    await updateRefused('cn_ok', (user) => postWrite(user))
     for (const [i, stamp] of CLIENT_CLOCKS.entries()) {
       await seed(`cp${i}`, 'draft')
       await seed(`cu${i}`, 'draft')
@@ -759,10 +803,10 @@ describe('serverTimestamp satisfies request.time', () => {
     }
   })
 
-  it('void: serverTimestamp() is accepted; a client clock value is rejected', async () => {
+  it('void: ADR-94 — the serverTimestamp() void is REFUSED for every financial role; a client clock value is rejected', async () => {
     await seed('cn_ok', 'posted')
     const db = ctx(USERS.admin)
-    await assertSucceeds(updateDoc(cnRef(db, 'cn_ok'), voidWrite(USERS.admin)))
+    await updateRefused('cn_ok', (user) => voidWrite(user))
     for (const [i, stamp] of CLIENT_CLOCKS.entries()) {
       await seed(`cv${i}`, 'posted')
       await seed(`cw${i}`, 'posted')
@@ -771,11 +815,8 @@ describe('serverTimestamp satisfies request.time', () => {
     }
   })
 
-  it('the full app write sequence succeeds end to end: create -> edit -> post -> void', async () => {
-    const db = ctx(USERS.qs)
-    const ref = cnRef(db, 'flow')
-    await assertSucceeds(setDoc(ref, draftPayload(USERS.qs)))
-    await assertSucceeds(updateDoc(ref, draftEdit(USERS.qs, {
+  it('ADR-94 — the old app write sequence create -> edit -> post -> void is REFUSED at EVERY step for every financial role; each stored state (written as the backend would) stays put and stays readable', async () => {
+    const edit = (user) => draftEdit(user, {
       reason: 'Agreed reduction after remeasure',
       lineItems: [
         { costCodeId: 'cc1', costCodeName: '03-100 — Concrete', description: 'Remeasure', amount: 499.99, taxCode: 'gst', gstAmount: 50 },
@@ -784,23 +825,60 @@ describe('serverTimestamp satisfies request.time', () => {
       subtotal: 500,
       gstTotal: 50,
       grossTotal: 550,
-    })))
-    await assertSucceeds(updateDoc(ref, postWrite(USERS.qs)))
-
-    // withSecurityRulesDisabled resolves to undefined — capture via closure.
-    let after
-    await testEnv.withSecurityRulesDisabled(async (c) => {
-      after = (await getDoc(doc(c.firestore(), creditNotesPath(), 'flow'))).data()
     })
+    await createRefused('flow', draftPayload)
+    await seed('flow', 'draft', USERS.qs)
+    await updateRefused('flow', edit)
+    await serverUpdate('flow', edit(USERS.qs))
+    await updateRefused('flow', (user) => postWrite(user))
+    await serverUpdate('flow', postWrite(USERS.qs))
+
+    const after = await readCn('flow')
     expect(after.status).toBe('posted')
     expect(after.postedBy).toBe(USERS.qs.uid)
     expect(after.postedAt).not.toBeNull()
     expect(after.creditNumber).toBe('SCN-0001')
     expect(after.supplierInvoiceId).toBe('si1')
     expect(after.grossTotal).toBe(550)
+    for (const user of FINANCIAL) await assertSucceeds(getDoc(cnRef(ctx(user), 'flow')))
 
-    // Posted content is now immutable; voiding is the only permitted update.
-    await assertFails(updateDoc(ref, draftEdit(USERS.qs, { notes: 'too late' })))
-    await assertSucceeds(updateDoc(ref, voidWrite(USERS.qs, 'Supplier reissued the credit at a different value')))
+    // Posted content was always immutable; now the void is refused too.
+    await assertFails(updateDoc(cnRef(ctx(USERS.qs), 'flow'), draftEdit(USERS.qs, { notes: 'too late' })))
+    await updateRefused('flow', (user) => voidWrite(user, 'Supplier reissued the credit at a different value'))
+  })
+})
+
+// ── ADR-94 — the supplierCreditNotes counter is backend-only ─────────────────
+
+describe('ADR-94 — the supplierCreditNotes number counter', () => {
+  const counter = (db, id, companyId = COMPANY_A) => doc(db, `companies/${companyId}/counters`, id)
+  const readCounter = async (id) => {
+    let data
+    await testEnv.withSecurityRulesDisabled(async (c) => { const s = await getDoc(counter(c.firestore(), id)); data = s.exists() ? s.data() : undefined })
+    return data
+  }
+
+  it('every financial role is REFUSED a read, a create, an advance and the old numbering transaction; the stored value does not move', async () => {
+    for (const user of FINANCIAL) await assertFails(setDoc(counter(ctx(user), 'supplierCreditNotes'), { next: 2 }, { merge: true }))
+    expect(await readCounter('supplierCreditNotes')).toBeUndefined()
+    await testEnv.withSecurityRulesDisabled(async (c) => { await setDoc(counter(c.firestore(), 'supplierCreditNotes'), { next: 7 }) })
+    for (const user of FINANCIAL) {
+      const db = ctx(user)
+      await assertFails(getDoc(counter(db, 'supplierCreditNotes')))
+      await assertFails(updateDoc(counter(db, 'supplierCreditNotes'), { next: 8 }))
+      await assertFails(setDoc(counter(db, 'supplierCreditNotes'), { next: 1 }, { merge: true }))
+      await assertFails(runTransaction(db, async (tx) => {
+        const snap = await tx.get(counter(db, 'supplierCreditNotes'))
+        tx.set(counter(db, 'supplierCreditNotes'), { next: (snap.exists() ? snap.data().next : 1) + 1 }, { merge: true })
+      }))
+    }
+    expect(await readCounter('supplierCreditNotes')).toEqual({ next: 7 })
+  })
+
+  it('another register\'s counter (purchaseOrders) still reads and advances for every financial role', async () => {
+    for (const user of FINANCIAL) {
+      await assertSucceeds(setDoc(counter(ctx(user), 'purchaseOrders'), { next: 2 }, { merge: true }))
+      await assertSucceeds(getDoc(counter(ctx(user), 'purchaseOrders')))
+    }
   })
 })

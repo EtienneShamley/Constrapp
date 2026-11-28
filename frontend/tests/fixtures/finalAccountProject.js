@@ -83,13 +83,16 @@ export const readyProject = () => ({
   // the invoice's own (ADR-87 / ADR-88 change nothing for such a project).
   clientCreditNotes: [],
   clientRetentionReleases: [],
+  // Phase 2 step 5: no refund and no receipt application.
+  clientRefunds: [],
+  clientReceiptApplications: [],
 })
 
 // The project-level collections whose documents are listed above.
 export const FA_PROJECT_COLLECTIONS = [
   'budgetLines', 'budgetApprovals', 'budgetApprovalSnapshots', 'purchaseOrders', 'progressClaims', 'supplierInvoices',
   'supplierCreditNotes', 'variations', 'forecastLines', 'supplierPayments', 'retentionReleases', 'clientInvoices', 'clientReceipts',
-  'clientCreditNotes', 'clientRetentionReleases',
+  'clientCreditNotes', 'clientRetentionReleases', 'clientRefunds', 'clientReceiptApplications',
 ]
 
 export const EXPECTED_FIGURES = {
@@ -116,6 +119,7 @@ export function sourcesOf(p) {
     forecastLines: p.forecastLines, baseline: p.baseline, supplierPayments: p.supplierPayments,
     retentionReleases: p.retentionReleases, clientInvoices: p.clientInvoices, clientReceipts: p.clientReceipts,
     clientCreditNotes: p.clientCreditNotes ?? [], clientRetentionReleases: p.clientRetentionReleases ?? [],
+    clientRefunds: p.clientRefunds ?? [], clientReceiptApplications: p.clientReceiptApplications ?? [],
     costCodes: p.costCodes,
     approvedBudget: {
       ...settled,

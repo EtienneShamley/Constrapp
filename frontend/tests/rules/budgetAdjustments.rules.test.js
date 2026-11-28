@@ -41,7 +41,7 @@ import { isAdjustmentAmount } from '../../src/lib/budgetAdjustment'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RULES_PATH = resolve(HERE, '../../firestore.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A = 'companyA'
 const COMPANY_B = 'companyB'
 const PROJECT_A = 'projectA'
@@ -839,5 +839,67 @@ describe('DC45 — a forged, rules-valid paired approval that drives a cost code
     expect(resolved.kind).toBe(BUDGET_SOURCE.UNAVAILABLE)
     expect(resolved.problems).toContain(BUDGET_INTEGRITY_PROBLEM.ADJUSTED_NEGATIVE)
     expect(resolved.total).toBeNull()
+  })
+})
+
+// ── ADR-96 — approval segregation on APPROVE ────────────────────────────────
+
+describe('ADR-96 — approval segregation: an adjustment\'s preparer cannot approve it when the policy is enabled', () => {
+  const PM2 = { uid: 'u_pm2', role: 'project_manager', companyId: COMPANY_A }
+  const seedPolicy = (segregationEnabled, companyId = COMPANY_A) => testEnv.withSecurityRulesDisabled(async (c) => {
+    await setDoc(doc(c.firestore(), `companies/${companyId}/approvalPolicy/current`), { segregationEnabled, updatedAt: Timestamp.now() })
+  })
+  const expectUnchanged = async () => {
+    expect(await readAdj('adj1')).toMatchObject({ status: 'draft', sequence: null, approvedBy: null, revision: 1 })
+    const p = await readPointer()
+    expect(p.adjustmentCount).toBeUndefined()
+    expect(p.lastAdjustmentId).toBeUndefined()
+  }
+
+  beforeEach(async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(doc(c.firestore(), 'users', PM2.uid), { role: PM2.role, companyId: PM2.companyId, name: PM2.uid })
+    })
+    await seedVersion('ba1')
+    // Prepared by the PM, last updated by the admin — both approvers.
+    await seedDraft('adj1', { user: USERS.pm, updatedBy: USERS.admin.uid })
+  })
+
+  it('policy ABSENT: the creator approves their own adjustment exactly as before', async () => {
+    await assertSucceeds(approvePair(ctx(USERS.pm), USERS.pm, 'adj1'))
+    expect(await readAdj('adj1')).toMatchObject({ status: 'approved', sequence: 1, approvedBy: USERS.pm.uid })
+    expect(await readPointer()).toMatchObject({ adjustmentCount: 1, adjustmentNet: 50, lastAdjustmentId: 'adj1' })
+  })
+  it('policy ABSENT: the last updater approves as before', async () => {
+    await assertSucceeds(approvePair(ctx(USERS.admin), USERS.admin, 'adj1'))
+  })
+  it('policy ENABLED: the creator is refused and nothing moves (adjustment nor ledger)', async () => {
+    await seedPolicy(true)
+    await assertFails(approvePair(ctx(USERS.pm), USERS.pm, 'adj1'))
+    await expectUnchanged()
+  })
+  it('policy ENABLED: the last updater is refused and nothing moves', async () => {
+    await seedPolicy(true)
+    await assertFails(approvePair(ctx(USERS.admin), USERS.admin, 'adj1'))
+    await expectUnchanged()
+  })
+  it('policy ENABLED: an independent approver succeeds, adjustment and ledger together', async () => {
+    await seedPolicy(true)
+    await assertSucceeds(approvePair(ctx(PM2), PM2, 'adj1'))
+    expect(await readAdj('adj1')).toMatchObject({ status: 'approved', sequence: 1, approvedBy: PM2.uid })
+    expect(await readPointer()).toMatchObject({ adjustmentCount: 1, adjustmentNet: 50, lastAdjustmentId: 'adj1', activeApprovalId: 'ba1' })
+  })
+  it('policy present with segregationEnabled: false — the creator approves', async () => {
+    await seedPolicy(false)
+    await assertSucceeds(approvePair(ctx(USERS.pm), USERS.pm, 'adj1'))
+  })
+  it('another company\'s ENABLED policy does not affect Company A', async () => {
+    await seedPolicy(true, COMPANY_B)
+    await assertSucceeds(approvePair(ctx(USERS.pm), USERS.pm, 'adj1'))
+  })
+  it('policy ENABLED: withdraw is unchanged — the preparer may still withdraw their draft', async () => {
+    await seedPolicy(true)
+    await assertSucceeds(updateDoc(adjRef(ctx(USERS.pm), 'adj1'), withdrawWrite(USERS.pm)))
+    expect(await readAdj('adj1')).toMatchObject({ status: 'withdrawn', withdrawnBy: USERS.pm.uid })
   })
 })

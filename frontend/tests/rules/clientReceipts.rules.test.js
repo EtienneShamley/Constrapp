@@ -35,7 +35,7 @@ import { readLedger, ledgerDocument, applyReceipt, applyReceiptVoid } from '../.
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RULES_PATH = resolve(HERE, '../../firestore.rules')
 
-const PROJECT_ID = 'constrapp-rules-test'
+const PROJECT_ID = 'demo-constrap-test'
 const COMPANY_A = 'companyA'
 const COMPANY_B = 'companyB'
 const PROJECT_A = 'projectA'
@@ -1122,14 +1122,19 @@ describe('ADR-89 — seeded backend state (a posted receipt and a ledger carryin
     }
   })
 
-  it('an invoice with RECEIPTS can still be voided (pre-existing behaviour): a ledger with receivedCents > 0 and zero credited / released totals does NOT block ledgerClear', async () => {
+  // Phase 2 step 5 (D8) — CHANGED EXPECTATION. Before it an invoice WITH receipts
+  // could be voided by the browser (Rules cannot read receipts; ledgerClear ignored
+  // receivedCents). An issued invoice is now voided only by the trusted callable
+  // voidClientInvoice, which refuses while receivedCents > 0 — so the Rules refuse
+  // every client void of an issued invoice (tests/functions/clientSettlement.test.js).
+  it('an invoice with RECEIPTS can NO LONGER be voided by the client (D8): every financial role is refused', async () => {
     for (const user of FINANCIAL) {
       const id = `inv_${user.uid}`
       await seedInvoice(id)
       // As the backend writes it for a receipt-created ledger: all six totals present and zero.
       const body = await seedLedger(id, applyReceipt(readLedger(null), INV1_ALLOCATED_CENTS, 'r1'))
       expect(body).toMatchObject({ receivedCents: 110000, creditedSubtotalCents: 0, releasedRetentionCents: 0 })
-      await allowed(`${who(user)} voids an invoice that has receipts`, updateDoc(invRef(ctx(user), id), invoiceVoid(user)))
+      await denied(`${who(user)} voids an invoice that has receipts`, updateDoc(invRef(ctx(user), id), invoiceVoid(user)))
     }
   })
 
@@ -1145,13 +1150,13 @@ describe('ADR-89 — seeded backend state (a posted receipt and a ledger carryin
     }
   })
 
-  it('a ledger holding ONLY receivedCents (no credit / release keys at all) does NOT block the invoice void — ledgerClear reads a missing total as zero', async () => {
+  it('a ledger holding ONLY receivedCents (no credit / release keys) — the issued invoice is refused to the client all the same (D8)', async () => {
     await seedInvoice('invBare')
     await admin((db) => setDoc(ledRef(db, 'invBare'), {
       seq: 1, receivedCents: 110000, lastEntryId: 'r1', lastEntryKind: 'receipt', lines: {},
       createdAt: Timestamp.now(), createdBy: USERS.admin.uid, updatedAt: Timestamp.now(), updatedBy: USERS.admin.uid,
     }))
-    await allowed('voids against a receipt-only ledger without the six totals', updateDoc(invRef(ctx(USERS.admin), 'invBare'), invoiceVoid(USERS.admin)))
+    await denied('voids against a receipt-only ledger without the six totals', updateDoc(invRef(ctx(USERS.admin), 'invBare'), invoiceVoid(USERS.admin)))
     // Control: the same sparse shape WITH a credited amount still blocks.
     await seedInvoice('invBare2')
     await admin((db) => setDoc(ledRef(db, 'invBare2'), {
@@ -1176,7 +1181,8 @@ describe('ADR-89 — seeded backend state (a posted receipt and a ledger carryin
     both.update(invRef(db, 'inv1'), invoiceVoid(USERS.admin))
     both.update(rcpRef(db, 'r1'), voidWrite(USERS.admin))
     await denied('invoice void + posted receipt void', both.commit())
-    await allowed('the invoice void alone', updateDoc(invRef(db, 'inv1'), invoiceVoid(USERS.admin)))
+    // Phase 2 step 5 (D8): even alone, the client void of an issued invoice with receipts is refused.
+    await denied('the invoice void alone', updateDoc(invRef(db, 'inv1'), invoiceVoid(USERS.admin)))
     expect(await ledgerOf('inv1')).toEqual(before)
     expect((await receiptOf('r1')).status).toBe('posted')
   })

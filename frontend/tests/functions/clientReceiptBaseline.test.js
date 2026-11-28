@@ -1208,7 +1208,7 @@ describe('the server is the authority for the supported monetary range', () => {
     expect(JSON.parse(JSON.stringify(back.receivedCents))).toBe(8_999_999_999_999_910)
     expect(readLedger(back).receivedCents).toBe(8_999_999_999_999_910)
     // On the wire it is a Firestore INTEGER (64-bit), not a double — as every ledger figure the Admin SDK writes is.
-    const raw = await fetch(`http://${process.env.FIRESTORE_EMULATOR_HOST}/v1/projects/constrapp-rules-test/databases/(default)/documents/${ledgerRef('roundTrip').path}`, { headers: { Authorization: 'Bearer owner' } }).then(r => r.json())
+    const raw = await fetch(`http://${process.env.FIRESTORE_EMULATOR_HOST}/v1/projects/demo-constrap-test/databases/(default)/documents/${ledgerRef('roundTrip').path}`, { headers: { Authorization: 'Bearer owner' } }).then(r => r.json())
     expect(raw.fields.receivedCents).toEqual({ integerValue: '8999999999999910' })
     expect(raw.fields.seq).toEqual({ integerValue: '9007199254740991' })
   })
