@@ -13481,3 +13481,110 @@ The same unit run in the developer checkout (with `.env.local` present, now igno
 | Java | Azure 21; local replay 26 (no JDK 21 installed). Both satisfy firebase-tools' ≥ 21 floor |
 
 **Limitations:** no Linux execution was available (no Docker / VM runtime); the replay is macOS with Linux conditions simulated (credential-free, clean checkout, case audit). JDK 21 was not exercised. The pipeline's duplicated comment block before *Trusted backend emulator tests* is cosmetic and left unchanged (out of scope).
+
+## 91. Phase 2 — Stage A: read-only production assessment and release preparation — 28 November 2026
+
+**Status: Stage A ACCEPTED (Lead Architect, 28 Nov 2026 — REPORTED); Stage A completion (this section) delivered for review.** Production project `constrapp-69b5d`. Evidence classes: **PROD-VERIFIED** (read in production by Claude with the Product Owner's own `gcloud` login, read-only APIs only) · **PROD-WRITE (TEST)** (the authorised A2 synthetic fixture and one invitation, both in the isolated TEST company `constrap-acceptance-test`, through the released application) · **LOCAL**. Nothing deployed; no Rules, Hosting or monitoring change; no company activated; no IAM change; Apex untouched. Raw inventories (they list document ids) stay outside the repository in the Product Owner's `~/constrap-phase2-cutover-20261128/` (0600); nothing below names a customer or prints a customer figure.
+
+### 91.1 Git and Azure (PROD-VERIFIED / VERIFIED)
+
+`main` = `origin/main` = remote `refs/heads/main` = `c74f8f4` (*Merge Phase 2 CI validation fix (D3 #56)*), clean. The GitHub check-run for `c74f8f4` (public API): *Azure Pipelines — Build #20261128.2 succeeded*, 0 errors / 0 warnings, 03:56–04:20 UTC. **D3 #56 CLOSED.** The per-stage counts (unit 6,489 · Rules 2,861 · Functions pure 296 · Functions emulator 834 = 10,480) are the Product Owner's (REPORTED); the Azure build API is not publicly readable.
+
+### 91.2 Stage A inventory (`ops/recovery/phase2-inventory.mjs`, `ops/cutover/client-receipt-inventory.mjs`; 28 Nov 04:22 UTC; PROD-VERIFIED)
+
+Both tools were read first: each sends only `documents:runQuery`, loads no SDK and has no write path.
+
+| Item | Result |
+|---|---|
+| Companies / projects | 2 / 22 |
+| Activation | `commercialCompletionEnabled` absent for both; `clientFinanceEnabled` true for both; receipts per-company flag on TEST only (all-companies receipts switch on); approval policy absent for both |
+| Variations / claims / supplier invoices | 11 / 10 / 19 (Apex: variations 8 approved, 1 submitted, 2 draft; claims 5 approved, 1 submitted, 1 draft, 1 rejected; invoices 10 posted, 4 cancelled. TEST: 2 approved claims, 5 posted invoices) — every calculation version legacy (absent), all supported |
+| Supplier baseline preview | **22 / 22 `would-establish`; 0 refuse; 0 inconsistent previewed ledgers; 0 unattributable posted entries** |
+| Phase 2 server state | supplier markers, supplier ledgers, client refunds, receipt applications, Phase 2 client receipt ledgers, estimates, contract-value revisions: **all 0** |
+| Counters / duplicates | every Phase 2 counter exactly one above the highest number of its type; **0 duplicates**, 0 unparseable |
+| BOQ / estimating | 0 over-bound text or keys; largest project 4 active items; **0 budget lines with estimate provenance**; ADR-81 BOQ-sourced lines 4, ids, provenance and latest amounts consistent |
+| Findings | 6, all `review`: 5 × `supplier-finance-legacy-claim (invoice-link-key-absent)` (Apex approved claims), 1 × `po-preparer-unrecorded (draft)` (one Apex draft PO) |
+| Approval provenance | every pending / approved document carries at least one of `createdBy` / `submittedBy` / `updatedBy`; no tender packages exist |
+
+**Two receipt figures that must not be conflated.** `receiptBaselineMarkers` (3, all TEST) counts the **Phase 1** per-project markers `clientFinanceState/receiptBaseline` (ADR-89), created by the first Phase 1 client-finance operation on a project — live data since 26 Nov. `clientReceiptLedgers` (0) counts the **Phase 2** per-receipt ledgers (`clientReceiptLedgers/{receiptId}`, ADR-95) that only refunds and receipt applications create, and only for an activated company. A non-zero marker count before the cutover is expected; a non-zero Phase 2 receipt-ledger count is a stop condition.
+
+### 91.3 A2 — historical TEST fixture (PROD-WRITE (TEST), 28 Nov 2026 ~04:50–04:58 UTC)
+
+Session verified in the page before any write: web.app, signed-in uid `oOANhA…` (the TEST admin), company *Constrap Acceptance — TEST (not a customer)*, bundle `index-BEwVCddF.js` (the released build). (The same profile had earlier held an **Apex** admin session on web.app; nothing was done in it — the Product Owner signed in as the TEST admin.) Every record was entered through the released UI and its old client paths; no Admin SDK, no direct database write; native confirmations stubbed in the page.
+
+Project `2psmNzd4N2PED8OR23Az` — *TEST P2-A2 — Phase 2 baseline history (synthetic)*, AUD, cost code CT-100, the existing synthetic supplier and client.
+
+| Record | Number | Id | Status | Figures (cents) |
+|---|---|---|---|---|
+| PO-A, two lines | PO-0004 | `yw5mA6RkSuOkNOKEZORt` | sent | 1,000,000 + 500,000 ex-GST; total 1,650,000 |
+| PO-B, one line | PO-0005 | `GD4tcRv3Gej0ftCC2ZdO` | sent | 800,000; total 880,000 |
+| Claim on PO-A (line 1 only) | PC-0003 | `0d5vLDHjEQBbKhegzP2b` | approved | 400,000; retention 20,000; GST 38,000; total 418,000 |
+| Claim-sourced retained invoice | SI-0006 | `WSgaE9iAevn7WuJkK78b` | posted | 400,000 + GST 40,000; retention 20,000 + GST 2,000; payable 418,000 |
+| Direct non-retained invoice (PO-A line 2) | SI-0007 | `VcWk4jHt2c9p0XXklz4C` | posted | 200,000 + GST 20,000; payable 220,000 |
+| Supplier payment | SP-0001 | `FYIab8wikzQrBNLx7N7B` | posted | 300,000 → SI-0006 200,000, SI-0007 100,000 |
+| Supplier credit note (SI-0007) | SCN-0001 | `7NKqJKsi26cNSoEFvveC` | posted | 30,000 + GST 3,000 |
+| Partial retention release (SI-0006) | RR-0005 | `OdgAsVD53MUOMD2GJVDX` | posted | 10,000 + GST 1,000 |
+| Open claim on PO-B | PC-0004 | `tZB6SS5flFQhME5c2AGQ` | submitted | 150,000; retention 7,500; GST 14,250; total 156,750 |
+| Supplier variation on PO-A | SV-0001 | `Dbl1PTp7KXaRxXgYHBRp` | submitted | 100,000 + GST 10,000 |
+| Client variation | CV-0001 | `rHsNGsJDtETj229IkGa8` | submitted | 200,000 + GST 20,000 |
+
+Legacy behaviour respected: the released build offers *Record credit note* only on SI-0007 — a retained invoice cannot be credited — so the credit is on the non-retained invoice; the claim and the direct invoice use different PO lines (the mixed-mode guard). Balances deliberately left open: SI-0006 remaining 229,000 with 11,000 retention still held; SI-0007 remaining 87,000; PC-0004 open; both variations pending.
+
+**Independent cent reconciliation (`~/constrap-phase2-cutover-20261128/a2-reconcile.mjs`, read-only): 17 / 17 MATCH** — the expected sheet was written before entry; compared against the stored documents, the after-movement balances (released-build semantics) and the Phase 2 baseline preview that the first supplier-finance operation will store (`supplierLedgersFromHistory`, `poClaimLedgersFromHistory`): SI-0006 ledger paid 200,000, released retention 10,000 + GST 1,000, credited 0; SI-0007 ledger paid 100,000, credited 30,000 + GST 3,000; PO-0004 claim ledger 0 open, line 0 approved 400,000; PO-0005 claim ledger 1 open. All four ledgers `established`.
+
+**After A2 (PROD-VERIFIED):** whole-database fingerprint (names + update times only) 551 → 568 documents: **Apex 259 documents, hash unchanged**; users and `system` unchanged; TEST +17 documents (project, directory entry, 2 POs, 2 claims, 2 invoices, payment, credit note, release, 2 variations, 4 new counters) and 4 counters advanced. Inventory: 2 companies / 23 projects; activation unchanged; supplier markers 0, supplier ledgers 0, Phase 2 receipt ledgers 0; 23 / 23 `would-establish`; 0 inconsistent; counters valid (TEST `variationsClient` 2/1, `variationsSupplier` 2/1, `progressClaims` 5/4, `supplierInvoices` 8/7, `supplierCreditNotes` 2/1, `retentionReleases` 6/5, `supplierPayments` 2/1); 0 duplicates; **0 findings for the A2 project**; the six historical findings unchanged.
+
+### 91.4 Second independent TEST approver (PROD-WRITE (TEST))
+
+The previous TEST PM (`+ct-pm`, uid `KSC9zf…`) is deactivated; re-inviting that address would re-enable the account (`previewInvitation`), which is not allowed. The Product Owner designated a new owner-controlled alias of the same TEST mailbox, `+ct-pm2`. The TEST admin sent one invitation from the Team page at 04:59:29 UTC: invitation `GnHtToDzBCvWsMuNnn3f`, role `project_manager`, `deliveredVia` email, `sendCount` 1, no send error, pending, expires 2026-12-05T04:59:28Z. Changed documents: the invitation, one audit event, the membership-lock `system` document and two rate-limit documents (all TEST); users unchanged (the deactivated PM untouched); Apex unchanged. **Acceptance is the Product Owner's** (§91.9). `project_manager` is in every Phase 2 approval role set and in `ELIGIBLE_APPROVER_ROLES`; with the admin and the accepted PM the company has two eligible approvers, so `set-approval-policy.mjs` can enable segregation at Stage G. **Segregation was not enabled.**
+
+### 91.5 M1 — the financial-inconsistency alert (LOCAL + PROD read-only validation)
+
+`client-ledger-invariant` is raised both for genuine ledger problems and, by the LIVE Phase 1 void of a posted client credit note / retention release (`clientFinance/transactions.js`, the void-invariant check), as the approved refusal of a void that would breach an invariant (ADR-89 *Void policy*). Production showed it once in 30 days: 2026-11-27T02:58:50Z, `voidclientcreditnote`, the Phase 1 Stage H probe. Correction (narrowest available): the policy keeps every other code and alerts on `client-ledger-invariant` **except** when `jsonPayload.fn` is `voidClientCreditNote` or `voidClientRetentionRelease`. Unchanged: the code's classification, the logs, `phase2_refusals_by_code`, and every other policy and metric.
+
+Read-only validation against production logs (Logging `entries:list`, paged to exhaustion): revised filter **accepted**, 0 matches in 30 days; previous filter 1 match (the probe); the revised filter with the exclusion pointed at a non-existent function 1 match (the exclusion is what removes it); `NOT jsonPayload.fn=(…)` keeps entries that carry no `fn`. Unit: `phase2Monitoring.test.js` 30 / 30 (one new test pins the exact clause, the logged `fn` values and the excluded void check).
+
+**Detection gap created (accepted, documented):** a genuinely malformed client invoice ledger first met by a void of a posted client credit note or retention release no longer pages; it pages on the next posting, receipt, refund or application against that invoice, and is visible in `phase2_refusals_by_code`. Splitting the code (business vs data refusal) is Phase 3. Related, not changed: `client-entry-invalid` also covers a few user-reachable shapes (for example voiding a receipt that is no longer a draft from a stale tab); 0 occurrences in 30 days — watched, not excluded.
+
+### 91.6 Notification channel (PROD-VERIFIED, masked)
+
+`13613525651613947442`: email, *DC46 - Product Owner*, enabled, created 16 Nov 2026; its address is the Product Owner's account address (compared locally, never printed). Used by every DC46 and L3 policy. `3870502445512488908` is *DC46 - Billing Administrator*. Email channels report no verification status. **Ownership and intended delivery: Product Owner to confirm.**
+
+### 91.7 Historical limitations (read-only, PROD-VERIFIED)
+
+| Item | Finding | Decision |
+|---|---|---|
+| 5 Apex approved claims without the invoice-link key | 2 have one posted claim-sourced invoice each, 1 has only a cancelled one, 2 have none; **no claim has more than one live invoice**; every invoice names its claim's PO | Preserved, not rewritten. The backend refuses any claim-sourced invoice from a legacy claim (`claimInvoicePairingProblem` → `supplier-finance-legacy-claim`), so missing linkage cannot create a duplicate pairing; the three without a live invoice cannot be invoiced through pairing after activation. **Verify again (inventory + this check) before Apex activation (Stage H)** and decide the reconcile path then |
+| 1 Apex draft PO with no recorded preparer | unchanged | No actor fabricated (D3 #54); matters only if Apex enables strict segregation |
+
+### 91.8 Dependency audit — frontend production dependencies (LOCAL; Phase 3, no upgrade)
+
+`npm audit --omit=dev` in `frontend/`: 10 high, 1 moderate (Functions: 0 high, gating).
+
+| Package (installed) | Path | Advisories | Evidence for the exposure assessment |
+|---|---|---|---|
+| `@grpc/grpc-js` 1.9.16 | `firebase` 12.15.0 → `@firebase/firestore` 4.16.0 | GHSA-m9gg-hp2v-232j, GHSA-f596-whhp-79r4 (< 1.13.6) | A fresh build of `main` contains no `grpc-js`, `@grpc/`, `getAuthContext` or `protobufjs` string; the browser Firestore client uses WebChannel (11 references). Both advisories concern gRPC servers / server certificates |
+| `@firebase/firestore`, `-compat`, `firebase` | — | reported only through grpc-js | npm's suggested fix (`firebase@9.14.0`) is a major downgrade — not a fix |
+| `protobufjs` 7.6.4 (moderate) | `@firebase/firestore` → `@grpc/proto-loader` | GHSA-j3f2-48v5-ccww | Not in the bundle; parses `.proto` options only in Node |
+| `vite` 8.0.16 | devDependency, and via `@tailwindcss/vite` (a dependency) | GHSA-9jrq-w75r-8gcw, GHSA-rq7h-c2jc-7f22, launch-editor GHSA-698v-4r3x-3vcv / -r825-w8mm-5pxw / -587h-7wmj-h5pm (≤ 8.1.5) | Dev server and editor launcher only — never served by Hosting. **Exposure exists on a developer machine running `vite` / `team-dev`** |
+| `postcss` 8.5.15, `nanoid` 3.3.12, `source-map-js` 1.2.1 | `vite`, `@tailwindcss/node` | GHSA-fxqj-rqcc-2cmp, GHSA-r28c-9q8g-f849; GHSA-28wg-ghj8-5hjv, GHSA-2v37-7h3g-55p8; GHSA-68fv-2mgg-jv7q | Build-time only; none appears in the bundle. Exposure is a malicious source map / input at build time (developer and CI) |
+| `react-router` / `-dom` 7.18.0 | direct | GHSA-qwww-vcr4-c8h2 (RSC mode, ≥ 7.12.0 < 7.18.2) | The app uses `BrowserRouter` (SPA); no RSC API is imported and the bundle contains none. Patched release in range exists (7.18.2) |
+
+Assessment: **not a release blocker for Phase 2** — no advisory reaches code Hosting serves on present evidence. This does not establish non-exploitability (build and developer-machine exposure remain); upgrade in Phase 3 (react-router 7.18.2+, vite / postcss / nanoid / source-map-js patch releases, a Firebase release with a patched grpc-js when available).
+
+### 91.9 Stage B readiness checks (LOCAL)
+
+- **The 22-target filter** in DEPLOYMENT.md equals the exports of `functions/src/index.js` minus the eight team callables and `processFileLinkRevocations` (31 exports; 22 targets; no duplicate; every target prefixed `functions:team:`).
+- **Phase 1 behaviour of the eight changed callables:** the released bundle's receipt, credit-note and retention hooks are byte-identical at `main`; the Final Account hook only reads two new collections; the BOQ-transfer parser only gained an optional key (a request without it is accepted unchanged); the client-finance parsers only gained additions. Emulator suites at `c74f8f4` (Node 22.23.2, JDK 26): `clientReceipts`, `clientFinance`, `clientReceiptBaseline`, `finalAccount.approve`, `boqBudgetTransfer` — **5 files / 387 tests passed**.
+- **Rollback sources (Stage B is reversible):** the seven client-finance callables and `approveFinalAccount` serve the `functions/src` of `9e31bb0` = `c9df38b` (identical; only `.env` and a test pin differ); `transferBoqToBudget` revision `-00001-zol` was deployed on 21 Nov from `a30699e` (L4), whose source differs from `c9df38b` — a rollback redeploys it from `a30699e`, the other seven from `c9df38b`.
+- **Switches:** all five Phase 2 switches `false` in `functions/.env.constrapp-69b5d`; production pins in `functions/test/phase2Release.test.js` (all five), `variations.test.js`, `clientFinance.test.js`, `tests/unit/estimating.test.js`. The Stage F commit is 5 files / 9 lines (dry-run on a scratch copy).
+
+### 91.10 Validation of this change
+
+LOCAL, at `c74f8f4` plus this change: `tests/unit/phase2Monitoring.test.js` 30 / 30; **full unit suite 130 files / 6,490 tests** (Node 24.19.0; 6,489 + the M1 test); **Functions pure 11 / 296** (Node 22); Phase 1 callable emulator suites 5 / 387 (91.9); `git diff --check` clean; 79 relative Markdown links resolve; every `ops/monitoring/phase2/*.json` parses. Rules and the full emulator suite were not re-run: no Rules, Functions or application source changed.
+
+### 91.11 Product Owner actions outstanding before Stage B
+
+1. Accept the `+ct-pm2` invitation: open the emailed link with its host changed from `app.constrap.com` to **`constrapp-69b5d.firebaseapp.com`** (not web.app, which holds the TEST admin session; not app.constrap.com, the Apex session), register with a new password of your choosing, and report; Claude verifies Auth, the invitation and the `acceptinvitation` request read-only.
+2. Confirm channel `13613525651613947442` is yours and that alert e-mail should go there.
+3. Integrate this change (Block 2) and wait for Azure `main` green.

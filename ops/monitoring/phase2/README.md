@@ -1,6 +1,7 @@
 # ops/monitoring/phase2 — Phase 2 financial callables: alert policies and log-based metrics
 
-**Status: PREPARED, NOT CREATED (28 November 2026).** Nothing in this folder
+**Status: PREPARED, NOT CREATED (28 November 2026; M1 correction and read-only
+production validation the same day — below).** Nothing in this folder
 exists in any cloud project. Every creation, change or deletion below is a
 production cloud change that needs the Product Owner's explicit authorisation
 for that sitting. The stage at which each object is created is part of the
@@ -39,7 +40,7 @@ unchanged).
 | Backend server failure per callable (HTTP 5xx: untyped `internal` 500, crash, 504 timeout, 503) | `run.googleapis.com/request_count`, `response_code_class="5xx"`, one series per service (`phase2-callable-server-failure.policy.json`) | **Yes**, ERROR, one incident per service | Stage F, after the switches are on | `approveFinalAccount` is excluded: the L3 policy already covers it. A switch that is OFF answers `…-disabled` with **503**, so this policy must not exist while switches are off |
 | Internal error not tied to a 5xx (untyped exception, framework `Unhandled error`, memory-limit kill) | Any `severity>=ERROR` line in the containers' stdout / stderr / `varlog/system` (`phase2-callable-error-log.policy.json`) | **Yes**, ERROR, at most one notification an hour | Stage A (before the Functions deploy) | Every typed refusal is INFO, so an ERROR line is always a fault |
 | Historical baseline failure | Refusal lines with a baseline code (`phase2-baseline-failure.policy.json`) | **Yes**, ERROR, rate-limited | Stage A | The project's family stays refused until reviewed |
-| Unexpected financial inconsistency | Refusal lines with a ledger / figures / invariant / unsupported-record code (`phase2-financial-inconsistency.policy.json`) | **Yes**, ERROR, rate-limited | Stage A | Stored data does not reconcile; never a user error |
+| Unexpected financial inconsistency | Refusal lines with a ledger / figures / invariant / unsupported-record code (`phase2-financial-inconsistency.policy.json`), **except `client-ledger-invariant` from `voidClientCreditNote` / `voidClientRetentionRelease`** (M1, below) | **Yes**, ERROR, rate-limited | Stage A | Stored data does not reconcile; never a user error |
 | Repeated contention, stalled or repeatedly abandoned initialisation | Counter `phase2_contention_refusals` (`…-busy`, `estimate-build-superseded`) → more than 3 per service in 10 min (`phase2-contention-refusals.metric.json`, `phase2-contention-repeated.policy.json`) | **Yes**, WARNING, threshold | Stage A | One busy refusal is ordinary; a run is not. Includes `baseline-in-progress` / `baseline-superseded` / `baseline-source-changed` (all `supplier-finance-busy`) |
 | Markers left `building` (supplier baseline past its 150 s lease, estimate past 180 s) | **No log signal exists** — read-only inventory (`ops/recovery/phase2-inventory.mjs`: `serverState.supplierBaselineMarker`, `serverState.estimates.buildingExpired`) | No (scheduled check) | Run at Stages G and I, and on any contention alert | See *Gaps* |
 | Repeated infrastructure failure (timeouts, `DEADLINE_EXCEEDED`, `UNAVAILABLE`, `RESOURCE_EXHAUSTED`) | Counter `phase2_infrastructure_failures` (request log status 504, or a `call failed` stack naming one of those) → more than 2 per service in 15 min (`phase2-infrastructure-failures.metric.json`, `phase2-infrastructure-repeated.policy.json`) | **Yes**, ERROR, threshold | Stage A | Single ones are already raised by the two policies above |
@@ -112,6 +113,46 @@ log line.
    (`legacyCents`). It is live code; nothing here reads the field.
    *Recommended:* drop the figure from the log line.
 
+## M1 — the approved void refusal is not paged (28 November 2026)
+
+`client-ledger-invariant` is ambiguous: genuine ledger problems raise it, and
+so does the LIVE Phase 1 void of a posted client credit note or retention
+release when the void would breach an invariant — the approved ADR-89 *Void
+policy* refusal, an ordinary user outcome (production: once in 30 days,
+2026-11-27T02:58:50Z, `voidclientcreditnote`, the Phase 1 Stage H probe). The
+refusal line carries `fn`, not the reason. The financial-inconsistency filter
+therefore ends:
+
+    … AND (jsonPayload.code=(<the nine other codes>)
+           OR (jsonPayload.code="client-ledger-invariant"
+               AND NOT jsonPayload.fn=("voidClientCreditNote" OR "voidClientRetentionRelease")))
+
+Only that (code, `fn`) pair is excluded. The code stays in the
+`financialInconsistency` class, in the logs and in `phase2_refusals_by_code`;
+every other policy and metric is unchanged. **Gap (accepted):** a genuinely
+malformed client invoice ledger first met by one of those two voids does not
+page; it pages on the next posting, receipt void, refund or application on
+that invoice. Splitting the code into a business and a data refusal is Phase 3.
+`client-entry-invalid` can also be reached by a user (a stale-tab void of a
+receipt that is no longer a draft); 0 occurrences in 30 days — watched, not
+excluded.
+
+Validated read-only against production (Logging `entries:list`, every page
+read): the revised filter is accepted and matches 0 entries in 30 days; the
+previous filter matched the probe; the revised filter with the exclusion
+pointed at a non-existent function matches it again; `NOT jsonPayload.fn=(…)`
+keeps entries with no `fn`. `phase2Monitoring.test.js` pins the clause.
+
+## Notification channel (verified read-only, 28 November 2026)
+
+`13613525651613947442` — e-mail, *DC46 - Product Owner*, enabled, created
+16 November 2026, used by every DC46 and L3 policy; its address is the Product
+Owner's account address (compared, never printed). `3870502445512488908` is
+*DC46 - Billing Administrator* and is not used here. E-mail channels report no
+verification status: **the Product Owner confirms ownership and intended
+delivery before Block 3.** The id is passed on the command line, never
+committed in a policy file.
+
 ## Creation (authorised sittings only)
 
 Read-only checks first, from the repository root, with your own login:
@@ -135,6 +176,15 @@ channel id, outside Git):
     for m in contention-refusals infrastructure-failures refusals-by-code baselines-established; do
       gcloud logging metrics create "phase2_${m//-/_}" --project constrapp-69b5d \
         --config-from-file "ops/monitoring/phase2/phase2-${m}.metric.json"
+    done
+    # Gate: the two threshold policies read user metrics. Do not assume a fixed
+    # delay — wait until Monitoring knows BOTH metric types (timeSeries.list
+    # answers NOT_FOUND until then; it did at Stage A, before creation):
+    for t in phase2_contention_refusals phase2_infrastructure_failures; do
+      until curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+          "https://monitoring.googleapis.com/v3/projects/constrapp-69b5d/metricDescriptors/logging.googleapis.com/user/${t}" \
+          | grep -q '"type": "logging.googleapis.com/user/'"${t}"'"'; do sleep 30; done
+      echo "metric ${t} available"
     done
     for p in callable-error-log baseline-failure financial-inconsistency contention-repeated infrastructure-repeated; do
       gcloud monitoring policies create --project constrapp-69b5d \

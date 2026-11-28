@@ -8,12 +8,12 @@ hierarchy* below).
 
 | | |
 |---|---|
-| **Last updated** | 28 November 2026 (NZDT) — Phase 2 integrated into `main`; Azure CI correction (D3 #56) |
-| **Branch** | `fix/phase2-ci-validation` from `main` (VERIFIED) |
-| **HEAD** | `7e71793` = `origin/main` (*Merge Phase 2 Commercial Completion (ADR-90 to ADR-98; switches OFF)*) (VERIFIED) |
-| **Working tree** | **Uncommitted** CI-isolation correction and its documentation (VERIFIED) |
-| **Production** | Last recorded release: Commercial Finance Phase 1 (REPORTED). **Phase 2 is merged but NOT deployed; every Phase 2 switch is `false` in `functions/.env.constrapp-69b5d`** (VERIFIED). Production was not read |
-| **Azure CI** | **RED on `7e71793`** (run #20261128.1, REPORTED): unit stage, `finalAccountPage.test.js` `auth/invalid-api-key`; later stages not executed. Correction on this branch; the whole pipeline replayed credential-free on macOS (TESTING.md §90). Azure re-run pending |
+| **Last updated** | 28 November 2026 (NZDT) — Phase 2 Stage A accepted; Stage A completion (A2 TEST fixture, TEST PM invitation, M1 monitoring correction) delivered for review |
+| **Branch** | `fix/phase2-release-preparation` from `main` (VERIFIED) |
+| **HEAD** | `c74f8f4` = `origin/main` = remote `main` (*Merge Phase 2 CI validation fix (D3 #56)*) (VERIFIED) |
+| **Working tree** | **Uncommitted** M1 monitoring correction, its test, and the Stage A documentation (VERIFIED) |
+| **Production** | Commercial Finance Phase 1 LIVE (PROD-VERIFIED read-only 28 Nov 2026: 17 functions; Firestore ruleset `0e228bd0…` = the Phase 1 rules, 236,120 B; Storage rules = `main`; Hosting `2f85dee4071c61d6`, bundle `index-BEwVCddF.js`). **Phase 2 NOT deployed; no company activated; no Phase 2 server state; every Phase 2 switch `false`.** Only TEST-company writes made: the A2 fixture and one PM invitation (TESTING.md §91) |
+| **Azure CI** | **GREEN on `c74f8f4`** — Build #20261128.2 succeeded, 0 errors / 0 warnings (PROD-VERIFIED via the public GitHub check-run); suite counts unit 6,489 · Rules 2,861 · Functions pure 296 · emulator 834 (REPORTED) |
 | **History** | Earlier revisions of this file, verbatim: [CHATGPT_HANDOVER_HISTORY.md](CHATGPT_HANDOVER_HISTORY.md) (archive, not authoritative) |
 
 **Evidence classes used throughout:** **VERIFIED** (checked in the repository,
@@ -475,18 +475,18 @@ Rules-validated paths (ADR-90, Phase 2).
 | Item | State |
 |---|---|
 | Date | 28 November 2026 (NZDT) |
-| Active phase / workstream | Phase 2 — Commercial Completion; **consolidated implementation checkpoint, steps 3–6 — awaiting the Lead Architect** |
-| Branch / HEAD / tree | `feature/commercial-completion-phase-2` / `dfe3618` / `a3514a50` — created from a clean `main` equal to `origin/main` (VERIFIED) |
-| Working tree | Uncommitted: Phase 2 steps 0–6 code, tests and docs (base `dfe3618`); this handover and its archive |
-| Latest accepted checkpoint | Commercial Finance Phase 1 closeout (`main` `dfe3618`) |
+| Active phase / workstream | Phase 2 — Commercial Completion; **production release, Stage A completion — awaiting the Lead Architect** (Stage A assessment ACCEPTED, REPORTED) |
+| Branch / HEAD / tree | `fix/phase2-release-preparation` / `c74f8f4` — created from a clean `main` equal to `origin/main` and remote `main` (VERIFIED) |
+| Working tree | Uncommitted: M1 monitoring correction (`ops/monitoring/phase2/phase2-financial-inconsistency.policy.json`, `phase2-refusal-codes.json`, README), `tests/unit/phase2Monitoring.test.js`, and docs (DEPLOYMENT, TESTING §91, tracker, this handover) |
+| Latest accepted checkpoint | Phase 2 integrated (`7e71793`) and CI-corrected (`c74f8f4`, D3 #56); Stage A read-only assessment accepted (REPORTED) |
 | Latest implementation checkpoint | Steps 3–6 implemented in one programme (ADR-93 claims and supplier invoices; ADR-94 supplier ledgers, G1–G3, DC18; ADR-95 client refunds and receipt applications, D8; ADR-96 approval segregation and G5). Steps 0–2 closed LOCALLY by the architect (rulings recorded on the ADR-90 / ADR-91 correction). Report delivered 28 November 2026 |
-| Accepted test baseline | 9,596 tests at `dfe3618`: unit 6,085 · Rules 2,632 · Functions pure 256 · Functions emulator 623 (VERIFIED by a local run before any change) |
-| Latest results (branch, local) | See TESTING.md §87.4 for the integrated totals and runtime versions of the checkpoint run (unit, Rules, Functions pure, Functions emulator; lint; build; bundle and transitional checks) |
+| Accepted test baseline | 10,480 tests at `c74f8f4`: unit 6,489 · Rules 2,861 · Functions pure 296 · Functions emulator 834 (REPORTED; Azure #20261128.2 green VERIFIED) |
+| Latest results (branch, local) | TESTING.md §91.10 / the Stage A completion report: `phase2Monitoring.test.js` 30 / 30; Phase 1 callable emulator suites; whitespace and link checks |
 | Runtimes | Node 24.19.0 (frontend, Rules suite, CI); Node 22.23.2 (both Functions suites); JDK 26 for the emulators |
-| CI | Not run on the branch (uncommitted). `dfe3618` not verified here |
-| Production | Unchanged by Phase 2; not read in this session |
-| Changed-file scope | TESTING.md §83 and the checkpoint report: `src/lib/{supplierCalc,variationProcessing,variationCalc,variations,variationActions}.js`, `useVariations.jsx`, `ProjectVariations.jsx`, `functions/src/variations/*`, `functions/src/lib/{errors,audit,params}.js`, `functions/src/index.js`, generated bundles, the three rules files, the transitional generator, env files (production switch value `false`), the test guard and runtime gate, tests, docs, comment-only corrections |
-| Authorised scope | All of Phase 2, steps 0–8 (architecturally authorised); the first checkpoint stabilises the foundation before step 3. **No production action is authorised** |
+| CI | `c74f8f4` GREEN (Build #20261128.2); the branch is uncommitted |
+| Production | Phase 1 LIVE, verified read-only 28 Nov 2026; Phase 2 not deployed; TEST-company writes only (A2 fixture, PM invitation) |
+| Changed-file scope | The eight files of the Stage A completion (release-preparation manifest in the report); no application, Rules or Functions source change |
+| Authorised scope | Stage A completion only: read-only production inspection; A2 synthetic fixture and the PM invitation in the TEST company; monitoring definitions and docs. **No deployment, monitoring creation, activation, IAM change or Git integration** |
 | Pending Product Owner actions | Review; commit in the dependency-ordered groups of the checkpoint report; no deploy. Earlier: two stale local allowlist entries naming the old emulator project |
 | Pending architect decisions | Accept steps 3–6; confirm the refinements (three callables with operation discriminators; payments / receipts / refunds / applications recorded, not segregated; supplier credits by cost-code and tax-code group; posting re-derives and refuses moved figures; no transitional ruleset for steps 3–6 — a maintenance restriction instead); authorise the read-only production inventories (variations, supplier history, counters, baselines); release grouping; then Step 7 |
 | Known limitations | Nothing deployed. Production history (variations, claims, supplier settlement) not inventoried: the baselines refuse or mark inconsistent what they cannot account for. Compiled Rules size and post-change expression headroom not measured. No per-user rate limiting on the new callables. Rules-held approvals compare creator / last updater only. Refusals on Rules-held approvals show a generic permission message. Browser acceptance is local only and partial (TESTING.md §87.5) |
@@ -662,7 +662,13 @@ ships alone or with step 3 is open.
 
 | Id | Item | Impact | Status | Phase | Next action |
 |---|---|---|---|---|---|
-| D3 #56 | Azure CI red on `main` `7e71793` (unit suite reached real Firebase) | Integration gate | Fixed on `fix/phase2-ci-validation`; Azure re-run pending | 2 | Merge; confirm Azure `main` green before stage A |
+| D3 #56 | Azure CI red on `main` `7e71793` | Integration gate | **CLOSED** — `c74f8f4`, Azure #20261128.2 green | 2 | — |
+| — | Phase 2 TEST baseline history (release prerequisite) | Stage G evidence | **MET** — A2 fixture, 17 / 17 cent checks (TESTING.md §91.3) | 2 | Reproduce at Stage G |
+| D3 #57 | M1: inconsistency alert would page on the approved Phase 1 void refusal | False ERROR alerts | Corrected on `fix/phase2-release-preparation`, validated read-only | 2 | Integrate (Block 2) before monitoring creation |
+| — | Stage G second approver | Segregation acceptance | PM invitation `+ct-pm2` pending | 2 | Product Owner accepts it on firebaseapp.com |
+| — | Alert channel `13613525651613947442` (*DC46 - Product Owner*) | Alert delivery | Verified read-only; ownership to confirm | 2 | Product Owner confirms |
+| D3 #59 | Five Apex legacy claims without the invoice-link key | Apex activation | No duplicate pairing possible; three cannot be pair-invoiced after activation | 2 | Re-verify and decide before Apex Stage H |
+| D3 #58 | Frontend production dependency audit 10 high / 1 moderate | Dependency security | Not a release blocker on present evidence | 3 | Phase 3 upgrade |
 | — | Phase 2 steps 0–2 acceptance | Gate to step 3 | Awaiting architect | 2 | Review the checkpoint report and TESTING.md §83 |
 | D3 #37 | Near-ceiling Rules paths | Rules capacity | Variations resolved on the branch; claims and invoices open | 2 (step 3) | Step 3; re-measure headroom |
 | D3 #35 | Payable-side GST precision | One-cent differences | Foundation on the branch; supplier formulas unchanged | 2 (steps 3–4) | Apply ADR-91 per document type |
@@ -696,7 +702,22 @@ Full registers: [SECURITY_DATA_TEST_TRACKER.md](SECURITY_DATA_TEST_TRACKER.md)
 
 ## P. Immediate continuation instructions
 
-**State (28 November 2026):** Phase 2 is complete on the branch, uncommitted
+**State (28 November 2026, Stage A):** Phase 2 is merged (`c74f8f4`), Azure
+green, NOT deployed. The architect accepted the Stage A read-only assessment
+(2 companies, 22 projects, 22 / 22 baselines would establish, 0 inconsistent,
+0 duplicates, 6 review findings). Stage A completion (TESTING.md §91): the A2
+TEST fixture is in production (17 / 17 independent cent checks; Apex
+unchanged; no baseline, ledger or activation); a TEST PM invitation is pending
+the Product Owner's acceptance; M1 corrected and validated read-only; the
+22-function filter, the five switch pins and Phase 1 callable compatibility
+re-verified. Uncommitted on `fix/phase2-release-preparation`.
+
+**ChatGPT, next:** review the Stage A completion report; on GO the Product
+Owner runs Block 2 (integration), waits for Azure `main` green, accepts the
+PM invitation, confirms the alert channel, then Block 3 (Stage-A monitoring +
+Stage B disabled backend) on its own authorisation.
+
+**Earlier state (as written before Stage A):** Phase 2 is complete on the branch, uncommitted
 and undeployed: steps 0–8 plus the final release-readiness batch (ADR-98 —
 controlled company activation `commercialCompletionEnabled`; D3 #46 resolved
 with Rules-maintained `lastMaterialEditBy` on POs and tender packages; D3 #47
